@@ -70,3 +70,19 @@ export interface CertSummary {
 export function parseCertFromPem(
   pemBytes: Buffer | Uint8Array,
 ): CertSummary | null
+
+export interface ValidateCaAgainstServerParams {
+  caBytes: Buffer | Uint8Array
+  host: string
+  port?: number
+}
+
+export interface ValidateCaAgainstServerResult {
+  ok: boolean
+  serverCert?: CertSummary
+  error?: string
+}
+
+export function validateCaAgainstServer(
+  params: ValidateCaAgainstServerParams,
+): Promise<ValidateCaAgainstServerResult>

@@ -413,3 +413,19 @@ export function parseCertFromPem(pemBytes) {
     ),
   }
 }
+
+// Verify a CA bundle validates a live server's TLS cert. Returns {ok} plus,
+// on failure, the server cert (for diagnostics) and the authorization error
+// string from OpenSSL. Uses a single TLS handshake — see §6.3 of the design
+// spec for why we do not make a separate raw probe.
+export async function validateCaAgainstServer({ caBytes, host, port }) {
+  const probe = await probeTls({ host, port, ca: caBytes })
+  if (!probe.reachable) {
+    return { ok: false, error: probe.error ?? 'unknown' }
+  }
+  return {
+    ok: !probe.caUntrusted,
+    serverCert: probe.cert,
+    error: probe.caUntrusted ? (probe.error ?? 'unauthorized') : undefined,
+  }
+}

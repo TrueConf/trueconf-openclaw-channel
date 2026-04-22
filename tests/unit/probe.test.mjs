@@ -7,6 +7,7 @@ import {
   decide,
   categorizeOAuthError,
   buildCertChainPem,
+  validateCaAgainstServer,
 } from '../../src/probe.mjs'
 import { startTlsFixtureServer } from './__helpers__/tls-server.mjs'
 
@@ -260,6 +261,42 @@ describe('probeTls({ca}) strict mode', () => {
     } finally {
       await server.close()
     }
+  })
+})
+
+describe('validateCaAgainstServer', () => {
+  it('returns ok=true when caBytes matches the server cert', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    const ca = readFileSync(join(FIXTURES, 'ca-valid.pem'))
+    try {
+      const r = await validateCaAgainstServer({ caBytes: ca, host: '127.0.0.1', port: server.port })
+      expect(r.ok).toBe(true)
+      expect(r.error).toBeUndefined()
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('returns ok=false with serverCert populated when caBytes is wrong', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    const wrongCa = readFileSync(join(FIXTURES, 'ca-other.pem'))
+    try {
+      const r = await validateCaAgainstServer({ caBytes: wrongCa, host: '127.0.0.1', port: server.port })
+      expect(r.ok).toBe(false)
+      expect(r.serverCert).toBeTruthy()
+      expect(r.serverCert.subject).toBe('localhost')
+      expect(r.error).toBeTruthy()
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('returns ok=false with error when server is unreachable', async () => {
+    const ca = readFileSync(join(FIXTURES, 'ca-valid.pem'))
+    const r = await validateCaAgainstServer({ caBytes: ca, host: '127.0.0.1', port: 1 })
+    expect(r.ok).toBe(false)
+    expect(r.serverCert).toBeUndefined()
+    expect(r.error).toBeTruthy()
   })
 })
 

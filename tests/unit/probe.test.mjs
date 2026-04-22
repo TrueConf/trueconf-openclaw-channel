@@ -1,10 +1,16 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   summarizeCert,
   decide,
   categorizeOAuthError,
   buildCertChainPem,
 } from '../../src/probe.mjs'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const FIXTURES = join(__dirname, '..', '__fixtures__')
 
 describe('probe-trueconf: summarizeCert', () => {
   it('returns null for empty object', () => {
@@ -373,5 +379,63 @@ describe('parseDn', () => {
   it('preserves unicode in CN and O', () => {
     expect(parseDn('CN=Фирма\nO=ООО «Ромашка»'))
       .toEqual({ cn: 'Фирма', o: 'ООО «Ромашка»' })
+  })
+})
+
+import { parseCertFromPem } from '../../src/probe.mjs'
+
+describe('parseCertFromPem', () => {
+  it('returns CertSummary for valid self-signed PEM', () => {
+    const bytes = readFileSync(join(FIXTURES, 'ca-valid.pem'))
+    const cert = parseCertFromPem(bytes)
+    expect(cert).not.toBeNull()
+    expect(cert.subject).toBe('localhost')
+    expect(cert.issuerCN).toBe('localhost')
+    expect(cert.issuerOrg).toBe('Acme, Inc.')
+    expect(cert.fingerprint).toMatch(/^([0-9A-F]{2}:){31}[0-9A-F]{2}$/)
+    expect(cert.selfSigned).toBe(true)
+    expect(cert.validFrom).toBeTruthy()
+    expect(cert.validTo).toBeTruthy()
+  })
+
+  it('correctly extracts O with comma in value', () => {
+    const bytes = readFileSync(join(FIXTURES, 'ca-valid.pem'))
+    const cert = parseCertFromPem(bytes)
+    expect(cert.issuerOrg).toBe('Acme, Inc.')
+  })
+
+  it('returns CertSummary for expired cert without throwing', () => {
+    const bytes = readFileSync(join(FIXTURES, 'ca-expired.pem'))
+    const cert = parseCertFromPem(bytes)
+    expect(cert).not.toBeNull()
+    expect(cert.subject).toBe('expired.example')
+    expect(cert.validTo).toMatch(/2020/)
+  })
+
+  it('extracts SAN when present', () => {
+    const bytes = readFileSync(join(FIXTURES, 'ca-valid.pem'))
+    const cert = parseCertFromPem(bytes)
+    expect(cert.san).toMatch(/localhost/)
+  })
+
+  it('parses only the first cert in a multi-cert bundle', () => {
+    const bytes = readFileSync(join(FIXTURES, 'chain-bundle.pem'))
+    const cert = parseCertFromPem(bytes)
+    expect(cert).not.toBeNull()
+    // chain-bundle.pem starts with ca-valid; Acme is its O
+    expect(cert.issuerOrg).toBe('Acme, Inc.')
+  })
+
+  it('returns null for non-PEM bytes', () => {
+    expect(parseCertFromPem(Buffer.from('not a cert'))).toBeNull()
+  })
+
+  it('returns null for empty buffer', () => {
+    expect(parseCertFromPem(Buffer.alloc(0))).toBeNull()
+  })
+
+  it('returns null for truncated PEM', () => {
+    const bytes = Buffer.from('-----BEGIN CERTIFICATE-----\nABC\n-----END CERTIFICATE-----\n')
+    expect(parseCertFromPem(bytes)).toBeNull()
   })
 })

@@ -53,3 +53,18 @@ export function parseDn(dnStr: string | null | undefined): {
   cn: string | null
   o: string | null
 }
+
+export interface CertSummary {
+  subject: string | null
+  issuerCN: string | null
+  issuerOrg: string | null
+  validFrom: string | null
+  validTo: string | null
+  fingerprint: string | null
+  san: string | null
+  selfSigned: boolean
+}
+
+export function parseCertFromPem(
+  pemBytes: Buffer | Uint8Array,
+): CertSummary | null

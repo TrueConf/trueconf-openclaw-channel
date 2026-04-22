@@ -4,6 +4,7 @@
 
 import { connect as tlsConnect } from 'node:tls'
 import { createConnection as netConnect, isIP } from 'node:net'
+import { X509Certificate } from 'node:crypto'
 import { writeFileSync, mkdirSync, chmodSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
@@ -369,5 +370,35 @@ export function parseDn(dnStr) {
   return {
     cn: extractRdn(dnStr, 'CN'),
     o: extractRdn(dnStr, 'O'),
+  }
+}
+
+// Parse the first X.509 certificate from a PEM buffer and return a CertSummary.
+// node:crypto.X509Certificate returns .subject and .issuer as DN strings, so we
+// run them through parseDn to extract CN/O. Returns null on any parse failure
+// (non-PEM, empty, truncated, non-X509).
+export function parseCertFromPem(pemBytes) {
+  if (!pemBytes || pemBytes.length === 0) return null
+  let x509
+  try {
+    x509 = new X509Certificate(pemBytes)
+  } catch {
+    return null
+  }
+  const subject = parseDn(x509.subject)
+  const issuer = parseDn(x509.issuer)
+  return {
+    subject: subject.cn,
+    issuerCN: issuer.cn,
+    issuerOrg: issuer.o,
+    validFrom: x509.validFrom || null,
+    validTo: x509.validTo || null,
+    fingerprint: x509.fingerprint256 || x509.fingerprint || null,
+    san: x509.subjectAltName || null,
+    selfSigned: Boolean(
+      subject.cn && issuer.cn &&
+        subject.cn === issuer.cn &&
+        (!issuer.o || issuer.o === subject.o),
+    ),
   }
 }

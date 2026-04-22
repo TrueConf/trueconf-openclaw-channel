@@ -8,6 +8,7 @@ import {
   categorizeOAuthError,
   buildCertChainPem,
 } from '../../src/probe.mjs'
+import { startTlsFixtureServer } from './__helpers__/tls-server.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const FIXTURES = join(__dirname, '..', '__fixtures__')
@@ -219,16 +220,10 @@ describe('probeTls reachability', () => {
   })
 })
 
-import { startTlsFixtureServer } from './__helpers__/tls-server.mjs'
-import { readFileSync as fsReadFile } from 'node:fs'
-import { join as pathJoin } from 'node:path'
-
-const FIXTURES_DIR = pathJoin(process.cwd(), 'tests', '__fixtures__')
-
 describe('probeTls({ca}) strict mode', () => {
   it('returns caUntrusted=false when ca matches server cert', async () => {
     const server = await startTlsFixtureServer('ca-valid')
-    const ca = fsReadFile(pathJoin(FIXTURES_DIR, 'ca-valid.pem'))
+    const ca = readFileSync(join(FIXTURES, 'ca-valid.pem'))
     try {
       const r = await probeTls({ host: '127.0.0.1', port: server.port, ca })
       expect(r.reachable).toBe(true)
@@ -242,7 +237,7 @@ describe('probeTls({ca}) strict mode', () => {
 
   it('returns caUntrusted=true with a different CA (no handshake abort)', async () => {
     const server = await startTlsFixtureServer('ca-valid')
-    const wrongCa = fsReadFile(pathJoin(FIXTURES_DIR, 'ca-other.pem'))
+    const wrongCa = readFileSync(join(FIXTURES, 'ca-other.pem'))
     try {
       const r = await probeTls({ host: '127.0.0.1', port: server.port, ca: wrongCa })
       expect(r.reachable).toBe(true)

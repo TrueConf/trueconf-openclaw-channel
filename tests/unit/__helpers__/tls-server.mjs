@@ -1,8 +1,10 @@
 import { createServer } from 'node:tls'
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const FIXTURES = join(process.cwd(), 'tests', '__fixtures__')
+const HELPER_DIR = dirname(fileURLToPath(import.meta.url))
+const FIXTURES = join(HELPER_DIR, '..', '..', '__fixtures__')
 
 // Start a local TLS server using the named fixture (without the -valid/-other
 // suffix). Returns { port, close }.

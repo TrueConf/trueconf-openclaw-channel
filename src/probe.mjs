@@ -129,7 +129,9 @@ export async function probeTls({ host, port, ca }) {
     useTls: false,
     port: port ?? 0,
     caUntrusted: false,
-    error: 'No TrueConf endpoint reachable on 443/4309/80',
+    error: port !== undefined
+      ? `No TrueConf endpoint reachable on ${host}:${port}`
+      : 'No TrueConf endpoint reachable on 443/4309/80',
   }
 }
 

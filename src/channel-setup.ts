@@ -5,9 +5,99 @@ import {
   hasConfiguredSecretInput,
 } from 'openclaw/plugin-sdk/setup'
 import { probeTls, downloadCAChain, validateOAuthCredentials } from './probe.mjs'
+import type { CertSummary } from './probe.d.mts'
 import { resolveSecret } from './config'
 
 const channel = 'trueconf'
+
+export interface Banner {
+  title: string
+  body: string
+}
+
+function formatCertBlock(cert: CertSummary): string {
+  const issuerLine = cert.issuerOrg
+    ? `${cert.issuerCN ?? '?'} (${cert.issuerOrg})`
+    : (cert.issuerCN ?? '?')
+  return [
+    `  Владелец:     ${cert.subject ?? '?'}`,
+    `  Издатель:     ${issuerLine}`,
+    `  Действителен: с ${cert.validFrom ?? '?'} до ${cert.validTo ?? '?'}`,
+    `  Отпечаток:    SHA-256 ${cert.fingerprint ?? '?'}`,
+  ].join('\n')
+}
+
+export function buildFreshTofuBanner(cert: CertSummary): Banner {
+  const hint = cert.selfSigned
+    ? '  (самоподписан — типично для dev/тестовых серверов)\n'
+    : ''
+  const body = [
+    '⚠ Сертификат TLS не в системном хранилище доверенных',
+    hint.trimEnd(),
+    '',
+    formatCertBlock(cert),
+    '',
+    '  Сверьте отпечаток с админом сервера по отдельному каналу',
+    '  (мессенджер, телефон), затем выберите действие.',
+  ]
+    .filter((line) => line !== undefined)
+    .join('\n')
+  return { title: 'Подтверждение cert TrueConf', body }
+}
+
+export function buildMismatchBanner(
+  stored: CertSummary | null,
+  current: CertSummary | null | undefined,
+  caPath: string,
+  tlsError: string,
+): Banner {
+  const storedBlock = stored ? formatCertBlock(stored) : '  (не удалось распарсить сохранённую цепочку)'
+  const currentBlock = current ? formatCertBlock(current) : '  (сервер не отдал cert)'
+  const body = [
+    '⚠⚠ ВНИМАНИЕ: сохранённый trust anchor больше не валидирует сервер',
+    '',
+    `Сохранённый trust anchor (файл: ${caPath}):`,
+    storedBlock,
+    '',
+    'Сервер, подписанный сейчас (leaf):',
+    currentBlock,
+    '',
+    `TLS-стек: ${tlsError}`,
+    '(цепочка доверия от текущего cert\'а к сохранённому anchor\'у не собирается)',
+    '',
+    'Возможные причины:',
+    '  • смена internal CA сервера — уточни у админа;',
+    '  • атака «человек посередине» — сверь новый отпечаток',
+    '    с админом по отдельному каналу перед принятием.',
+  ].join('\n')
+  return { title: 'Trust anchor mismatch', body }
+}
+
+export function buildConfigMissingBanner(
+  caPath: string,
+  reason: string,
+  currentCert: CertSummary | null | undefined,
+): Banner {
+  const certBlock = currentCert ? formatCertBlock(currentCert) : '  (сервер не отдал cert)'
+  const body = [
+    '⚠ Файл сохранённого trust anchor\'а не найден/не читается',
+    '',
+    `Ожидалось:  ${caPath}`,
+    `Статус:     ${reason}`,
+    '',
+    'Сервер сейчас отдаёт untrusted сертификат:',
+    certBlock,
+    '',
+    'Возможные причины:',
+    '  • файл удалён вами или админом (плановая очистка);',
+    '  • файл удалён злоумышленником чтобы форсировать re-TOFU',
+    '    на (возможно) подменённый cert;',
+    '  • permission errors после cleanup / upgrade.',
+    '',
+    'Сверьте отпечаток сервера с админом ДО re-TOFU.',
+  ].join('\n')
+  return { title: 'Missing trust anchor', body }
+}
 
 // Reads the CA bundle into memory so it can be passed to probe's OAuth validator
 // as bytes. Keeps probe.mjs free of filesystem reads — the security scanner

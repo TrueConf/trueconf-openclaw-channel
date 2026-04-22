@@ -1,10 +1,12 @@
 import { readFileSync } from 'node:fs'
+import { resolve as pathResolve } from 'node:path'
+import { homedir } from 'node:os'
 import type { ChannelSetupWizard, OpenClawConfig, WizardPrompter } from 'openclaw/plugin-sdk/setup'
 import {
   patchTopLevelChannelConfigSection,
   hasConfiguredSecretInput,
 } from 'openclaw/plugin-sdk/setup'
-import { probeTls, downloadCAChain, validateOAuthCredentials } from './probe.mjs'
+import { parseCertFromPem, probeTls, downloadCAChain, validateOAuthCredentials, validateCaAgainstServer } from './probe.mjs'
 import type { CertSummary } from './probe.d.mts'
 import { resolveSecret } from './config'
 
@@ -272,6 +274,154 @@ export const trueconfSetupWizard: ChannelSetupWizard = {
   },
 }
 
+function resolveAbsPath(raw: string): string {
+  const expanded = raw.startsWith('~/') || raw === '~'
+    ? raw.replace(/^~/, homedir())
+    : raw
+  return pathResolve(expanded)
+}
+
+function shortFp(fp: string | null | undefined): string {
+  if (!fp) return '?'
+  return fp.length > 29 ? `${fp.slice(0, 29)}…` : fp
+}
+
+async function readCaFileInteractive(args: {
+  prompter: WizardPrompter
+  host: string
+  port: number
+}): Promise<{ nextCaPath: string; nextCaBytes: Uint8Array }> {
+  const { prompter, host, port } = args
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const rawPath = String(await prompter.text({
+      message: 'Путь к файлу сертификата (PEM):',
+    }))
+    const abs = resolveAbsPath(rawPath)
+    let bytes: Buffer
+    try {
+      bytes = readFileSync(abs)
+    } catch (err) {
+      await prompter.note(`Не могу прочитать ${abs}: ${(err as Error).message}`, 'CA file input')
+      continue
+    }
+    const cert = parseCertFromPem(bytes)
+    if (!cert) {
+      await prompter.note(
+        'Файл не PEM. DER/P7B не поддерживаются — конвертируй: openssl x509 -in cert.der -inform DER -out cert.pem',
+        'CA file input',
+      )
+      continue
+    }
+    const v = await validateCaAgainstServer({ caBytes: bytes, host, port })
+    if (!v.ok) {
+      await prompter.note(
+        [
+          'Файл не валидирует этот сервер:',
+          `  Trust anchor в файле: ${cert.issuerCN ?? cert.subject ?? '?'} (отпечаток ${shortFp(cert.fingerprint)})`,
+          `  Сервер подписан: ${v.serverCert?.issuerCN ?? v.serverCert?.subject ?? '?'} (отпечаток ${shortFp(v.serverCert?.fingerprint)})`,
+          '  Возможно: не тот файл / не тот сервер / chain не полный.',
+          `  TLS-стек: ${v.error}`,
+        ].join('\n'),
+        'CA file input',
+      )
+      continue
+    }
+    return { nextCaPath: abs, nextCaBytes: bytes }
+  }
+  throw new Error('CA file input failed 3 times')
+}
+
+async function handleUntrustedCert(args: {
+  prompter: WizardPrompter
+  host: string
+  port: number
+  existingCaPath: string | undefined
+  currentCert: CertSummary | undefined
+}): Promise<{ nextCaPath: string; nextCaBytes: Uint8Array }> {
+  const { prompter, host, port, existingCaPath, currentCert } = args
+
+  if (existingCaPath) {
+    const resolved = resolveAbsPath(existingCaPath)
+    let storedBytes: Buffer | null = null
+    let readErr: NodeJS.ErrnoException | null = null
+    try {
+      storedBytes = readFileSync(resolved)
+    } catch (err) {
+      readErr = err as NodeJS.ErrnoException
+    }
+
+    if (!storedBytes) {
+      const banner = buildConfigMissingBanner(
+        resolved,
+        readErr?.code === 'ENOENT' ? 'файл отсутствует' : `ошибка чтения: ${readErr?.message ?? 'unknown'}`,
+        currentCert ?? null,
+      )
+      await prompter.note(banner.body, banner.title)
+      const choice = await prompter.select<string>({
+        message: 'Что делать?',
+        options: [
+          { value: 'abort',    label: 'Отменить и разобраться (безопасно)' },
+          { value: 're-tofu',  label: 'Скачать цепочку заново (re-TOFU)' },
+          { value: 'use-file', label: 'Указать новый путь к файлу' },
+        ],
+      })
+      if (choice === 'abort') {
+        throw new Error(`User aborted: configured caPath missing (${resolved})`)
+      }
+      if (choice === 're-tofu') {
+        const ca = await downloadCAChain({ host, port })
+        return { nextCaPath: ca, nextCaBytes: readFileSync(ca) }
+      }
+      return await readCaFileInteractive({ prompter, host, port })
+    }
+
+    const v = await validateCaAgainstServer({ caBytes: storedBytes, host, port })
+    if (v.ok) {
+      return { nextCaPath: resolved, nextCaBytes: storedBytes }
+    }
+
+    const storedCert = parseCertFromPem(storedBytes)
+    const banner = buildMismatchBanner(storedCert, currentCert ?? null, resolved, v.error ?? 'unknown')
+    await prompter.note(banner.body, banner.title)
+    const choice = await prompter.select<string>({
+      message: 'Что делать?',
+      options: [
+        { value: 'abort',      label: 'Отменить и разобраться (безопасно)' },
+        { value: 'accept-new', label: 'Принять новый сертификат и перезаписать цепочку' },
+        { value: 'use-file',   label: 'Использовать файл от админа — укажу путь' },
+      ],
+    })
+    if (choice === 'abort') {
+      throw new Error(`User aborted after trust mismatch on ${host} (caPath=${resolved})`)
+    }
+    if (choice === 'accept-new') {
+      const ca = await downloadCAChain({ host, port })
+      return { nextCaPath: ca, nextCaBytes: readFileSync(ca) }
+    }
+    return await readCaFileInteractive({ prompter, host, port })
+  }
+
+  // Fresh TOFU
+  const banner = buildFreshTofuBanner(currentCert!)
+  await prompter.note(banner.body, banner.title)
+  const choice = await prompter.select<string>({
+    message: 'Что делать?',
+    options: [
+      { value: 'accept',   label: 'Принять и сохранить цепочку в ~/.openclaw/trueconf-ca.pem' },
+      { value: 'use-file', label: 'У меня есть файл сертификата от админа — укажу путь' },
+      { value: 'abort',    label: 'Отменить настройку' },
+    ],
+  })
+  if (choice === 'abort') {
+    throw new Error(`User aborted: untrusted cert on ${host}`)
+  }
+  if (choice === 'accept') {
+    const ca = await downloadCAChain({ host, port })
+    return { nextCaPath: ca, nextCaBytes: readFileSync(ca) }
+  }
+  return await readCaFileInteractive({ prompter, host, port })
+}
+
 export async function interactiveFinalize(params: {
   cfg: OpenClawConfig
   prompter: WizardPrompter
@@ -289,6 +439,7 @@ export async function interactiveFinalize(params: {
       password?: string | { useEnv: string }
       useTls?: boolean
       port?: number
+      caPath?: string
     } } }).channels?.trueconf ?? {}
 
   const serverUrl = tc.serverUrl
@@ -302,40 +453,68 @@ export async function interactiveFinalize(params: {
   let useTls: boolean | undefined = tc.useTls
   let port: number | undefined = tc.port
   let caPath: string | undefined
+  let caBytes: Uint8Array | undefined
 
-  if (useTls === undefined) {
+  // STEP 1 — TRUECONF_CA_PATH env var short-circuit
+  const envPath = process.env.TRUECONF_CA_PATH?.trim()
+  if (envPath) {
+    const abs = resolveAbsPath(envPath)
+    let bytes: Buffer
+    try {
+      bytes = readFileSync(abs)
+    } catch (err) {
+      throw new Error(`TRUECONF_CA_PATH=${abs}: не могу прочитать (${(err as Error).message})`)
+    }
+    const cert = parseCertFromPem(bytes)
+    if (!cert) {
+      throw new Error(`TRUECONF_CA_PATH=${abs}: не PEM. DER/P7B не поддерживаются — конвертируй: openssl x509 -in file -inform DER -out file.pem`)
+    }
+    const v = await validateCaAgainstServer({ caBytes: bytes, host: serverUrl, port: port ?? 443 })
+    if (!v.ok) {
+      throw new Error(
+        `TRUECONF_CA_PATH=${abs}: файл не валидирует этот сервер. ` +
+        `Trust anchor в файле: ${cert.issuerCN ?? cert.subject ?? '?'}; ` +
+        `сервер отдаёт cert с издателем ${v.serverCert?.issuerCN ?? '?'}. ` +
+        `TLS error: ${v.error}`,
+      )
+    }
+    useTls = true
+    port = port ?? 443
+    caPath = abs
+    caBytes = bytes
+  } else if (useTls !== false) {
+    // STEP 2 — probe (runs on first setup AND on re-setup with useTls already true,
+    // so that stored-CA re-validation catches cert rotation / MITM between runs).
     await prompter.note('Определяю TLS/порт...', 'Проверка сервера')
-    const tls = await probeTls({ host: serverUrl, port })
-    if (tls.reachable) {
-      useTls = tls.useTls
-      port = port ?? tls.port
-      if (tls.caUntrusted) {
-        const confirm = await prompter.select<string>({
-          message: 'Сертификат самоподписанный. Скачать цепочку?',
-          options: [
-            { value: 'yes', label: 'Да, сохранить в ~/.openclaw/trueconf-ca.pem' },
-            { value: 'no', label: 'Отменить настройку' },
-          ],
-        })
-        if (confirm !== 'yes') throw new Error(`User aborted: untrusted cert on ${serverUrl}`)
-        caPath = await downloadCAChain({ host: serverUrl, port })
-      }
-    } else {
-      // Probe failure is a hint, not a gate: OAuth over a corporate proxy can
-      // still succeed even when a raw TLS probe is firewalled.
+    const probe = await probeTls({ host: serverUrl, port })
+    if (!probe.reachable) {
       await prompter.note(
-        `Probe не смог определить TLS/порт (${tls.error ?? 'unknown'}).\nПробую HTTPS на порту 443 — если не сработает, OAuth вернёт точную причину.`,
+        `Probe не смог определить TLS/порт (${probe.error ?? 'unknown'}).\nПробую HTTPS на порту 443 — если не сработает, OAuth вернёт точную причину.`,
         'Probe пропущен',
       )
       useTls = true
       port = port ?? 443
+    } else {
+      useTls = probe.useTls
+      port = port ?? probe.port
+      if (probe.caUntrusted && useTls) {
+        // STEP 3 — untrusted cert path
+        const { nextCaPath, nextCaBytes } = await handleUntrustedCert({
+          prompter,
+          host: serverUrl,
+          port: port!,
+          existingCaPath: tc.caPath,
+          currentCert: probe.cert,
+        })
+        caPath = nextCaPath
+        caBytes = nextCaBytes
+      }
     }
   }
 
+  // OAuth validation loop with TOCTOU fix: pass in-process caBytes, not a re-read.
   let currentPassword = password
   let validated = false
-  // Retry up to 3x total, BUT only on `invalid-credentials`.
-  // All other failure categories (server-error, network, tls, etc.) are fatal.
   for (let attempt = 0; attempt < 3 && !validated; attempt++) {
     const result = await validateOAuthCredentials({
       serverUrl,
@@ -343,7 +522,7 @@ export async function interactiveFinalize(params: {
       password: currentPassword,
       useTls,
       port,
-      ca: readCaBuffer(caPath),
+      ca: caBytes,
     })
     if (result.ok) {
       validated = true
@@ -352,14 +531,12 @@ export async function interactiveFinalize(params: {
 
     if (result.category === 'invalid-credentials' && attempt < 2) {
       await prompter.note(`Неверный пароль (${attempt + 1}/3)`, 'OAuth')
-      // WizardPrompter lacks password(); retry prompt echoes plaintext.
       currentPassword = String(await prompter.text({
         message: 'Введите пароль ещё раз',
       }))
       continue
     }
 
-    // Fatal: surface error and abort (no retry for network/tls/server-error/etc.)
     await prompter.note(`OAuth error: ${result.error}`, 'Ошибка')
     throw new Error(`OAuth failed (user="${username}", server="${serverUrl}"): ${result.category}: ${result.error}`)
   }

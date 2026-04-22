@@ -1,0 +1,13 @@
+{
+  "id": "trueconf",
+  "label": "TrueConf",
+  "blurb": "Connect OpenClaw to TrueConf Server corporate messenger.",
+  "version": "1.0.0",
+  "channels": ["trueconf"],
+  "minOpenClawVersion": "2026.3.22",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "name": "@trueconf-community/trueconf-openclaw-channel",
+  "version": "1.0.0",
+  "description": "Connect OpenClaw to TrueConf Server corporate messenger.",
+  "type": "module",
+  "main": "./index.ts",
+  "license": "MIT",
+  "author": "TrueConf LLC <info@trueconf.com> (https://trueconf.com)",
+  "contributors": [
+    "Aleksandr Ponomarev <sanyasamineva@gmail.com> (https://github.com/sanyasamineva0x)"
+  ],
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "openclaw-channel",
+    "trueconf",
+    "chatbot",
+    "channel"
+  ],
+  "homepage": "https://github.com/TrueConf/trueconf-openclaw-channel#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TrueConf/trueconf-openclaw-channel.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TrueConf/trueconf-openclaw-channel/issues"
+  },
+  "files": [
+    "bin/",
+    "index.ts",
+    "src/",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "trueconf-setup": "./bin/trueconf-setup.mjs"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "setupEntry": "./src/setup-entry.ts",
+    "compat": {
+      "pluginApi": ">=2026.3.22",
+      "minGatewayVersion": "2026.3.22"
+    },
+    "install": {
+      "npmSpec": "@trueconf-community/trueconf-openclaw-channel"
+    },
+    "channel": {
+      "id": "trueconf",
+      "label": "TrueConf",
+      "selectionLabel": "TrueConf Server",
+      "docsPath": "/channels/trueconf",
+      "blurb": "Connect OpenClaw to TrueConf Server corporate messenger.",
+      "aliases": [
+        "tc"
+      ],
+      "order": 80
+    }
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.2.0",
+    "jiti": "^2.6.1",
+    "sharp": "^0.34.5",
+    "undici": "^7.0.0",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^4.1.0",
+    "openclaw": ">=2026.3.22",
+    "oxfmt": "^0.42.0",
+    "oxlint": "^1.57.0",
+    "typescript": "^5.3.0",
+    "vitest": "^4.1.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:smoke": "vitest run tests/smoke",
+    "test:watch": "vitest",
+    "lint": "oxlint .",
+    "typecheck": "tsc --noEmit",
+    "setup": "node ./bin/trueconf-setup.mjs"
+  }
+}

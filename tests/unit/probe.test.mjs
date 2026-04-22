@@ -219,6 +219,55 @@ describe('probeTls reachability', () => {
   })
 })
 
+import { startTlsFixtureServer } from './__helpers__/tls-server.mjs'
+import { readFileSync as fsReadFile } from 'node:fs'
+import { join as pathJoin } from 'node:path'
+
+const FIXTURES_DIR = pathJoin(process.cwd(), 'tests', '__fixtures__')
+
+describe('probeTls({ca}) strict mode', () => {
+  it('returns caUntrusted=false when ca matches server cert', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    const ca = fsReadFile(pathJoin(FIXTURES_DIR, 'ca-valid.pem'))
+    try {
+      const r = await probeTls({ host: '127.0.0.1', port: server.port, ca })
+      expect(r.reachable).toBe(true)
+      expect(r.caUntrusted).toBe(false)
+      expect(r.cert).toBeTruthy()
+      expect(r.cert.subject).toBe('localhost')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('returns caUntrusted=true with a different CA (no handshake abort)', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    const wrongCa = fsReadFile(pathJoin(FIXTURES_DIR, 'ca-other.pem'))
+    try {
+      const r = await probeTls({ host: '127.0.0.1', port: server.port, ca: wrongCa })
+      expect(r.reachable).toBe(true)
+      expect(r.caUntrusted).toBe(true)
+      expect(r.cert).toBeTruthy()
+      expect(r.error).toBeTruthy()
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('still returns cert in the legacy (no ca) path', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    try {
+      const r = await probeTls({ host: '127.0.0.1', port: server.port })
+      expect(r.reachable).toBe(true)
+      expect(r.useTls).toBe(true)
+      expect(r.cert).toBeTruthy()
+      expect(r.cert.subject).toBe('localhost')
+    } finally {
+      await server.close()
+    }
+  })
+})
+
 import { downloadCAChain } from '../../src/probe.mjs'
 
 describe('downloadCAChain', () => {

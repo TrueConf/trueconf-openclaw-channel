@@ -7,12 +7,14 @@ export interface ProbeTlsResult {
   port: number
   caUntrusted: boolean
   caChain?: string[]
+  cert?: CertSummary
   error?: string
 }
 
 export interface ProbeTlsParams {
   host: string
   port?: number
+  ca?: Buffer | Uint8Array
 }
 
 export function probeTls(params: ProbeTlsParams): Promise<ProbeTlsResult>

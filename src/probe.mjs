@@ -35,7 +35,7 @@ async function probeBridge(host, port) {
   })
 }
 
-async function probeTlsRaw(host, port) {
+async function probeTlsRaw(host, port, ca) {
   return new Promise((resolve) => {
     let done = false
     // `servername` (SNI) must be a hostname, not an IP. When the host is an IP
@@ -49,6 +49,7 @@ async function probeTlsRaw(host, port) {
       timeout: TLS_TIMEOUT_MS,
     }
     if (!isIpHost) connectOpts.servername = host
+    if (ca) connectOpts.ca = ca
     let socket
     try {
       socket = tlsConnect(connectOpts, () => {
@@ -84,15 +85,22 @@ async function probeTlsRaw(host, port) {
   })
 }
 
-export async function probeTls({ host, port }) {
-  // Default port order: try wss/443 first, then ws/4309, then http/80.
+export async function probeTls({ host, port, ca }) {
+  // When `ca` is supplied the caller explicitly wants a strict TLS probe — force
+  // the explicit-port candidate to useTls:true so custom ports (e.g. 8443) still
+  // hit probeTlsRaw. Without this, `port: 8443, ca: <bytes>` silently went through
+  // probeBridge and never validated against `ca`. For an explicit port without
+  // `ca`, try TLS first and fall back to bridge so a cert can still be surfaced
+  // for diagnostic/banner use whenever the port speaks TLS.
   const candidates = port !== undefined
-    ? [{ port, useTls: port === 443 }]
+    ? (ca !== undefined || port === 443
+        ? [{ port, useTls: true }]
+        : [{ port, useTls: true }, { port, useTls: false }])
     : [{ port: 443, useTls: true }, { port: 4309, useTls: false }, { port: 80, useTls: false }]
 
   for (const candidate of candidates) {
     if (candidate.useTls) {
-      const tls = await probeTlsRaw(host, candidate.port)
+      const tls = await probeTlsRaw(host, candidate.port, ca)
       if (tls.reachable) {
         return {
           reachable: true,
@@ -100,6 +108,7 @@ export async function probeTls({ host, port }) {
           port: candidate.port,
           caUntrusted: !tls.trusted,
           caChain: tls._rawCert ? buildCertChainArray(tls._rawCert) : undefined,
+          cert: tls.cert ?? undefined,
           error: tls.authorizationError ?? undefined,
         }
       }

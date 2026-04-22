@@ -20,7 +20,7 @@ vi.mock('../../src/probe.mjs', async (importOriginal) => {
 })
 
 // Dynamic import after vi.mock is applied.
-const { interactiveFinalize } = await import('../../src/channel-setup')
+const { interactiveFinalize, runHeadlessFinalize } = await import('../../src/channel-setup')
 const probe = await import('../../src/probe.mjs')
 
 type OAuthArgs = {
@@ -258,5 +258,60 @@ describe('interactiveFinalize — TOCTOU protection', () => {
     } finally {
       spy.mockRestore()
     }
+  })
+})
+
+describe('runHeadlessFinalize — trust paths', () => {
+  let server: Awaited<ReturnType<typeof startTlsFixtureServer>>
+  beforeEach(async () => { server = await startTlsFixtureServer('ca-valid') })
+  afterEach(async () => {
+    for (const k of ['TRUECONF_SERVER_URL','TRUECONF_USERNAME','TRUECONF_PASSWORD','TRUECONF_USE_TLS','TRUECONF_PORT','TRUECONF_CA_PATH','TRUECONF_ACCEPT_UNTRUSTED_CA']) {
+      delete process.env[k]
+    }
+    await server.close()
+  })
+
+  function baseEnv() {
+    process.env.TRUECONF_SERVER_URL = '127.0.0.1'
+    process.env.TRUECONF_USERNAME = 'bot'
+    process.env.TRUECONF_PASSWORD = 'secret'
+    process.env.TRUECONF_USE_TLS = 'true'
+    process.env.TRUECONF_PORT = String(server.port)
+  }
+
+  it('env TRUECONF_CA_PATH happy → caPath saved, OAuth gets those bytes', async () => {
+    baseEnv()
+    process.env.TRUECONF_CA_PATH = join(FIXTURES, 'ca-valid.pem')
+    const next = await runHeadlessFinalize({} as never)
+    expect((next as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
+    const args = oauth().mock.calls[0][0]
+    expect(Buffer.from(args.ca!).equals(readFileSync(join(FIXTURES, 'ca-valid.pem')))).toBe(true)
+  })
+
+  it('env TRUECONF_CA_PATH not validating → fatal abort', async () => {
+    baseEnv()
+    process.env.TRUECONF_CA_PATH = join(FIXTURES, 'ca-other.pem')
+    await expect(runHeadlessFinalize({} as never)).rejects.toThrow(/TRUECONF_CA_PATH=.*не валидирует/)
+  })
+
+  it('configured caPath missing → fatal abort (no interactive recovery)', async () => {
+    baseEnv()
+    const cfg = { channels: { trueconf: { caPath: '/tmp/nope-headless.pem' } } }
+    await expect(runHeadlessFinalize(cfg as never)).rejects.toThrow(/not readable/i)
+  })
+
+  it('configured caPath mismatches server → fatal abort', async () => {
+    baseEnv()
+    const cfg = { channels: { trueconf: { caPath: join(FIXTURES, 'ca-other.pem') } } }
+    await expect(runHeadlessFinalize(cfg as never)).rejects.toThrow(/no longer validates/i)
+  })
+
+  it('configured caPath silent happy → caPath preserved', async () => {
+    baseEnv()
+    const cfg = { channels: { trueconf: { caPath: join(FIXTURES, 'ca-valid.pem') } } }
+    const next = await runHeadlessFinalize(cfg as never)
+    expect((next as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
+    const args = oauth().mock.calls[0][0]
+    expect(Buffer.from(args.ca!).equals(readFileSync(join(FIXTURES, 'ca-valid.pem')))).toBe(true)
   })
 })

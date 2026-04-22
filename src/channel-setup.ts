@@ -101,18 +101,6 @@ export function buildConfigMissingBanner(
   return { title: 'Missing trust anchor', body }
 }
 
-// Reads the CA bundle into memory so it can be passed to probe's OAuth validator
-// as bytes. Keeps probe.mjs free of filesystem reads — the security scanner
-// flags fs-read + network-send combinations as a potential exfiltration pattern.
-function readCaBuffer(caPath: string | undefined): Uint8Array | undefined {
-  if (!caPath) return undefined
-  try {
-    return readFileSync(caPath)
-  } catch {
-    return undefined
-  }
-}
-
 export const trueconfSetupWizard: ChannelSetupWizard = {
   channel,
 
@@ -583,31 +571,82 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
   let resolvedUseTls = useTlsHint
   let resolvedPort = portHint
   let caPath: string | undefined
-  let probeFailure: string | undefined
+  let caBytes: Uint8Array | undefined
 
-  if (resolvedUseTls === undefined) {
-    const tls = await probeTls({ host: serverUrl, port: resolvedPort })
-    if (tls.reachable) {
-      resolvedUseTls = tls.useTls
-      resolvedPort = resolvedPort ?? tls.port
-      if (tls.caUntrusted) {
-        if (process.env.TRUECONF_ACCEPT_UNTRUSTED_CA !== 'true') {
-          throw new Error(
-            'Self-signed cert detected; set TRUECONF_ACCEPT_UNTRUSTED_CA=true to auto-download chain',
-          )
-        }
-        caPath = await downloadCAChain({ host: serverUrl, port: resolvedPort })
+  const envCaPath = process.env.TRUECONF_CA_PATH?.trim()
+
+  // 1) Explicit env override takes precedence
+  if (envCaPath) {
+    const abs = resolveAbsPath(envCaPath)
+    let bytes: Buffer
+    try {
+      bytes = readFileSync(abs)
+    } catch (err) {
+      throw new Error(`TRUECONF_CA_PATH=${abs}: не могу прочитать (${(err as Error).message})`)
+    }
+    const cert = parseCertFromPem(bytes)
+    if (!cert) {
+      throw new Error(`TRUECONF_CA_PATH=${abs}: не PEM. DER/P7B не поддерживаются.`)
+    }
+    const v = await validateCaAgainstServer({ caBytes: bytes, host: serverUrl, port: resolvedPort ?? 443 })
+    if (!v.ok) {
+      throw new Error(`TRUECONF_CA_PATH=${abs}: файл не валидирует этот сервер: ${v.error}`)
+    }
+    resolvedUseTls = true
+    resolvedPort = resolvedPort ?? 443
+    caPath = abs
+    caBytes = bytes
+  } else {
+    // 2) Check configured caPath in current cfg
+    const tc = (cfg as { channels?: { trueconf?: { caPath?: string } } }).channels?.trueconf
+    const existing = tc?.caPath
+
+    if (existing) {
+      const abs = resolveAbsPath(existing)
+      let bytes: Buffer | null = null
+      try {
+        bytes = readFileSync(abs)
+      } catch (err) {
+        throw new Error(
+          `Configured caPath ${abs} not readable (${(err as Error).message}). ` +
+          `Remove it from config and re-run setup to re-TOFU, or set TRUECONF_CA_PATH to override.`,
+        )
       }
-    } else {
+      const v = await validateCaAgainstServer({ caBytes: bytes, host: serverUrl, port: resolvedPort ?? 443 })
+      if (!v.ok) {
+        throw new Error(
+          `Stored CA no longer validates server ${serverUrl} ` +
+          `(TLS error: ${v.error}). ` +
+          `Server now presents cert issued by ${v.serverCert?.issuerCN ?? '?'}. ` +
+          `Remove ${abs} and re-run setup to re-TOFU, or set TRUECONF_CA_PATH to provide correct CA.`,
+        )
+      }
       resolvedUseTls = true
       resolvedPort = resolvedPort ?? 443
-      probeFailure = tls.error ?? 'unknown'
-      // In CI/headless contexts users only see stderr; emit the probe
-      // outcome so support can correlate a later OAuth failure with the
-      // earlier probe unreachability.
-      process.stderr.write(
-        `[trueconf-setup] TLS probe failed (${probeFailure}); defaulting to HTTPS:443\n`,
-      )
+      caPath = abs
+      caBytes = bytes
+    } else if (resolvedUseTls === undefined) {
+      // 3) No override, no configured caPath → raw probe
+      const probe = await probeTls({ host: serverUrl, port: resolvedPort })
+      if (probe.reachable) {
+        resolvedUseTls = probe.useTls
+        resolvedPort = resolvedPort ?? probe.port
+        if (probe.caUntrusted) {
+          if (process.env.TRUECONF_ACCEPT_UNTRUSTED_CA !== 'true') {
+            throw new Error(
+              'Self-signed / untrusted cert detected; set TRUECONF_ACCEPT_UNTRUSTED_CA=true to auto-download chain, or set TRUECONF_CA_PATH to point to the admin-provided CA file.',
+            )
+          }
+          caPath = await downloadCAChain({ host: serverUrl, port: resolvedPort })
+          caBytes = readFileSync(caPath)
+        }
+      } else {
+        resolvedUseTls = true
+        resolvedPort = resolvedPort ?? 443
+        process.stderr.write(
+          `[trueconf-setup] TLS probe failed (${probe.error ?? 'unknown'}); defaulting to HTTPS:443\n`,
+        )
+      }
     }
   }
 
@@ -617,11 +656,10 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
     password,
     useTls: resolvedUseTls,
     port: resolvedPort,
-    ca: readCaBuffer(caPath),
+    ca: caBytes,
   })
   if (!result.ok) {
-    const probeHint = probeFailure ? ` (earlier probe failure: ${probeFailure})` : ''
-    throw new Error(`OAuth failed (user="${username}", server="${serverUrl}"): ${result.category}: ${result.error}${probeHint}`)
+    throw new Error(`OAuth failed (user="${username}", server="${serverUrl}"): ${result.category}: ${result.error}`)
   }
 
   return patchTopLevelChannelConfigSection({

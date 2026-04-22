@@ -357,10 +357,10 @@ export const channelPlugin = {
         return
       }
 
-      // Two separate TLS trust surfaces: `ws` library accepts `ca: Buffer`
-      // directly, Node's global `fetch` needs an Undici Dispatcher. If caPath
-      // is unset, both stay undefined and the runtime uses the system trust
-      // store — same behavior as before Part 2.
+      // Two separate TLS trust surfaces: the `ws` library accepts `ca: Buffer`
+      // directly; the built-in HTTP client (undici-backed) needs a Dispatcher
+      // built with that CA. If caPath is unset, both stay undefined and the
+      // runtime uses the system trust store — same behavior as before Part 2.
       const ca = loadCaFromAccount(resolved)
       const dispatcher: Dispatcher | undefined = ca
         ? new UndiciAgent({ connect: { ca } })

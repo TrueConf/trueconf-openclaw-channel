@@ -402,7 +402,10 @@ async function handleUntrustedCert(args: {
   }
 
   // Fresh TOFU
-  const banner = buildFreshTofuBanner(currentCert!)
+  if (!currentCert) {
+    throw new Error(`Untrusted TLS on ${host} but server returned no certificate — cannot prompt for TOFU`)
+  }
+  const banner = buildFreshTofuBanner(currentCert)
   await prompter.note(banner.body, banner.title)
   const choice = await prompter.select<string>({
     message: 'Что делать?',

@@ -173,6 +173,37 @@ describe('interactiveFinalize — mismatch vs silent happy', () => {
       accountId: 'default', forceAllowFrom: false,
     })).rejects.toThrow(/trust mismatch/)
   })
+
+  it('mismatch → use-file → valid PEM path → caPath set to user file', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true, caPath: join(FIXTURES, 'ca-other.pem') })
+    const prompter = makeFakePrompter({
+      selectResponses: ['use-file'],
+      textResponses: [join(FIXTURES, 'ca-valid.pem')],
+    })
+    const result = await interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })
+    expect((result.cfg as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
+    expect(download()).not.toHaveBeenCalled()
+  })
+})
+
+describe('interactiveFinalize — fresh TOFU', () => {
+  let server: Awaited<ReturnType<typeof startTlsFixtureServer>>
+  beforeEach(async () => { server = await startTlsFixtureServer('ca-valid') })
+  afterEach(async () => { await server.close() })
+
+  it('no existing caPath, untrusted cert → accept → chain downloaded and saved', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true })
+    const prompter = makeFakePrompter({ selectResponses: ['accept'] })
+    const result = await interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })
+    expect((result.cfg as any).channels.trueconf.caPath).toContain('trueconf-ca.pem')
+    expect(download()).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('interactiveFinalize — TOCTOU protection', () => {

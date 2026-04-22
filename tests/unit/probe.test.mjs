@@ -244,9 +244,6 @@ describe('validateOAuthCredentials', () => {
 })
 
 import { vi } from 'vitest'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 
 describe('validateOAuthCredentials — status codes', () => {
   it('returns invalid-credentials on 401', async () => {
@@ -307,18 +304,14 @@ describe('validateOAuthCredentials — status codes', () => {
     }
   })
 
-  it('passes through undici dispatcher when caPath+useTls is set (401 path)', async () => {
+  it('passes through undici dispatcher when ca+useTls is set (401 path)', async () => {
     // Lock in C1: the implementation must use an undici Agent (valid Dispatcher),
     // not a node:https Agent. If the wrong Agent is passed as `dispatcher`, fetch
     // throws `TypeError: agent.dispatch is not a function` which bubbles up as
     // category 'network' -- NOT the 401-based 'invalid-credentials' we expect.
-    // Write a throwaway PEM file and confirm the call still reaches the 401 branch.
-    const caDir = mkdtempSync(join(tmpdir(), 'probe-ca-'))
-    const caPath = join(caDir, 'ca.pem')
-    // A well-formed (but fake) PEM — undici Agent accepts the string at construction,
+    // A well-formed (but fake) PEM — undici Agent accepts the bytes at construction,
     // and since fetch is mocked the cert is never actually used.
-    const fakePem = '-----BEGIN CERTIFICATE-----\nMIIBAA==\n-----END CERTIFICATE-----\n'
-    writeFileSync(caPath, fakePem, 'utf8')
+    const ca = Buffer.from('-----BEGIN CERTIFICATE-----\nMIIBAA==\n-----END CERTIFICATE-----\n', 'utf8')
 
     const origFetch = globalThis.fetch
     let seenDispatcher
@@ -333,7 +326,7 @@ describe('validateOAuthCredentials — status codes', () => {
         password: 'wrong',
         useTls: true,
         port: 443,
-        caPath,
+        ca,
       })
       expect(result.ok).toBe(false)
       if (!result.ok) expect(result.category).toBe('invalid-credentials')
@@ -342,7 +335,6 @@ describe('validateOAuthCredentials — status codes', () => {
       expect(typeof seenDispatcher.dispatch).toBe('function')
     } finally {
       globalThis.fetch = origFetch
-      rmSync(caDir, { recursive: true, force: true })
     }
   })
 })

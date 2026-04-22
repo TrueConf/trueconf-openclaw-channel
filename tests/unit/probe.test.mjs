@@ -338,3 +338,40 @@ describe('validateOAuthCredentials — status codes', () => {
     }
   })
 })
+
+import { parseDn } from '../../src/probe.mjs'
+
+describe('parseDn', () => {
+  it('returns null/null for empty or null input', () => {
+    expect(parseDn('')).toEqual({ cn: null, o: null })
+    expect(parseDn(null)).toEqual({ cn: null, o: null })
+    expect(parseDn(undefined)).toEqual({ cn: null, o: null })
+  })
+
+  it('parses CN only', () => {
+    expect(parseDn('CN=foo')).toEqual({ cn: 'foo', o: null })
+  })
+
+  it('parses newline-separated CN and O', () => {
+    expect(parseDn('CN=foo\nO=Bar')).toEqual({ cn: 'foo', o: 'Bar' })
+  })
+
+  it('parses comma-separated RFC 4514 style', () => {
+    expect(parseDn('CN=foo, O=Bar, C=US')).toEqual({ cn: 'foo', o: 'Bar' })
+  })
+
+  it('parses quoted values with internal commas', () => {
+    expect(parseDn('O="Acme, Inc."\nCN=tc.example.com'))
+      .toEqual({ cn: 'tc.example.com', o: 'Acme, Inc.' })
+  })
+
+  it('parses backslash-escaped commas', () => {
+    expect(parseDn('O=Acme\\, Inc.\nCN=foo'))
+      .toEqual({ cn: 'foo', o: 'Acme, Inc.' })
+  })
+
+  it('preserves unicode in CN and O', () => {
+    expect(parseDn('CN=Фирма\nO=ООО «Ромашка»'))
+      .toEqual({ cn: 'Фирма', o: 'ООО «Ромашка»' })
+  })
+})

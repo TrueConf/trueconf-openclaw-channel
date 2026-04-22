@@ -48,3 +48,8 @@ export interface ValidateOAuthCredentialsParams {
 export function validateOAuthCredentials(
   params: ValidateOAuthCredentialsParams,
 ): Promise<ValidateOAuthCredentialsResult>
+
+export function parseDn(dnStr: string | null | undefined): {
+  cn: string | null
+  o: string | null
+}

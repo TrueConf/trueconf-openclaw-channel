@@ -312,3 +312,62 @@ export function categorizeOAuthError(status) {
   if (status >= 200 && status < 300) return 'ok'
   return 'other'
 }
+
+// Split a DN string on unescaped commas and newlines, honoring quoted sections.
+// Used by parseDn. Not exported.
+function splitDn(dn) {
+  const parts = []
+  let current = ''
+  let inQuote = false
+  let i = 0
+  while (i < dn.length) {
+    const c = dn[i]
+    if (c === '\\' && i + 1 < dn.length) {
+      current += dn[i] + dn[i + 1]
+      i += 2
+      continue
+    }
+    if (c === '"') {
+      inQuote = !inQuote
+      current += c
+      i += 1
+      continue
+    }
+    if (!inQuote && (c === '\n' || c === ',')) {
+      if (current.trim()) parts.push(current.trim())
+      current = ''
+      i += 1
+      continue
+    }
+    current += c
+    i += 1
+  }
+  if (current.trim()) parts.push(current.trim())
+  return parts
+}
+
+function extractRdn(dn, key) {
+  const parts = splitDn(dn)
+  for (const part of parts) {
+    if (!part.startsWith(`${key}=`)) continue
+    let raw = part.slice(key.length + 1)
+    if (raw.startsWith('"') && raw.endsWith('"')) {
+      raw = raw.slice(1, -1)
+    }
+    const unescaped = raw.replace(/\\(.)/g, '$1').trim()
+    return unescaped || null
+  }
+  return null
+}
+
+// Parse an X.509 Distinguished Name string (RFC 4514 subset) into its CN and O
+// fields. Handles quoted values ("Acme, Inc."), escaped commas (Acme\, Inc.),
+// and both newline- and comma-separated layouts seen from X509Certificate.
+// Returns { cn, o } with null fields if absent.
+export function parseDn(dnStr) {
+  if (!dnStr || typeof dnStr !== 'string') return { cn: null, o: null }
+  return {
+    cn: extractRdn(dnStr, 'CN'),
+    o: extractRdn(dnStr, 'O'),
+  }
+}

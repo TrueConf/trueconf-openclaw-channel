@@ -4,3 +4,8 @@
 *.ts text eol=lf
 *.json text eol=lf
 *.md text eol=lf
+
+# Test fixtures — self-signed throwaway keys bound to 127.0.0.1 / localhost.
+# Marked as generated so GitHub's linguist + common scanners skip them.
+tests/__fixtures__/*.pem linguist-generated
+tests/__fixtures__/*.key linguist-generated

@@ -365,11 +365,60 @@ async function downloadAndAudit(args: {
   host: string
   port: number
   mode: 'fresh-tofu' | 're-tofu' | 'accept-new' | 'headless-auto'
+  // What the user saw in the banner before choosing to TOFU. If set and the
+  // downloaded cert's fingerprint differs, we hit the TOCTOU-rotation path.
+  expected?: CertSummary | null
+  // Interactive confirm channel. Absent in headless.
+  prompter?: WizardPrompter
+  // Headless override: accept rotation unattended (CI / bootstrap).
+  acceptRotated?: boolean
 }): Promise<{ nextCaPath: string; nextCaBytes: ValidatedCaBytes }> {
-  const { host, port, mode } = args
+  const { host, port, mode, expected, prompter, acceptRotated } = args
   const ca = await downloadCAChain({ host, port })
   const bytes = readFileSync(ca)
   const cert = parseCertFromPem(bytes)
+
+  // TOCTOU check: the cert the server presented during downloadCAChain may
+  // differ from the one the user saw in the banner (narrow window — the
+  // seconds between the initial probe and the TOFU handshake). Catch the
+  // rotation so an attacker can't flip the anchor under the user's feet.
+  const expFp = expected?.fingerprint ?? null
+  const gotFp = cert?.fingerprint ?? null
+  if (expFp && gotFp && expFp !== gotFp) {
+    const diff = [
+      '⚠⚠ Сертификат сервера ИЗМЕНИЛСЯ между показом баннера и скачиванием',
+      '',
+      'В баннере был:',
+      `  ${expected?.subject ?? '?'} / отпечаток ${expFp}`,
+      '',
+      'Скачан:',
+      `  ${cert?.subject ?? '?'} / отпечаток ${gotFp}`,
+      '',
+      'Либо плановая ротация сервером в момент setup, либо active MITM.',
+      'Сверь новый отпечаток с админом по отдельному каналу перед принятием.',
+    ].join('\n')
+    if (prompter) {
+      await prompter.note(diff, 'Обнаружена ротация cert')
+      const confirmed = await prompter.confirm({
+        message: 'Всё равно закрепить только что скачанный cert?',
+        initialValue: false,
+      })
+      if (!confirmed) {
+        throw new Error(
+          `Cert rotation detected mid-flow on ${host}:${port} ` +
+          `(banner=${expFp.slice(0, 29)}… downloaded=${gotFp.slice(0, 29)}…). ` +
+          `User declined to pin the rotated cert.`,
+        )
+      }
+    } else if (!acceptRotated) {
+      throw new Error(
+        `Cert rotation detected mid-flow on ${host}:${port} ` +
+        `(banner=${expFp} downloaded=${gotFp}). ` +
+        `Set TRUECONF_ACCEPT_ROTATED_CERT=true to accept rotations unattended.`,
+      )
+    }
+  }
+
   process.stderr.write(
     `[trueconf-setup] trusted via ${mode}: ${host}:${port} ` +
     `subject=${cert?.subject ?? '?'} ` +
@@ -417,7 +466,13 @@ async function handleUntrustedCert(args: {
         throw new Error(`User aborted: configured caPath missing (${resolved})`)
       }
       if (choice === 're-tofu') {
-        return await downloadAndAudit({ host, port, mode: 're-tofu' })
+        return await downloadAndAudit({
+          host,
+          port,
+          mode: 're-tofu',
+          expected: currentCert ?? null,
+          prompter,
+        })
       }
       return await readCaFileInteractive({ prompter, host, port })
     }
@@ -451,7 +506,13 @@ async function handleUntrustedCert(args: {
       throw new Error(`User aborted after trust mismatch on ${host} (caPath=${resolved})`)
     }
     if (choice === 'accept-new') {
-      return await downloadAndAudit({ host, port, mode: 'accept-new' })
+      return await downloadAndAudit({
+        host,
+        port,
+        mode: 'accept-new',
+        expected: currentCert ?? null,
+        prompter,
+      })
     }
     return await readCaFileInteractive({ prompter, host, port })
   }
@@ -474,7 +535,13 @@ async function handleUntrustedCert(args: {
     throw new Error(`User aborted: untrusted cert on ${host}`)
   }
   if (choice === 'accept') {
-    return await downloadAndAudit({ host, port, mode: 'fresh-tofu' })
+    return await downloadAndAudit({
+      host,
+      port,
+      mode: 'fresh-tofu',
+      expected: currentCert,
+      prompter,
+    })
   }
   return await readCaFileInteractive({ prompter, host, port })
 }
@@ -723,7 +790,13 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
               'Self-signed / untrusted cert detected; set TRUECONF_ACCEPT_UNTRUSTED_CA=true to auto-download chain, or set TRUECONF_CA_PATH to point to the admin-provided CA file.',
             )
           }
-          const dl = await downloadAndAudit({ host: serverUrl, port: resolvedPort, mode: 'headless-auto' })
+          const dl = await downloadAndAudit({
+            host: serverUrl,
+            port: resolvedPort,
+            mode: 'headless-auto',
+            expected: probe.cert ?? null,
+            acceptRotated: process.env.TRUECONF_ACCEPT_ROTATED_CERT === 'true',
+          })
           caPath = dl.nextCaPath
           caBytes = dl.nextCaBytes
         }

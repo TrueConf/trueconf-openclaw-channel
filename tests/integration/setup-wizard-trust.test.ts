@@ -193,6 +193,43 @@ describe('interactiveFinalize — mismatch vs silent happy', () => {
     expect(download()).not.toHaveBeenCalled()
   })
 
+  it('rotation mid-flow (accept-new): prompter rejects → throws', async () => {
+    // probe sees ca-valid server but download mocked to write ca-other →
+    // fingerprint mismatch between banner (ca-valid) and download (ca-other).
+    download().mockImplementationOnce(async () => {
+      const p = join(tmpCaDir, 'rotated.pem')
+      writeFileSync(p, readFileSync(join(FIXTURES, 'ca-other.pem')))
+      return p
+    })
+    const cfg = makeCfg({ port: server.port, useTls: true, caPath: join(FIXTURES, 'ca-other.pem') })
+    const prompter = makeFakePrompter({
+      selectResponses: ['accept-new'],
+      confirmResponses: [false], // user declines the rotation
+    })
+    await expect(interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })).rejects.toThrow(/rotation detected mid-flow.*declined/)
+  })
+
+  it('rotation mid-flow (accept-new): prompter confirms → new cert pinned', async () => {
+    download().mockImplementationOnce(async () => {
+      const p = join(tmpCaDir, 'rotated.pem')
+      writeFileSync(p, readFileSync(join(FIXTURES, 'ca-other.pem')))
+      return p
+    })
+    const cfg = makeCfg({ port: server.port, useTls: true, caPath: join(FIXTURES, 'ca-other.pem') })
+    const prompter = makeFakePrompter({
+      selectResponses: ['accept-new'],
+      confirmResponses: [true], // user accepts the rotation
+    })
+    const result = await interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })
+    expect((result.cfg as any).channels.trueconf.caPath).toContain('rotated.pem')
+  })
+
   it('use-file with 3 bad inputs → throws with accumulated reasons', async () => {
     const cfg = makeCfg({ port: server.port, useTls: true, caPath: join(FIXTURES, 'ca-other.pem') })
     const prompter = makeFakePrompter({
@@ -360,5 +397,29 @@ describe('runHeadlessFinalize — trust paths', () => {
     envForRawProbe()
     await expect(runHeadlessFinalize({} as never)).rejects.toThrow(/TRUECONF_ACCEPT_UNTRUSTED_CA/)
     expect(download()).not.toHaveBeenCalled()
+  })
+
+  it('headless rotation mid-flow without TRUECONF_ACCEPT_ROTATED_CERT → fatal abort', async () => {
+    envForRawProbe()
+    process.env.TRUECONF_ACCEPT_UNTRUSTED_CA = 'true'
+    download().mockImplementationOnce(async () => {
+      const p = join(tmpCaDir, 'rotated.pem')
+      writeFileSync(p, readFileSync(join(FIXTURES, 'ca-other.pem')))
+      return p
+    })
+    await expect(runHeadlessFinalize({} as never)).rejects.toThrow(/rotation detected.*TRUECONF_ACCEPT_ROTATED_CERT/)
+  })
+
+  it('headless rotation mid-flow with TRUECONF_ACCEPT_ROTATED_CERT=true → proceeds', async () => {
+    envForRawProbe()
+    process.env.TRUECONF_ACCEPT_UNTRUSTED_CA = 'true'
+    process.env.TRUECONF_ACCEPT_ROTATED_CERT = 'true'
+    download().mockImplementationOnce(async () => {
+      const p = join(tmpCaDir, 'rotated.pem')
+      writeFileSync(p, readFileSync(join(FIXTURES, 'ca-other.pem')))
+      return p
+    })
+    const next = await runHeadlessFinalize({} as never)
+    expect((next as any).channels.trueconf.caPath).toContain('rotated.pem')
   })
 })

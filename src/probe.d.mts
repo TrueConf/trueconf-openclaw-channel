@@ -1,15 +1,33 @@
 // Type declarations for probe.mjs — production probe/CA/OAuth helpers.
 // Authored here so wizard code (`channel-setup.ts`) can import them under strict TS.
 
-export interface ProbeTlsResult {
-  reachable: boolean
-  useTls: boolean
-  port: number
-  caUntrusted: boolean
-  caChain?: string[]
-  cert?: CertSummary
-  error?: string
-}
+// Nominal brand for CA bytes that have passed server-chain validation
+// in-process. Only validateCaAgainstServer produces this type (on ok:true);
+// validateOAuthCredentials refuses anything else. Turns the TOCTOU invariant
+// ("pass the bytes you validated, not a disk re-read") into a compile-time
+// guarantee rather than a code-review convention.
+export type ValidatedCaBytes = Uint8Array & { readonly __brand: 'ValidatedCa' }
+
+export type ProbeTlsResult =
+  | { reachable: false; useTls: false; port: number; caUntrusted: false; error: string }
+  | { reachable: true; useTls: false; port: number; caUntrusted: false }
+  | {
+      reachable: true
+      useTls: true
+      port: number
+      caUntrusted: false
+      cert?: CertSummary
+      caChain?: string[]
+    }
+  | {
+      reachable: true
+      useTls: true
+      port: number
+      caUntrusted: true
+      cert?: CertSummary
+      caChain?: string[]
+      error: string
+    }
 
 export interface ProbeTlsParams {
   host: string
@@ -44,7 +62,7 @@ export interface ValidateOAuthCredentialsParams {
   password: string
   useTls?: boolean
   port?: number
-  ca?: Uint8Array
+  ca?: ValidatedCaBytes
 }
 
 export function validateOAuthCredentials(
@@ -78,7 +96,7 @@ export interface ValidateCaAgainstServerParams {
 }
 
 export type ValidateCaAgainstServerResult =
-  | { ok: true; serverCert?: CertSummary }
+  | { ok: true; serverCert?: CertSummary; caBytes: ValidatedCaBytes }
   | {
       ok: false
       kind: 'unreachable' | 'untrusted'

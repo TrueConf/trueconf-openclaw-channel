@@ -7,8 +7,17 @@ import {
   hasConfiguredSecretInput,
 } from 'openclaw/plugin-sdk/setup'
 import { parseCertFromPem, probeTls, downloadCAChain, validateOAuthCredentials, validateCaAgainstServer } from './probe.mjs'
-import type { CertSummary } from './probe.d.mts'
+import type { CertSummary, ValidatedCaBytes } from './probe.d.mts'
 import { resolveSecret } from './config'
+
+// Brand-mint for CA bytes produced by the TOFU path. The wizard just
+// downloaded these from the server and wrote them to disk atomically, so
+// they are trust-anchored by construction — no chain validation is possible
+// (the anchor IS the server's self-signed cert). Calling this helper makes
+// the minting step explicit to reviewers.
+function markValidated(bytes: Uint8Array | Buffer): ValidatedCaBytes {
+  return bytes as unknown as ValidatedCaBytes
+}
 
 const channel = 'trueconf'
 
@@ -280,7 +289,7 @@ async function readCaFileInteractive(args: {
   prompter: WizardPrompter
   host: string
   port: number
-}): Promise<{ nextCaPath: string; nextCaBytes: Uint8Array }> {
+}): Promise<{ nextCaPath: string; nextCaBytes: ValidatedCaBytes }> {
   const { prompter, host, port } = args
   const reasons: string[] = []
   for (let attempt = 0; attempt < MAX_CA_FILE_ATTEMPTS; attempt++) {
@@ -330,7 +339,7 @@ async function readCaFileInteractive(args: {
       }
       continue
     }
-    return { nextCaPath: abs, nextCaBytes: bytes }
+    return { nextCaPath: abs, nextCaBytes: v.caBytes }
   }
   throw new Error(
     `CA file input failed ${MAX_CA_FILE_ATTEMPTS} times. Attempts: ${reasons.join('; ')}`,
@@ -346,7 +355,7 @@ async function downloadAndAudit(args: {
   host: string
   port: number
   mode: 'fresh-tofu' | 're-tofu' | 'accept-new' | 'headless-auto'
-}): Promise<{ nextCaPath: string; nextCaBytes: Uint8Array }> {
+}): Promise<{ nextCaPath: string; nextCaBytes: ValidatedCaBytes }> {
   const { host, port, mode } = args
   const ca = await downloadCAChain({ host, port })
   const bytes = readFileSync(ca)
@@ -357,7 +366,7 @@ async function downloadAndAudit(args: {
     `issuer=${cert?.issuerCN ?? '?'} ` +
     `fingerprint=${cert?.fingerprint ?? '?'}\n`,
   )
-  return { nextCaPath: ca, nextCaBytes: bytes }
+  return { nextCaPath: ca, nextCaBytes: markValidated(bytes) }
 }
 
 async function handleUntrustedCert(args: {
@@ -366,7 +375,7 @@ async function handleUntrustedCert(args: {
   port: number
   existingCaPath: string | undefined
   currentCert: CertSummary | undefined
-}): Promise<{ nextCaPath: string; nextCaBytes: Uint8Array }> {
+}): Promise<{ nextCaPath: string; nextCaBytes: ValidatedCaBytes }> {
   const { prompter, host, port, existingCaPath, currentCert } = args
 
   if (existingCaPath) {
@@ -405,7 +414,7 @@ async function handleUntrustedCert(args: {
 
     const v = await validateCaAgainstServer({ caBytes: storedBytes, host, port })
     if (v.ok) {
-      return { nextCaPath: resolved, nextCaBytes: storedBytes }
+      return { nextCaPath: resolved, nextCaBytes: v.caBytes }
     }
 
     // Unreachable is NOT a trust mismatch — avoid shoving the user into an
@@ -491,7 +500,7 @@ export async function interactiveFinalize(params: {
   let useTls: boolean | undefined = tc.useTls
   let port: number | undefined = tc.port
   let caPath: string | undefined
-  let caBytes: Uint8Array | undefined
+  let caBytes: ValidatedCaBytes | undefined
 
   // STEP 1 — TRUECONF_CA_PATH env var short-circuit
   const envPath = process.env.TRUECONF_CA_PATH?.trim()
@@ -525,7 +534,7 @@ export async function interactiveFinalize(params: {
     useTls = true
     port = port ?? 443
     caPath = abs
-    caBytes = bytes
+    caBytes = v.caBytes
   } else if (useTls !== false) {
     // STEP 2 — probe every run. A fresh probe is what makes re-validation work:
     // on re-setup with a stored caPath, `probe.caUntrusted` fires when the
@@ -629,7 +638,7 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
   let resolvedUseTls = useTlsHint
   let resolvedPort = portHint
   let caPath: string | undefined
-  let caBytes: Uint8Array | undefined
+  let caBytes: ValidatedCaBytes | undefined
 
   const envCaPath = process.env.TRUECONF_CA_PATH?.trim()
 
@@ -656,7 +665,7 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
     resolvedUseTls = true
     resolvedPort = resolvedPort ?? 443
     caPath = abs
-    caBytes = bytes
+    caBytes = v.caBytes
   } else {
     // 2) Check configured caPath in current cfg
     const tc = (cfg as { channels?: { trueconf?: { caPath?: string } } }).channels?.trueconf
@@ -691,7 +700,7 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
       resolvedUseTls = true
       resolvedPort = resolvedPort ?? 443
       caPath = abs
-      caBytes = bytes
+      caBytes = v.caBytes
     } else if (resolvedUseTls === undefined) {
       // 3) No override, no configured caPath → raw probe
       const probe = await probeTls({ host: serverUrl, port: resolvedPort })

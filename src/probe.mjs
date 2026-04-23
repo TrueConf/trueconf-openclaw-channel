@@ -444,5 +444,8 @@ export async function validateCaAgainstServer({ caBytes, host, port }) {
       error: probe.error ?? 'unauthorized',
     }
   }
-  return { ok: true, serverCert: probe.cert }
+  // caBytes is the same reference the caller gave us, "laundered" through a
+  // live server-chain check. Consumers see it as ValidatedCaBytes — the brand
+  // is the type-level receipt that these bytes matched the server.
+  return { ok: true, serverCert: probe.cert, caBytes }
 }

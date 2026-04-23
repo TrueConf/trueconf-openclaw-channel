@@ -274,13 +274,16 @@ function shortFp(fp: string | null | undefined): string {
   return fp.length > 29 ? `${fp.slice(0, 29)}…` : fp
 }
 
+const MAX_CA_FILE_ATTEMPTS = 3
+
 async function readCaFileInteractive(args: {
   prompter: WizardPrompter
   host: string
   port: number
 }): Promise<{ nextCaPath: string; nextCaBytes: Uint8Array }> {
   const { prompter, host, port } = args
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const reasons: string[] = []
+  for (let attempt = 0; attempt < MAX_CA_FILE_ATTEMPTS; attempt++) {
     const rawPath = String(await prompter.text({
       message: 'Путь к файлу сертификата (PEM):',
     }))
@@ -289,11 +292,15 @@ async function readCaFileInteractive(args: {
     try {
       bytes = readFileSync(abs)
     } catch (err) {
-      await prompter.note(`Не могу прочитать ${abs}: ${(err as Error).message}`, 'CA file input')
+      const reason = `${abs}: не могу прочитать (${(err as Error).message})`
+      reasons.push(reason)
+      await prompter.note(reason, 'CA file input')
       continue
     }
     const cert = parseCertFromPem(bytes)
     if (!cert) {
+      const reason = `${abs}: не PEM`
+      reasons.push(reason)
       await prompter.note(
         'Файл не PEM. DER/P7B не поддерживаются — конвертируй: openssl x509 -in cert.der -inform DER -out cert.pem',
         'CA file input',
@@ -302,21 +309,55 @@ async function readCaFileInteractive(args: {
     }
     const v = await validateCaAgainstServer({ caBytes: bytes, host, port })
     if (!v.ok) {
-      const msg = v.kind === 'unreachable'
-        ? `Не могу подключиться к ${host}:${port} — ${v.error}.\nCA-файл не проверить пока сервер недоступен. Проверь сеть/DNS/firewall и повтори.`
-        : [
+      if (v.kind === 'unreachable') {
+        reasons.push(`${abs}: server unreachable (${v.error})`)
+        await prompter.note(
+          `Не могу подключиться к ${host}:${port} — ${v.error}.\nCA-файл не проверить пока сервер недоступен. Проверь сеть/DNS/firewall и повтори.`,
+          'CA file input',
+        )
+      } else {
+        reasons.push(`${abs}: chain mismatch (${v.error})`)
+        await prompter.note(
+          [
             'Файл не валидирует этот сервер:',
             `  Trust anchor в файле: ${cert.issuerCN ?? cert.subject ?? '?'} (отпечаток ${shortFp(cert.fingerprint)})`,
             `  Сервер подписан: ${v.serverCert?.issuerCN ?? v.serverCert?.subject ?? '?'} (отпечаток ${shortFp(v.serverCert?.fingerprint)})`,
             '  Возможно: не тот файл / не тот сервер / chain не полный.',
             `  TLS-стек: ${v.error}`,
-          ].join('\n')
-      await prompter.note(msg, 'CA file input')
+          ].join('\n'),
+          'CA file input',
+        )
+      }
       continue
     }
     return { nextCaPath: abs, nextCaBytes: bytes }
   }
-  throw new Error('CA file input failed 3 times')
+  throw new Error(
+    `CA file input failed ${MAX_CA_FILE_ATTEMPTS} times. Attempts: ${reasons.join('; ')}`,
+  )
+}
+
+// Downloads the server's current cert chain as the new trust anchor and
+// writes an audit line to stderr naming the host, port, subject, and
+// fingerprint we just pinned. Centralizes the audit trail so every TOFU
+// path emits the same record. TOFU is inherently trust-on-first-use, so
+// this line is the only post-facto evidence of what was accepted.
+async function downloadAndAudit(args: {
+  host: string
+  port: number
+  mode: 'fresh-tofu' | 're-tofu' | 'accept-new' | 'headless-auto'
+}): Promise<{ nextCaPath: string; nextCaBytes: Uint8Array }> {
+  const { host, port, mode } = args
+  const ca = await downloadCAChain({ host, port })
+  const bytes = readFileSync(ca)
+  const cert = parseCertFromPem(bytes)
+  process.stderr.write(
+    `[trueconf-setup] trusted via ${mode}: ${host}:${port} ` +
+    `subject=${cert?.subject ?? '?'} ` +
+    `issuer=${cert?.issuerCN ?? '?'} ` +
+    `fingerprint=${cert?.fingerprint ?? '?'}\n`,
+  )
+  return { nextCaPath: ca, nextCaBytes: bytes }
 }
 
 async function handleUntrustedCert(args: {
@@ -357,8 +398,7 @@ async function handleUntrustedCert(args: {
         throw new Error(`User aborted: configured caPath missing (${resolved})`)
       }
       if (choice === 're-tofu') {
-        const ca = await downloadCAChain({ host, port })
-        return { nextCaPath: ca, nextCaBytes: readFileSync(ca) }
+        return await downloadAndAudit({ host, port, mode: 're-tofu' })
       }
       return await readCaFileInteractive({ prompter, host, port })
     }
@@ -392,8 +432,7 @@ async function handleUntrustedCert(args: {
       throw new Error(`User aborted after trust mismatch on ${host} (caPath=${resolved})`)
     }
     if (choice === 'accept-new') {
-      const ca = await downloadCAChain({ host, port })
-      return { nextCaPath: ca, nextCaBytes: readFileSync(ca) }
+      return await downloadAndAudit({ host, port, mode: 'accept-new' })
     }
     return await readCaFileInteractive({ prompter, host, port })
   }
@@ -416,8 +455,7 @@ async function handleUntrustedCert(args: {
     throw new Error(`User aborted: untrusted cert on ${host}`)
   }
   if (choice === 'accept') {
-    const ca = await downloadCAChain({ host, port })
-    return { nextCaPath: ca, nextCaBytes: readFileSync(ca) }
+    return await downloadAndAudit({ host, port, mode: 'fresh-tofu' })
   }
   return await readCaFileInteractive({ prompter, host, port })
 }
@@ -557,7 +595,10 @@ export async function interactiveFinalize(params: {
       ...(useTls !== undefined && { useTls }),
       ...(port !== undefined && { port }),
       password: currentPassword,
-      ...(caPath && { caPath }),
+      // Clear pinned caPath when TLS is explicitly off — a stale path would
+      // otherwise be read by loadCaFromAccount at runtime and handed to a
+      // ws:// socket that never uses it.
+      caPath: useTls === false ? undefined : caPath,
     },
   })
 
@@ -663,8 +704,9 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
               'Self-signed / untrusted cert detected; set TRUECONF_ACCEPT_UNTRUSTED_CA=true to auto-download chain, or set TRUECONF_CA_PATH to point to the admin-provided CA file.',
             )
           }
-          caPath = await downloadCAChain({ host: serverUrl, port: resolvedPort })
-          caBytes = readFileSync(caPath)
+          const dl = await downloadAndAudit({ host: serverUrl, port: resolvedPort, mode: 'headless-auto' })
+          caPath = dl.nextCaPath
+          caBytes = dl.nextCaBytes
         }
       } else {
         resolvedUseTls = true
@@ -698,7 +740,7 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
       password,
       ...(resolvedUseTls !== undefined && { useTls: resolvedUseTls }),
       ...(resolvedPort !== undefined && { port: resolvedPort }),
-      ...(caPath && { caPath }),
+      caPath: resolvedUseTls === false ? undefined : caPath,
     },
   })
 }

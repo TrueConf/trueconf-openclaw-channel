@@ -156,7 +156,16 @@ export async function downloadCAChain({ host, port }) {
   mkdirSync(join(homedir(), '.openclaw'), { recursive: true })
   const tmp = `${CA_FILE}.tmp`
   writeFileSync(tmp, pem, 'utf8')
-  try { chmodSync(tmp, 0o600) } catch { /* non-unix */ }
+  try {
+    chmodSync(tmp, 0o600)
+  } catch (err) {
+    // ENOSYS: exotic fs that doesn't implement chmod (never normal Windows —
+    // Windows maps chmod to a partial no-op and does not throw). EPERM/EACCES
+    // on a file we just wrote means something is genuinely off (privileged
+    // parent dir, foreign-owned ~/.openclaw); surfacing beats silently
+    // leaving a umask-default trust anchor on disk.
+    if (err.code !== 'ENOSYS') throw err
+  }
   renameSync(tmp, CA_FILE)
   return CA_FILE
 }

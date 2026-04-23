@@ -86,12 +86,15 @@ async function probeTlsRaw(host, port, ca) {
 }
 
 export async function probeTls({ host, port, ca }) {
-  // When `ca` is supplied the caller explicitly wants a strict TLS probe — force
-  // the explicit-port candidate to useTls:true so custom ports (e.g. 8443) still
-  // hit probeTlsRaw. Without this, `port: 8443, ca: <bytes>` silently went through
-  // probeBridge and never validated against `ca`. For an explicit port without
-  // `ca`, try TLS first and fall back to bridge so a cert can still be surfaced
-  // for diagnostic/banner use whenever the port speaks TLS.
+  // Candidate selection:
+  //  - explicit port + `ca`: single TLS attempt so strict validation runs against
+  //    the bytes the caller supplied. Without this, port: 8443 + ca: <bytes>
+  //    silently went through probeBridge and never validated.
+  //  - explicit port 443: single TLS attempt (scheme-default, bridge on 443 is
+  //    never the configuration we want to fall through to).
+  //  - other explicit port: TLS first, then bridge, so a cert is surfaced for
+  //    diagnostic/banner use whenever the port speaks TLS at all.
+  //  - no port: try 443 TLS, then 4309 bridge, then 80 bridge.
   const candidates = port !== undefined
     ? (ca !== undefined || port === 443
         ? [{ port, useTls: true }]
@@ -416,8 +419,9 @@ export function parseCertFromPem(pemBytes) {
 
 // Verify a CA bundle validates a live server's TLS cert. Returns {ok} plus,
 // on failure, the server cert (for diagnostics) and the authorization error
-// string from OpenSSL. Uses a single TLS handshake — see §6.3 of the design
-// spec for why we do not make a separate raw probe.
+// string from OpenSSL. Uses a single TLS handshake: a split raw-probe +
+// validate would leave a TOCTOU window where the cert the user sees in the
+// banner differs from the cert we actually validated.
 export async function validateCaAgainstServer({ caBytes, host, port }) {
   const probe = await probeTls({ host, port, ca: caBytes })
   if (!probe.reachable) {

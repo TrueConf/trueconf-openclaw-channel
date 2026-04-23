@@ -474,8 +474,10 @@ export async function interactiveFinalize(params: {
     caPath = abs
     caBytes = bytes
   } else if (useTls !== false) {
-    // STEP 2 — probe (runs on first setup AND on re-setup with useTls already true,
-    // so that stored-CA re-validation catches cert rotation / MITM between runs).
+    // STEP 2 — probe every run. A fresh probe is what makes re-validation work:
+    // on re-setup with a stored caPath, `probe.caUntrusted` fires when the
+    // server cert has rotated or been MITM'd, routing us into the mismatch
+    // branch in handleUntrustedCert. First-setup path uses the same probe.
     await prompter.note('Определяю TLS/порт...', 'Проверка сервера')
     const probe = await probeTls({ host: serverUrl, port })
     if (!probe.reachable) {

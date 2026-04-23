@@ -139,9 +139,13 @@ export async function probeTls({ host, port, ca }) {
 }
 
 // Helper — reuse existing `buildCertChainPem` logic but return array.
+// Split tolerates \r\n line endings so externally-sourced PEM (unlikely
+// today since the only caller feeds derToPem-produced output, but a likely
+// snag the moment someone plumbs in a file-sourced chain) doesn't corrupt
+// the cert boundaries.
 function buildCertChainArray(rawCert) {
   const pem = buildCertChainPem(rawCert)
-  return pem.split(/-----END CERTIFICATE-----\n?/).filter(Boolean).map(p => p + '-----END CERTIFICATE-----\n')
+  return pem.split(/-----END CERTIFICATE-----\r?\n?/).filter(Boolean).map(p => p + '-----END CERTIFICATE-----\n')
 }
 
 export async function downloadCAChain({ host, port }) {

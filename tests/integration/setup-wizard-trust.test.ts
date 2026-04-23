@@ -56,7 +56,12 @@ function makeCfg(overrides: Record<string, unknown> = {}) {
 }
 
 let tmpCaDir: string
+// File-level env reset — without this a TRUECONF_* leaked by a prior worker
+// run (or a missed afterEach) would silently change which trust path fires.
 beforeEach(() => {
+  for (const k of Object.keys(process.env)) {
+    if (k.startsWith('TRUECONF_')) delete process.env[k]
+  }
   oauth().mockReset()
   oauth().mockResolvedValue({ ok: true })
   tmpCaDir = mkdtempSync(join(tmpdir(), 'trust-test-'))

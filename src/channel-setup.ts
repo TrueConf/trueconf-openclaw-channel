@@ -30,10 +30,17 @@ function formatCertBlock(cert: CertSummary): string {
   const issuerLine = cert.issuerOrg
     ? `${cert.issuerCN ?? '?'} (${cert.issuerOrg})`
     : (cert.issuerCN ?? '?')
+  // The wizard will ultimately fail at validateCaAgainstServer for an expired
+  // cert, but the TLS error string is opaque. Surface expiry in the banner so
+  // the operator can see WHY their server was rejected before re-running.
+  const validToRaw = cert.validTo ?? '?'
+  const parsed = cert.validTo ? Date.parse(cert.validTo) : NaN
+  const expired = Number.isFinite(parsed) && parsed < Date.now()
+  const validToLine = expired ? `${validToRaw}  ⚠ ПРОСРОЧЕН` : validToRaw
   return [
     `  Владелец:     ${cert.subject ?? '?'}`,
     `  Издатель:     ${issuerLine}`,
-    `  Действителен: с ${cert.validFrom ?? '?'} до ${cert.validTo ?? '?'}`,
+    `  Действителен: с ${cert.validFrom ?? '?'} до ${validToLine}`,
     `  Отпечаток:    SHA-256 ${cert.fingerprint ?? '?'}`,
   ].join('\n')
 }
@@ -158,8 +165,11 @@ export const trueconfSetupWizard: ChannelSetupWizard = {
       required: true,
       currentValue: ({ cfg }) =>
         (cfg as { channels?: { trueconf?: { serverUrl?: string } } }).channels?.trueconf?.serverUrl,
-      validate: ({ value }) =>
-        value.includes('://') ? 'Укажите хост без http(s)://' : undefined,
+      validate: ({ value }) => {
+        if (value.includes('://')) return 'Укажите хост без http(s)://'
+        if (/:\d+$/.test(value)) return 'Укажите хост без :порта — порт задаётся отдельным полем'
+        return undefined
+      },
       applySet: ({ cfg, value }) =>
         patchTopLevelChannelConfigSection({
           cfg,

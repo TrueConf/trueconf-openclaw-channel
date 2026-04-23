@@ -187,6 +187,22 @@ describe('interactiveFinalize — mismatch vs silent happy', () => {
     expect((result.cfg as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
     expect(download()).not.toHaveBeenCalled()
   })
+
+  it('use-file with 3 bad inputs → throws with accumulated reasons', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true, caPath: join(FIXTURES, 'ca-other.pem') })
+    const prompter = makeFakePrompter({
+      selectResponses: ['use-file'],
+      textResponses: [
+        '/tmp/definitely-does-not-exist-trust-fix.pem',
+        join(FIXTURES, 'gen-fixtures.sh'),
+        join(FIXTURES, 'ca-other.pem'),
+      ],
+    })
+    await expect(interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })).rejects.toThrow(/CA file input failed 3 times.*does-not-exist.*gen-fixtures\.sh.*не PEM.*ca-other\.pem.*chain mismatch/s)
+  })
 })
 
 describe('interactiveFinalize — fresh TOFU', () => {
@@ -313,5 +329,31 @@ describe('runHeadlessFinalize — trust paths', () => {
     expect((next as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
     const args = oauth().mock.calls[0][0]
     expect(Buffer.from(args.ca!).equals(readFileSync(join(FIXTURES, 'ca-valid.pem')))).toBe(true)
+  })
+
+  // The TRUECONF_ACCEPT_UNTRUSTED_CA gate lives behind the raw-probe branch,
+  // which only fires when useTls is NOT explicitly set (baseEnv() sets it).
+  function envForRawProbe() {
+    process.env.TRUECONF_SERVER_URL = '127.0.0.1'
+    process.env.TRUECONF_USERNAME = 'bot'
+    process.env.TRUECONF_PASSWORD = 'secret'
+    process.env.TRUECONF_PORT = String(server.port)
+    // deliberately NOT setting TRUECONF_USE_TLS — we want the probe to decide.
+  }
+
+  it('untrusted cert + TRUECONF_ACCEPT_UNTRUSTED_CA=true → auto-downloads chain', async () => {
+    envForRawProbe()
+    process.env.TRUECONF_ACCEPT_UNTRUSTED_CA = 'true'
+    const next = await runHeadlessFinalize({} as never)
+    expect((next as any).channels.trueconf.caPath).toBeTruthy()
+    expect(download()).toHaveBeenCalledTimes(1)
+    const args = oauth().mock.calls[0][0]
+    expect(args.ca).toBeTruthy()
+  })
+
+  it('untrusted cert without TRUECONF_ACCEPT_UNTRUSTED_CA → fatal abort', async () => {
+    envForRawProbe()
+    await expect(runHeadlessFinalize({} as never)).rejects.toThrow(/TRUECONF_ACCEPT_UNTRUSTED_CA/)
+    expect(download()).not.toHaveBeenCalled()
   })
 })

@@ -300,6 +300,36 @@ describe('validateCaAgainstServer', () => {
     expect(r.serverCert).toBeUndefined()
     expect(r.error).toBeTruthy()
   })
+
+  it('rejects an expired CA with kind=untrusted (no chain to server)', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    const expiredCa = readFileSync(join(FIXTURES, 'ca-expired.pem'))
+    try {
+      const r = await validateCaAgainstServer({ caBytes: expiredCa, host: '127.0.0.1', port: server.port })
+      expect(r.ok).toBe(false)
+      expect(r.kind).toBe('untrusted')
+      expect(r.serverCert).toBeTruthy()
+      expect(r.error).toBeTruthy()
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('accepts a chain-bundle whose first cert is the server CA', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    const bundle = readFileSync(join(FIXTURES, 'chain-bundle.pem'))
+    try {
+      const r = await validateCaAgainstServer({ caBytes: bundle, host: '127.0.0.1', port: server.port })
+      expect(r.ok).toBe(true)
+      if (r.ok) {
+        expect(r.caBytes).toBeTruthy()
+        // caBytes is the laundered reference — same bytes we passed in.
+        expect(Buffer.from(r.caBytes).equals(bundle)).toBe(true)
+      }
+    } finally {
+      await server.close()
+    }
+  })
 })
 
 import { downloadCAChain } from '../../src/probe.mjs'

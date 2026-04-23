@@ -36,18 +36,19 @@ describe('channel.ts caPath plumbing', () => {
     expect(ca).toBeUndefined()
   })
 
-  it('loadCaFromAccount returns undefined when caPath file does not exist', async () => {
+  it('loadCaFromAccount throws when caPath set but file does not exist', async () => {
     const { loadCaFromAccount } = await import('../../src/channel')
-    const ca = loadCaFromAccount({
-      accountId: 'default',
-      configured: true,
-      enabled: true,
-      serverUrl: 'tc.example.com',
-      username: 'bot',
-      password: 'pw',
-      caPath: '/nonexistent/path/ca.pem',
-    })
-    expect(ca).toBeUndefined()
+    expect(() =>
+      loadCaFromAccount({
+        accountId: 'default',
+        configured: true,
+        enabled: true,
+        serverUrl: 'tc.example.com',
+        username: 'bot',
+        password: 'pw',
+        caPath: '/nonexistent/path/ca.pem',
+      }),
+    ).toThrow(/trust anchor unreadable.*\/nonexistent\/path\/ca\.pem/)
   })
 })
 

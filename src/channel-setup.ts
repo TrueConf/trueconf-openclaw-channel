@@ -306,6 +306,12 @@ async function readCaFileInteractive(args: {
     const rawPath = String(await prompter.text({
       message: 'Путь к файлу сертификата (PEM):',
     }))
+    // Empty input = the user cancelled the prompt (Ctrl+C in real prompters,
+    // drained script queue in test prompters). Bail out fast with an
+    // explicit cause instead of burning the remaining attempts on cwd reads.
+    if (!rawPath.trim()) {
+      throw new Error('CA file input cancelled — empty path received from prompter')
+    }
     const abs = resolveAbsPath(rawPath)
     let bytes: Buffer
     try {

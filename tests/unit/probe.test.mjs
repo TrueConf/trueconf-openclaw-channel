@@ -333,6 +333,8 @@ describe('validateCaAgainstServer', () => {
 })
 
 import { downloadCAChain } from '../../src/probe.mjs'
+import { mkdtempSync, existsSync, statSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 
 describe('downloadCAChain', () => {
   it('throws for unreachable host', async () => {
@@ -340,7 +342,27 @@ describe('downloadCAChain', () => {
       .rejects.toThrow(/unreachable|ECONNREFUSED/i)
   })
 
-  // Integration test against real TLS server done in setup-wizard.test.ts.
+  it('writes chain to caFilePath, sets 0600, atomically renames away the tmp', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    const dir = mkdtempSync(join(tmpdir(), 'dl-ca-e2e-'))
+    const target = join(dir, 'trueconf-ca.pem')
+    try {
+      const returned = await downloadCAChain({ host: '127.0.0.1', port: server.port, caFilePath: target })
+      expect(returned).toBe(target)
+      expect(existsSync(target)).toBe(true)
+      expect(existsSync(`${target}.tmp`)).toBe(false)
+      const content = readFileSync(target, 'utf8')
+      expect(content).toContain('BEGIN CERTIFICATE')
+      expect(content).toContain('END CERTIFICATE')
+      if (process.platform !== 'win32') {
+        const mode = statSync(target).mode & 0o777
+        expect(mode).toBe(0o600)
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      await server.close()
+    }
+  })
 })
 
 import { validateOAuthCredentials } from '../../src/probe.mjs'
@@ -417,6 +439,39 @@ describe('validateOAuthCredentials — status codes', () => {
       if (!result.ok) {
         expect(result.category).toBe('server-error')
         expect(result.error).toContain('500')
+      }
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('throws immediately when ca is provided without useTls=true', async () => {
+    const ca = Buffer.from('-----BEGIN CERTIFICATE-----\nMIIBAA==\n-----END CERTIFICATE-----\n', 'utf8')
+    await expect(validateOAuthCredentials({
+      serverUrl: 'tc.example.com',
+      username: 'bot',
+      password: 'x',
+      useTls: false,
+      port: 80,
+      ca,
+    })).rejects.toThrow(/ca.*useTls.*not true|silently ignored/i)
+  })
+
+  it('categorizes OpenSSL UNABLE_TO_VERIFY_LEAF_SIGNATURE as tls', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = vi.fn(async () => {
+      const inner = new Error('unable to verify the first certificate')
+      inner.code = 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'
+      throw new TypeError('fetch failed', { cause: inner })
+    })
+    try {
+      const result = await validateOAuthCredentials({
+        serverUrl: 'tc.example.com', username: 'bot', password: 'x', useTls: true, port: 443,
+      })
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.category).toBe('tls')
+        expect(result.error).toMatch(/UNABLE_TO_VERIFY/i)
       }
     } finally {
       globalThis.fetch = origFetch

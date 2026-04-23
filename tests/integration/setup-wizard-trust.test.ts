@@ -114,6 +114,17 @@ describe('interactiveFinalize — env TRUECONF_CA_PATH path', () => {
       accountId: 'default', forceAllowFrom: false,
     })).rejects.toThrow(/не валидирует этот сервер/)
   })
+
+  it('env var points to empty file → aborts with not-PEM hint', async () => {
+    const emptyPath = join(tmpCaDir, 'empty.pem')
+    writeFileSync(emptyPath, '')
+    process.env.TRUECONF_CA_PATH = emptyPath
+    const cfg = makeCfg({ port: server.port })
+    await expect(interactiveFinalize({
+      cfg, prompter: makeFakePrompter({}), credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })).rejects.toThrow(/не PEM/)
+  })
 })
 
 describe('interactiveFinalize — configured caPath missing', () => {
@@ -228,6 +239,18 @@ describe('interactiveFinalize — mismatch vs silent happy', () => {
       accountId: 'default', forceAllowFrom: false,
     })
     expect((result.cfg as any).channels.trueconf.caPath).toContain('rotated.pem')
+  })
+
+  it('use-file with empty input (prompter cancelled) → throws cancelled', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true, caPath: join(FIXTURES, 'ca-other.pem') })
+    const prompter = makeFakePrompter({
+      selectResponses: ['use-file'],
+      textResponses: [''], // empty = cancelled
+    })
+    await expect(interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })).rejects.toThrow(/cancelled.*empty path/)
   })
 
   it('use-file with 3 bad inputs → throws with accumulated reasons', async () => {

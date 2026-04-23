@@ -40,6 +40,10 @@ export function probeTls(params: ProbeTlsParams): Promise<ProbeTlsResult>
 export interface DownloadCaChainParams {
   host: string
   port?: number
+  // Override default anchor path (~/.openclaw/trueconf-ca.pem). Primarily a
+  // test seam so the atomic write/chmod/rename sequence can be exercised
+  // against a real TLS fixture without touching the user's home directory.
+  caFilePath?: string
 }
 
 export function downloadCAChain(params: DownloadCaChainParams): Promise<string>

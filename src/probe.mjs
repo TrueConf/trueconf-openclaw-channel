@@ -6,7 +6,7 @@ import { connect as tlsConnect } from 'node:tls'
 import { createConnection as netConnect, isIP } from 'node:net'
 import { X509Certificate } from 'node:crypto'
 import { writeFileSync, mkdirSync, chmodSync, renameSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { Agent as UndiciAgent } from 'undici'
 
@@ -19,6 +19,17 @@ const TLS_TIMEOUT_MS = 4000
 const OAUTH_TIMEOUT_MS = 30000
 const CA_FILE = join(homedir(), '.openclaw', 'trueconf-ca.pem')
 
+// describeErr captures `code` when Node sets one (ECONNREFUSED, ENOTFOUND),
+// otherwise falls back to the message, finally to String(err). Never returns
+// the literal 'unknown' sentinel — operators lose all diagnostic ground when
+// an error code degrades to a generic word.
+function describeErr(err) {
+  if (!err) return 'unknown-null-error'
+  const code = err.code ? String(err.code) : null
+  const msg = err.message ? String(err.message) : null
+  return code || msg || String(err)
+}
+
 async function probeBridge(host, port) {
   return new Promise((resolve) => {
     let done = false
@@ -30,7 +41,7 @@ async function probeBridge(host, port) {
     }
     const socket = netConnect({ host, port, timeout: BRIDGE_TIMEOUT_MS })
     socket.on('connect', () => finish(true))
-    socket.on('error', (err) => finish(false, err.code || err.message))
+    socket.on('error', (err) => finish(false, describeErr(err)))
     socket.on('timeout', () => finish(false, 'TIMEOUT'))
   })
 }
@@ -68,13 +79,13 @@ async function probeTlsRaw(host, port, ca) {
         })
       })
     } catch (err) {
-      resolve({ reachable: false, error: err.code || err.message || 'unknown' })
+      resolve({ reachable: false, error: describeErr(err) })
       return
     }
     socket.on('error', (err) => {
       if (done) return
       done = true
-      resolve({ reachable: false, error: err.code || err.message || 'unknown' })
+      resolve({ reachable: false, error: describeErr(err) })
     })
     socket.on('timeout', () => {
       if (done) return
@@ -148,7 +159,7 @@ function buildCertChainArray(rawCert) {
   return pem.split(/-----END CERTIFICATE-----\r?\n?/).filter(Boolean).map(p => p + '-----END CERTIFICATE-----\n')
 }
 
-export async function downloadCAChain({ host, port }) {
+export async function downloadCAChain({ host, port, caFilePath = CA_FILE }) {
   const tls = await probeTlsRaw(host, port)
   if (!tls.reachable) {
     throw new Error(`TLS probe unreachable: ${tls.error ?? 'unknown'}`)
@@ -157,8 +168,8 @@ export async function downloadCAChain({ host, port }) {
     throw new Error('No certificate chain available')
   }
   const pem = buildCertChainPem(tls._rawCert)
-  mkdirSync(join(homedir(), '.openclaw'), { recursive: true })
-  const tmp = `${CA_FILE}.tmp`
+  mkdirSync(dirname(caFilePath), { recursive: true })
+  const tmp = `${caFilePath}.tmp`
   writeFileSync(tmp, pem, 'utf8')
   try {
     chmodSync(tmp, 0o600)
@@ -170,13 +181,25 @@ export async function downloadCAChain({ host, port }) {
     // leaving a umask-default trust anchor on disk.
     if (err.code !== 'ENOSYS') throw err
   }
-  renameSync(tmp, CA_FILE)
-  return CA_FILE
+  renameSync(tmp, caFilePath)
+  return caFilePath
 }
 
 export async function validateOAuthCredentials({
   serverUrl, username, password, useTls, port, ca,
 }) {
+  // Guard against silent CA-drop: caller passed CA bytes but flipped useTls
+  // off (or left it undefined). The old code would hand the CA to nothing
+  // and ship the OAuth call over http:// with no TLS at all. Fail loud so
+  // the contract "ca without useTls=true is meaningless" is visible.
+  if (ca !== undefined && useTls !== true) {
+    throw new Error(
+      'validateOAuthCredentials: `ca` provided but `useTls` is not true — ' +
+      'the CA would be silently ignored. Pass useTls:true alongside ca, or ' +
+      'omit ca when connecting over plain HTTP.',
+    )
+  }
+
   const scheme = useTls ? 'https' : 'http'
   const hostport = port !== undefined ? `${serverUrl}:${port}` : serverUrl
   const url = `${scheme}://${hostport}/bridge/api/client/v1/oauth/token`

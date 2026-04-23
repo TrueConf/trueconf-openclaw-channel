@@ -77,11 +77,14 @@ export interface ValidateCaAgainstServerParams {
   port?: number
 }
 
-export interface ValidateCaAgainstServerResult {
-  ok: boolean
-  serverCert?: CertSummary
-  error?: string
-}
+export type ValidateCaAgainstServerResult =
+  | { ok: true; serverCert?: CertSummary }
+  | {
+      ok: false
+      kind: 'unreachable' | 'untrusted'
+      serverCert?: CertSummary
+      error: string
+    }
 
 export function validateCaAgainstServer(
   params: ValidateCaAgainstServerParams,

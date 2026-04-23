@@ -277,12 +277,13 @@ describe('validateCaAgainstServer', () => {
     }
   })
 
-  it('returns ok=false with serverCert populated when caBytes is wrong', async () => {
+  it('returns ok=false kind=untrusted with serverCert populated when caBytes is wrong', async () => {
     const server = await startTlsFixtureServer('ca-valid')
     const wrongCa = readFileSync(join(FIXTURES, 'ca-other.pem'))
     try {
       const r = await validateCaAgainstServer({ caBytes: wrongCa, host: '127.0.0.1', port: server.port })
       expect(r.ok).toBe(false)
+      expect(r.kind).toBe('untrusted')
       expect(r.serverCert).toBeTruthy()
       expect(r.serverCert.subject).toBe('localhost')
       expect(r.error).toBeTruthy()
@@ -291,10 +292,11 @@ describe('validateCaAgainstServer', () => {
     }
   })
 
-  it('returns ok=false with error when server is unreachable', async () => {
+  it('returns ok=false kind=unreachable when server is unreachable', async () => {
     const ca = readFileSync(join(FIXTURES, 'ca-valid.pem'))
     const r = await validateCaAgainstServer({ caBytes: ca, host: '127.0.0.1', port: 1 })
     expect(r.ok).toBe(false)
+    expect(r.kind).toBe('unreachable')
     expect(r.serverCert).toBeUndefined()
     expect(r.error).toBeTruthy()
   })

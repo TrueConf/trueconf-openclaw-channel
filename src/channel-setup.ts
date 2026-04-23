@@ -302,16 +302,16 @@ async function readCaFileInteractive(args: {
     }
     const v = await validateCaAgainstServer({ caBytes: bytes, host, port })
     if (!v.ok) {
-      await prompter.note(
-        [
-          'Файл не валидирует этот сервер:',
-          `  Trust anchor в файле: ${cert.issuerCN ?? cert.subject ?? '?'} (отпечаток ${shortFp(cert.fingerprint)})`,
-          `  Сервер подписан: ${v.serverCert?.issuerCN ?? v.serverCert?.subject ?? '?'} (отпечаток ${shortFp(v.serverCert?.fingerprint)})`,
-          '  Возможно: не тот файл / не тот сервер / chain не полный.',
-          `  TLS-стек: ${v.error}`,
-        ].join('\n'),
-        'CA file input',
-      )
+      const msg = v.kind === 'unreachable'
+        ? `Не могу подключиться к ${host}:${port} — ${v.error}.\nCA-файл не проверить пока сервер недоступен. Проверь сеть/DNS/firewall и повтори.`
+        : [
+            'Файл не валидирует этот сервер:',
+            `  Trust anchor в файле: ${cert.issuerCN ?? cert.subject ?? '?'} (отпечаток ${shortFp(cert.fingerprint)})`,
+            `  Сервер подписан: ${v.serverCert?.issuerCN ?? v.serverCert?.subject ?? '?'} (отпечаток ${shortFp(v.serverCert?.fingerprint)})`,
+            '  Возможно: не тот файл / не тот сервер / chain не полный.',
+            `  TLS-стек: ${v.error}`,
+          ].join('\n')
+      await prompter.note(msg, 'CA file input')
       continue
     }
     return { nextCaPath: abs, nextCaBytes: bytes }
@@ -368,8 +368,17 @@ async function handleUntrustedCert(args: {
       return { nextCaPath: resolved, nextCaBytes: storedBytes }
     }
 
+    // Unreachable is NOT a trust mismatch — avoid shoving the user into an
+    // accept-new/use-file dialog for what is likely a transient network issue.
+    if (v.kind === 'unreachable') {
+      throw new Error(
+        `Could not reach ${host}:${port} to re-validate stored CA (${v.error}). ` +
+        `Check network / DNS / firewall and re-run setup.`,
+      )
+    }
+
     const storedCert = parseCertFromPem(storedBytes)
-    const banner = buildMismatchBanner(storedCert, currentCert ?? null, resolved, v.error ?? 'unknown')
+    const banner = buildMismatchBanner(storedCert, currentCert ?? null, resolved, v.error)
     await prompter.note(banner.body, banner.title)
     const choice = await prompter.select<string>({
       message: 'Что делать?',
@@ -462,6 +471,12 @@ export async function interactiveFinalize(params: {
     }
     const v = await validateCaAgainstServer({ caBytes: bytes, host: serverUrl, port: port ?? 443 })
     if (!v.ok) {
+      if (v.kind === 'unreachable') {
+        throw new Error(
+          `TRUECONF_CA_PATH=${abs}: не могу подключиться к ${serverUrl}:${port ?? 443} — ${v.error}. ` +
+          `CA не проверить пока сервер недоступен.`,
+        )
+      }
       throw new Error(
         `TRUECONF_CA_PATH=${abs}: файл не валидирует этот сервер. ` +
         `Trust anchor в файле: ${cert.issuerCN ?? cert.subject ?? '?'}; ` +
@@ -592,7 +607,10 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
     }
     const v = await validateCaAgainstServer({ caBytes: bytes, host: serverUrl, port: resolvedPort ?? 443 })
     if (!v.ok) {
-      throw new Error(`TRUECONF_CA_PATH=${abs}: файл не валидирует этот сервер: ${v.error}`)
+      const prefix = v.kind === 'unreachable'
+        ? `TRUECONF_CA_PATH=${abs}: не могу подключиться к ${serverUrl}:${resolvedPort ?? 443}`
+        : `TRUECONF_CA_PATH=${abs}: файл не валидирует этот сервер`
+      throw new Error(`${prefix}: ${v.error}`)
     }
     resolvedUseTls = true
     resolvedPort = resolvedPort ?? 443
@@ -616,6 +634,12 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
       }
       const v = await validateCaAgainstServer({ caBytes: bytes, host: serverUrl, port: resolvedPort ?? 443 })
       if (!v.ok) {
+        if (v.kind === 'unreachable') {
+          throw new Error(
+            `Could not reach ${serverUrl}:${resolvedPort ?? 443} to re-validate stored CA (${v.error}). ` +
+            `Check network / DNS / firewall and retry.`,
+          )
+        }
         throw new Error(
           `Stored CA no longer validates server ${serverUrl} ` +
           `(TLS error: ${v.error}). ` +

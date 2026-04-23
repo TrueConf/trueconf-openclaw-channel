@@ -425,11 +425,15 @@ export function parseCertFromPem(pemBytes) {
 export async function validateCaAgainstServer({ caBytes, host, port }) {
   const probe = await probeTls({ host, port, ca: caBytes })
   if (!probe.reachable) {
-    return { ok: false, error: probe.error ?? 'unknown' }
+    return { ok: false, kind: 'unreachable', error: probe.error ?? 'unknown' }
   }
-  return {
-    ok: !probe.caUntrusted,
-    serverCert: probe.cert,
-    error: probe.caUntrusted ? (probe.error ?? 'unauthorized') : undefined,
+  if (probe.caUntrusted) {
+    return {
+      ok: false,
+      kind: 'untrusted',
+      serverCert: probe.cert,
+      error: probe.error ?? 'unauthorized',
+    }
   }
+  return { ok: true, serverCert: probe.cert }
 }

@@ -288,6 +288,47 @@ function resolveAbsPath(raw: string): string {
   return pathResolve(expanded)
 }
 
+// Shared env-CA validation for interactive and headless finalize paths.
+// Both need the same sequence (read → parse → validate-against-server) with
+// the same error copy — keeping this in one place prevents the two throws
+// from drifting as we tune the operator-facing messaging.
+async function loadAndValidateEnvCa(args: {
+  envPath: string
+  host: string
+  port: number
+}): Promise<{ abs: string; caBytes: ValidatedCaBytes }> {
+  const abs = resolveAbsPath(args.envPath)
+  let bytes: Buffer
+  try {
+    bytes = readFileSync(abs)
+  } catch (err) {
+    throw new Error(`TRUECONF_CA_PATH=${abs}: не могу прочитать (${(err as Error).message})`)
+  }
+  const cert = parseCertFromPem(bytes)
+  if (!cert) {
+    throw new Error(
+      `TRUECONF_CA_PATH=${abs}: не PEM. DER/P7B не поддерживаются — ` +
+      `конвертируй: openssl x509 -in file -inform DER -out file.pem`,
+    )
+  }
+  const v = await validateCaAgainstServer({ caBytes: bytes, host: args.host, port: args.port })
+  if (!v.ok) {
+    if (v.kind === 'unreachable') {
+      throw new Error(
+        `TRUECONF_CA_PATH=${abs}: не могу подключиться к ${args.host}:${args.port} — ${v.error}. ` +
+        `CA не проверить пока сервер недоступен.`,
+      )
+    }
+    throw new Error(
+      `TRUECONF_CA_PATH=${abs}: файл не валидирует этот сервер. ` +
+      `Trust anchor в файле: ${cert.issuerCN ?? cert.subject ?? '?'}; ` +
+      `сервер отдаёт cert с издателем ${v.serverCert?.issuerCN ?? '?'}. ` +
+      `TLS error: ${v.error}`,
+    )
+  }
+  return { abs, caBytes: v.caBytes }
+}
+
 function shortFp(fp: string | null | undefined): string {
   if (!fp) return '?'
   return fp.length > 29 ? `${fp.slice(0, 29)}…` : fp
@@ -380,8 +421,7 @@ async function downloadAndAudit(args: {
   acceptRotated?: boolean
 }): Promise<{ nextCaPath: string; nextCaBytes: ValidatedCaBytes }> {
   const { host, port, mode, expected, prompter, acceptRotated } = args
-  const ca = await downloadCAChain({ host, port })
-  const bytes = readFileSync(ca)
+  const { path: ca, bytes } = await downloadCAChain({ host, port })
   const cert = parseCertFromPem(bytes)
 
   // TOCTOU check: the cert the server presented during downloadCAChain may
@@ -591,36 +631,11 @@ export async function interactiveFinalize(params: {
   // that wins over whatever is currently on disk.
   const envPath = process.env.TRUECONF_CA_PATH?.trim()
   if (envPath) {
-    const abs = resolveAbsPath(envPath)
-    let bytes: Buffer
-    try {
-      bytes = readFileSync(abs)
-    } catch (err) {
-      throw new Error(`TRUECONF_CA_PATH=${abs}: не могу прочитать (${(err as Error).message})`)
-    }
-    const cert = parseCertFromPem(bytes)
-    if (!cert) {
-      throw new Error(`TRUECONF_CA_PATH=${abs}: не PEM. DER/P7B не поддерживаются — конвертируй: openssl x509 -in file -inform DER -out file.pem`)
-    }
-    const v = await validateCaAgainstServer({ caBytes: bytes, host: serverUrl, port: port ?? 443 })
-    if (!v.ok) {
-      if (v.kind === 'unreachable') {
-        throw new Error(
-          `TRUECONF_CA_PATH=${abs}: не могу подключиться к ${serverUrl}:${port ?? 443} — ${v.error}. ` +
-          `CA не проверить пока сервер недоступен.`,
-        )
-      }
-      throw new Error(
-        `TRUECONF_CA_PATH=${abs}: файл не валидирует этот сервер. ` +
-        `Trust anchor в файле: ${cert.issuerCN ?? cert.subject ?? '?'}; ` +
-        `сервер отдаёт cert с издателем ${v.serverCert?.issuerCN ?? '?'}. ` +
-        `TLS error: ${v.error}`,
-      )
-    }
+    const loaded = await loadAndValidateEnvCa({ envPath, host: serverUrl, port: port ?? 443 })
     useTls = true
     port = port ?? 443
-    caPath = abs
-    caBytes = v.caBytes
+    caPath = loaded.abs
+    caBytes = loaded.caBytes
   } else if (useTls !== false) {
     // STEP 2 — probe every run. A fresh probe is what makes re-validation work:
     // on re-setup with a stored caPath, `probe.caUntrusted` fires when the
@@ -734,28 +749,15 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
 
   // 1) Explicit env override takes precedence
   if (envCaPath) {
-    const abs = resolveAbsPath(envCaPath)
-    let bytes: Buffer
-    try {
-      bytes = readFileSync(abs)
-    } catch (err) {
-      throw new Error(`TRUECONF_CA_PATH=${abs}: не могу прочитать (${(err as Error).message})`)
-    }
-    const cert = parseCertFromPem(bytes)
-    if (!cert) {
-      throw new Error(`TRUECONF_CA_PATH=${abs}: не PEM. DER/P7B не поддерживаются.`)
-    }
-    const v = await validateCaAgainstServer({ caBytes: bytes, host: serverUrl, port: resolvedPort ?? 443 })
-    if (!v.ok) {
-      const prefix = v.kind === 'unreachable'
-        ? `TRUECONF_CA_PATH=${abs}: не могу подключиться к ${serverUrl}:${resolvedPort ?? 443}`
-        : `TRUECONF_CA_PATH=${abs}: файл не валидирует этот сервер`
-      throw new Error(`${prefix}: ${v.error}`)
-    }
+    const loaded = await loadAndValidateEnvCa({
+      envPath: envCaPath,
+      host: serverUrl,
+      port: resolvedPort ?? 443,
+    })
     resolvedUseTls = true
     resolvedPort = resolvedPort ?? 443
-    caPath = abs
-    caBytes = v.caBytes
+    caPath = loaded.abs
+    caBytes = loaded.caBytes
   } else {
     // 2) Check configured caPath in current cfg
     const tc = (cfg as { channels?: { trueconf?: { caPath?: string } } }).channels?.trueconf

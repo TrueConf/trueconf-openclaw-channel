@@ -85,6 +85,7 @@ async function probeTlsRaw(host, port, ca) {
     socket.on('error', (err) => {
       if (done) return
       done = true
+      try { socket.destroy() } catch { /* ignore */ }
       resolve({ reachable: false, error: describeErr(err) })
     })
     socket.on('timeout', () => {
@@ -121,7 +122,6 @@ export async function probeTls({ host, port, ca }) {
           useTls: true,
           port: candidate.port,
           caUntrusted: !tls.trusted,
-          caChain: tls._rawCert ? buildCertChainArray(tls._rawCert) : undefined,
           cert: tls.cert ?? undefined,
           error: tls.authorizationError ?? undefined,
         }
@@ -149,16 +149,6 @@ export async function probeTls({ host, port, ca }) {
   }
 }
 
-// Helper — reuse existing `buildCertChainPem` logic but return array.
-// Split tolerates \r\n line endings so externally-sourced PEM (unlikely
-// today since the only caller feeds derToPem-produced output, but a likely
-// snag the moment someone plumbs in a file-sourced chain) doesn't corrupt
-// the cert boundaries.
-function buildCertChainArray(rawCert) {
-  const pem = buildCertChainPem(rawCert)
-  return pem.split(/-----END CERTIFICATE-----\r?\n?/).filter(Boolean).map(p => p + '-----END CERTIFICATE-----\n')
-}
-
 export async function downloadCAChain({ host, port, caFilePath = CA_FILE }) {
   const tls = await probeTlsRaw(host, port)
   if (!tls.reachable) {
@@ -182,7 +172,10 @@ export async function downloadCAChain({ host, port, caFilePath = CA_FILE }) {
     if (err.code !== 'ENOSYS') throw err
   }
   renameSync(tmp, caFilePath)
-  return caFilePath
+  // Return the just-written PEM alongside the path so callers can feed the
+  // bytes to a validator without re-reading from disk — closes a narrow
+  // TOCTOU window where the file could be swapped between write and re-read.
+  return { path: caFilePath, bytes: Buffer.from(pem, 'utf8') }
 }
 
 export async function validateOAuthCredentials({

@@ -348,12 +348,15 @@ describe('downloadCAChain', () => {
     const target = join(dir, 'trueconf-ca.pem')
     try {
       const returned = await downloadCAChain({ host: '127.0.0.1', port: server.port, caFilePath: target })
-      expect(returned).toBe(target)
+      expect(returned.path).toBe(target)
       expect(existsSync(target)).toBe(true)
       expect(existsSync(`${target}.tmp`)).toBe(false)
       const content = readFileSync(target, 'utf8')
       expect(content).toContain('BEGIN CERTIFICATE')
       expect(content).toContain('END CERTIFICATE')
+      // bytes returned match bytes on disk — caller can feed them to a
+      // validator without a re-read from disk.
+      expect(returned.bytes.toString('utf8')).toBe(content)
       if (process.platform !== 'win32') {
         const mode = statSync(target).mode & 0o777
         expect(mode).toBe(0o600)

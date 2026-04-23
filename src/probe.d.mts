@@ -17,7 +17,6 @@ export type ProbeTlsResult =
       port: number
       caUntrusted: false
       cert?: CertSummary
-      caChain?: string[]
     }
   | {
       reachable: true
@@ -25,7 +24,6 @@ export type ProbeTlsResult =
       port: number
       caUntrusted: true
       cert?: CertSummary
-      caChain?: string[]
       error: string
     }
 
@@ -46,7 +44,9 @@ export interface DownloadCaChainParams {
   caFilePath?: string
 }
 
-export function downloadCAChain(params: DownloadCaChainParams): Promise<string>
+export function downloadCAChain(
+  params: DownloadCaChainParams,
+): Promise<{ path: string; bytes: Buffer }>
 
 export type OAuthCategory =
   | 'invalid-credentials'

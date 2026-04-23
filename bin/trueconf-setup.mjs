@@ -239,7 +239,7 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
         initialValue: true,
       })
       if (!confirmCa) throw new Error(`User aborted: untrusted cert on ${serverUrl}`)
-      caPath = await probeModule.downloadCAChain({ host: serverUrl, port })
+      caPath = (await probeModule.downloadCAChain({ host: serverUrl, port })).path
     }
     reason = probe.caUntrusted ? 'tls-untrusted' : (useTls ? 'tls-valid' : 'bridge-open')
   } else {

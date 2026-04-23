@@ -427,7 +427,7 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
   function stubProbeModule(validateOAuthCredentials: unknown, probeResult: unknown) {
     return {
       probeTls: async () => probeResult,
-      downloadCAChain: async () => '/tmp/fake-ca.pem',
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
       validateOAuthCredentials,
     }
   }

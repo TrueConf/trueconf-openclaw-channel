@@ -39,7 +39,7 @@ const oauth = () =>
   >
 const download = () =>
   probe.downloadCAChain as unknown as ReturnType<
-    typeof vi.fn<[{ host: string; port: number }], Promise<string>>
+    typeof vi.fn<[{ host: string; port: number }], Promise<{ path: string; bytes: Buffer }>>
   >
 
 function makeCfg(overrides: Record<string, unknown> = {}) {
@@ -68,8 +68,9 @@ beforeEach(() => {
   download().mockReset()
   download().mockImplementation(async () => {
     const p = join(tmpCaDir, 'trueconf-ca.pem')
-    writeFileSync(p, readFileSync(join(FIXTURES, 'ca-valid.pem')))
-    return p
+    const bytes = readFileSync(join(FIXTURES, 'ca-valid.pem'))
+    writeFileSync(p, bytes)
+    return { path: p, bytes }
   })
 })
 
@@ -209,8 +210,9 @@ describe('interactiveFinalize — mismatch vs silent happy', () => {
     // fingerprint mismatch between banner (ca-valid) and download (ca-other).
     download().mockImplementationOnce(async () => {
       const p = join(tmpCaDir, 'rotated.pem')
-      writeFileSync(p, readFileSync(join(FIXTURES, 'ca-other.pem')))
-      return p
+      const bytes = readFileSync(join(FIXTURES, 'ca-other.pem'))
+      writeFileSync(p, bytes)
+      return { path: p, bytes }
     })
     const cfg = makeCfg({ port: server.port, useTls: true, caPath: join(FIXTURES, 'ca-other.pem') })
     const prompter = makeFakePrompter({
@@ -226,8 +228,9 @@ describe('interactiveFinalize — mismatch vs silent happy', () => {
   it('rotation mid-flow (accept-new): prompter confirms → new cert pinned', async () => {
     download().mockImplementationOnce(async () => {
       const p = join(tmpCaDir, 'rotated.pem')
-      writeFileSync(p, readFileSync(join(FIXTURES, 'ca-other.pem')))
-      return p
+      const bytes = readFileSync(join(FIXTURES, 'ca-other.pem'))
+      writeFileSync(p, bytes)
+      return { path: p, bytes }
     })
     const cfg = makeCfg({ port: server.port, useTls: true, caPath: join(FIXTURES, 'ca-other.pem') })
     const prompter = makeFakePrompter({
@@ -429,8 +432,9 @@ describe('runHeadlessFinalize — trust paths', () => {
     process.env.TRUECONF_ACCEPT_UNTRUSTED_CA = 'true'
     download().mockImplementationOnce(async () => {
       const p = join(tmpCaDir, 'rotated.pem')
-      writeFileSync(p, readFileSync(join(FIXTURES, 'ca-other.pem')))
-      return p
+      const bytes = readFileSync(join(FIXTURES, 'ca-other.pem'))
+      writeFileSync(p, bytes)
+      return { path: p, bytes }
     })
     await expect(runHeadlessFinalize({} as never)).rejects.toThrow(/rotation detected.*TRUECONF_ACCEPT_ROTATED_CERT/)
   })
@@ -441,8 +445,9 @@ describe('runHeadlessFinalize — trust paths', () => {
     process.env.TRUECONF_ACCEPT_ROTATED_CERT = 'true'
     download().mockImplementationOnce(async () => {
       const p = join(tmpCaDir, 'rotated.pem')
-      writeFileSync(p, readFileSync(join(FIXTURES, 'ca-other.pem')))
-      return p
+      const bytes = readFileSync(join(FIXTURES, 'ca-other.pem'))
+      writeFileSync(p, bytes)
+      return { path: p, bytes }
     })
     const next = await runHeadlessFinalize({} as never)
     expect((next as any).channels.trueconf.caPath).toContain('rotated.pem')

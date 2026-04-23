@@ -11,7 +11,12 @@ const FIXTURES = join(HELPER_DIR, '..', '..', '__fixtures__')
 export async function startTlsFixtureServer(name = 'ca-valid') {
   const cert = readFileSync(join(FIXTURES, `${name}.pem`))
   const key = readFileSync(join(FIXTURES, `${name}.key`))
-  const server = createServer({ cert, key }, (socket) => socket.end())
+  const server = createServer({ cert, key }, (socket) => {
+    // Swallow post-close EPIPE/ECONNRESET — Node would otherwise surface an
+    // uncaught 'error' on the socket and crash the test process.
+    socket.on('error', () => {})
+    socket.end()
+  })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const port = server.address().port
   return {

@@ -318,11 +318,13 @@ describe('interactiveFinalize — TOCTOU protection', () => {
     expect(readFileSync(mutablePath).equals(validBytes)).toBe(false)
   })
 
-  // TODO: vitest (v4) cannot spy on `node:fs` ESM namespace exports
-  // (`Cannot redefine property: readFileSync`). The primary TOCTOU check above
-  // already covers the in-memory byte equality invariant; this test would only
-  // add a per-path read-count assertion. Revisit when vitest exposes a
-  // module-proxy or when we move fs I/O through an injectable seam.
+  // Skipped: vitest 4.x cannot spy on `node:fs` ESM namespace exports
+  // (`Cannot redefine property: readFileSync`). The in-memory byte-equality
+  // assertion in the test above ("OAuth receives the same bytes the wizard
+  // validated") is the load-bearing check for the TOCTOU invariant — a
+  // per-path read-count spy would only be defense-in-depth. If vitest grows
+  // a module-proxy or we route fs I/O through an injectable seam, the skip
+  // can be lifted.
   it.skip('does not re-read caPath between validation and OAuth', async () => {
     process.env.TRUECONF_CA_PATH = join(FIXTURES, 'ca-valid.pem')
     const fs = await import('node:fs')

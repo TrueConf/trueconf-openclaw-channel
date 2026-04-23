@@ -365,7 +365,6 @@ export function categorizeOAuthError(status) {
 }
 
 // Split a DN string on unescaped commas and newlines, honoring quoted sections.
-// Used by parseDn. Not exported.
 function splitDn(dn) {
   const parts = []
   let current = ''
@@ -425,8 +424,10 @@ export function parseDn(dnStr) {
 
 // Parse the first X.509 certificate from a PEM buffer and return a CertSummary.
 // node:crypto.X509Certificate returns .subject and .issuer as DN strings, so we
-// run them through parseDn to extract CN/O. Returns null on any parse failure
-// (non-PEM, empty, truncated, non-X509).
+// run them through parseDn to extract CN/O. Returns null (not throws) for any
+// parse failure — callers (wizard and validator) branch on null explicitly and
+// surface a user-facing message; exception-per-input noise would complicate
+// that flow without adding information.
 export function parseCertFromPem(pemBytes) {
   if (!pemBytes || pemBytes.length === 0) return null
   let x509

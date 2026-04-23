@@ -585,7 +585,10 @@ export async function interactiveFinalize(params: {
   let caPath: string | undefined
   let caBytes: ValidatedCaBytes | undefined
 
-  // STEP 1 — TRUECONF_CA_PATH env var short-circuit
+  // STEP 1 — explicit env override takes precedence over probe + stored CA.
+  // Rationale: operators bootstrapping via CI / Ansible / Kubernetes need a
+  // deterministic trust path that doesn't depend on any UI interaction, and
+  // that wins over whatever is currently on disk.
   const envPath = process.env.TRUECONF_CA_PATH?.trim()
   if (envPath) {
     const abs = resolveAbsPath(envPath)
@@ -636,7 +639,9 @@ export async function interactiveFinalize(params: {
       useTls = probe.useTls
       port = port ?? probe.port
       if (probe.caUntrusted && useTls) {
-        // STEP 3 — untrusted cert path
+        // STEP 3 — branch into the TOFU UX only when the probe actually saw
+        // an untrusted cert. A trusted cert means system-CAs already cover it,
+        // so we skip pinning entirely and fall through to OAuth.
         const { nextCaPath, nextCaBytes } = await handleUntrustedCert({
           prompter,
           host: serverUrl,
@@ -650,7 +655,9 @@ export async function interactiveFinalize(params: {
     }
   }
 
-  // OAuth validation loop with TOCTOU fix: pass in-process caBytes, not a re-read.
+  // OAuth validation loop. Invariant: the CA bytes handed to
+  // validateOAuthCredentials are the ones we just validated in-process;
+  // never re-read from disk between validate and use.
   let currentPassword = password
   let validated = false
   for (let attempt = 0; attempt < 3 && !validated; attempt++) {

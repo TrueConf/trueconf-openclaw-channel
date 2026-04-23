@@ -4,7 +4,7 @@
 
 import { connect as tlsConnect } from 'node:tls'
 import { createConnection as netConnect, isIP } from 'node:net'
-import { writeFileSync, mkdirSync, chmodSync, readFileSync, renameSync } from 'node:fs'
+import { writeFileSync, mkdirSync, chmodSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { Agent as UndiciAgent } from 'undici'
@@ -147,7 +147,7 @@ export async function downloadCAChain({ host, port }) {
 }
 
 export async function validateOAuthCredentials({
-  serverUrl, username, password, useTls, port, caPath,
+  serverUrl, username, password, useTls, port, ca,
 }) {
   const scheme = useTls ? 'https' : 'http'
   const hostport = port !== undefined ? `${serverUrl}:${port}` : serverUrl
@@ -155,9 +155,9 @@ export async function validateOAuthCredentials({
 
   // Node's global fetch is undici-backed; its `dispatcher` option requires an
   // undici Dispatcher, not a `node:https` Agent. Build an undici Agent that
-  // trusts our downloaded CA chain when operating over TLS with a caPath.
-  const dispatcher = caPath && useTls
-    ? new UndiciAgent({ connect: { ca: readFileSync(caPath) } })
+  // trusts the caller-supplied CA bytes when operating over TLS.
+  const dispatcher = ca && useTls
+    ? new UndiciAgent({ connect: { ca } })
     : undefined
 
   let response

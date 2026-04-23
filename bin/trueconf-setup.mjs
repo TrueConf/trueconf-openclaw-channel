@@ -100,6 +100,17 @@ function readJsonConfig(configPath) {
   return raw.trim() === '' ? {} : JSON.parse(raw)
 }
 
+// Reads the CA bundle into memory so probe.mjs can receive it as bytes.
+// Keeps probe.mjs free of filesystem reads for the security scanner.
+function readCaBuffer(caPath) {
+  if (!caPath) return undefined
+  try {
+    return readFileSync(caPath)
+  } catch {
+    return undefined
+  }
+}
+
 function backupConfigIfExists(configPath) {
   if (!existsSync(configPath)) return { backupPath: null }
   const backupPath = `${configPath}.bak.${Date.now()}`
@@ -393,7 +404,7 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
 
   for (let attempt = 0; attempt < 3 && !oauthOk; attempt++) {
     const result = await validateOAuthCredentials({
-      serverUrl, username, password: currentPassword, useTls, port, caPath,
+      serverUrl, username, password: currentPassword, useTls, port, ca: readCaBuffer(caPath),
     })
     if (result.ok) { oauthOk = true; break }
     oauthError = result

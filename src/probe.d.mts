@@ -42,7 +42,7 @@ export interface ValidateOAuthCredentialsParams {
   password: string
   useTls?: boolean
   port?: number
-  caPath?: string
+  ca?: Uint8Array
 }
 
 export function validateOAuthCredentials(

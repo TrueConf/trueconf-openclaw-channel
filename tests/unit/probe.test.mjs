@@ -1,10 +1,18 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   summarizeCert,
   decide,
   categorizeOAuthError,
   buildCertChainPem,
+  validateCaAgainstServer,
 } from '../../src/probe.mjs'
+import { startTlsFixtureServer } from './__helpers__/tls-server.mjs'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const FIXTURES = join(__dirname, '..', '__fixtures__')
 
 describe('probe-trueconf: summarizeCert', () => {
   it('returns null for empty object', () => {
@@ -213,7 +221,120 @@ describe('probeTls reachability', () => {
   })
 })
 
+describe('probeTls({ca}) strict mode', () => {
+  it('returns caUntrusted=false when ca matches server cert', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    const ca = readFileSync(join(FIXTURES, 'ca-valid.pem'))
+    try {
+      const r = await probeTls({ host: '127.0.0.1', port: server.port, ca })
+      expect(r.reachable).toBe(true)
+      expect(r.caUntrusted).toBe(false)
+      expect(r.cert).toBeTruthy()
+      expect(r.cert.subject).toBe('localhost')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('returns caUntrusted=true with a different CA (no handshake abort)', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    const wrongCa = readFileSync(join(FIXTURES, 'ca-other.pem'))
+    try {
+      const r = await probeTls({ host: '127.0.0.1', port: server.port, ca: wrongCa })
+      expect(r.reachable).toBe(true)
+      expect(r.caUntrusted).toBe(true)
+      expect(r.cert).toBeTruthy()
+      expect(r.error).toBeTruthy()
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('still returns cert in the legacy (no ca) path', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    try {
+      const r = await probeTls({ host: '127.0.0.1', port: server.port })
+      expect(r.reachable).toBe(true)
+      expect(r.useTls).toBe(true)
+      expect(r.cert).toBeTruthy()
+      expect(r.cert.subject).toBe('localhost')
+    } finally {
+      await server.close()
+    }
+  })
+})
+
+describe('validateCaAgainstServer', () => {
+  it('returns ok=true when caBytes matches the server cert', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    const ca = readFileSync(join(FIXTURES, 'ca-valid.pem'))
+    try {
+      const r = await validateCaAgainstServer({ caBytes: ca, host: '127.0.0.1', port: server.port })
+      expect(r.ok).toBe(true)
+      expect(r.error).toBeUndefined()
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('returns ok=false kind=untrusted with serverCert populated when caBytes is wrong', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    const wrongCa = readFileSync(join(FIXTURES, 'ca-other.pem'))
+    try {
+      const r = await validateCaAgainstServer({ caBytes: wrongCa, host: '127.0.0.1', port: server.port })
+      expect(r.ok).toBe(false)
+      expect(r.kind).toBe('untrusted')
+      expect(r.serverCert).toBeTruthy()
+      expect(r.serverCert.subject).toBe('localhost')
+      expect(r.error).toBeTruthy()
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('returns ok=false kind=unreachable when server is unreachable', async () => {
+    const ca = readFileSync(join(FIXTURES, 'ca-valid.pem'))
+    const r = await validateCaAgainstServer({ caBytes: ca, host: '127.0.0.1', port: 1 })
+    expect(r.ok).toBe(false)
+    expect(r.kind).toBe('unreachable')
+    expect(r.serverCert).toBeUndefined()
+    expect(r.error).toBeTruthy()
+  })
+
+  it('rejects an expired CA with kind=untrusted (no chain to server)', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    const expiredCa = readFileSync(join(FIXTURES, 'ca-expired.pem'))
+    try {
+      const r = await validateCaAgainstServer({ caBytes: expiredCa, host: '127.0.0.1', port: server.port })
+      expect(r.ok).toBe(false)
+      expect(r.kind).toBe('untrusted')
+      expect(r.serverCert).toBeTruthy()
+      expect(r.error).toBeTruthy()
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('accepts a chain-bundle whose first cert is the server CA', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    const bundle = readFileSync(join(FIXTURES, 'chain-bundle.pem'))
+    try {
+      const r = await validateCaAgainstServer({ caBytes: bundle, host: '127.0.0.1', port: server.port })
+      expect(r.ok).toBe(true)
+      if (r.ok) {
+        expect(r.caBytes).toBeTruthy()
+        // caBytes is the laundered reference — same bytes we passed in.
+        expect(Buffer.from(r.caBytes).equals(bundle)).toBe(true)
+      }
+    } finally {
+      await server.close()
+    }
+  })
+})
+
 import { downloadCAChain } from '../../src/probe.mjs'
+import { mkdtempSync, existsSync, statSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 
 describe('downloadCAChain', () => {
   it('throws for unreachable host', async () => {
@@ -221,7 +342,30 @@ describe('downloadCAChain', () => {
       .rejects.toThrow(/unreachable|ECONNREFUSED/i)
   })
 
-  // Integration test against real TLS server done in setup-wizard.test.ts.
+  it('writes chain to caFilePath, sets 0600, atomically renames away the tmp', async () => {
+    const server = await startTlsFixtureServer('ca-valid')
+    const dir = mkdtempSync(join(tmpdir(), 'dl-ca-e2e-'))
+    const target = join(dir, 'trueconf-ca.pem')
+    try {
+      const returned = await downloadCAChain({ host: '127.0.0.1', port: server.port, caFilePath: target })
+      expect(returned.path).toBe(target)
+      expect(existsSync(target)).toBe(true)
+      expect(existsSync(`${target}.tmp`)).toBe(false)
+      const content = readFileSync(target, 'utf8')
+      expect(content).toContain('BEGIN CERTIFICATE')
+      expect(content).toContain('END CERTIFICATE')
+      // bytes returned match bytes on disk — caller can feed them to a
+      // validator without a re-read from disk.
+      expect(returned.bytes.toString('utf8')).toBe(content)
+      if (process.platform !== 'win32') {
+        const mode = statSync(target).mode & 0o777
+        expect(mode).toBe(0o600)
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      await server.close()
+    }
+  })
 })
 
 import { validateOAuthCredentials } from '../../src/probe.mjs'
@@ -304,6 +448,39 @@ describe('validateOAuthCredentials — status codes', () => {
     }
   })
 
+  it('throws immediately when ca is provided without useTls=true', async () => {
+    const ca = Buffer.from('-----BEGIN CERTIFICATE-----\nMIIBAA==\n-----END CERTIFICATE-----\n', 'utf8')
+    await expect(validateOAuthCredentials({
+      serverUrl: 'tc.example.com',
+      username: 'bot',
+      password: 'x',
+      useTls: false,
+      port: 80,
+      ca,
+    })).rejects.toThrow(/ca.*useTls.*not true|silently ignored/i)
+  })
+
+  it('categorizes OpenSSL UNABLE_TO_VERIFY_LEAF_SIGNATURE as tls', async () => {
+    const origFetch = globalThis.fetch
+    globalThis.fetch = vi.fn(async () => {
+      const inner = new Error('unable to verify the first certificate')
+      inner.code = 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'
+      throw new TypeError('fetch failed', { cause: inner })
+    })
+    try {
+      const result = await validateOAuthCredentials({
+        serverUrl: 'tc.example.com', username: 'bot', password: 'x', useTls: true, port: 443,
+      })
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.category).toBe('tls')
+        expect(result.error).toMatch(/UNABLE_TO_VERIFY/i)
+      }
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
   it('passes through undici dispatcher when ca+useTls is set (401 path)', async () => {
     // Lock in C1: the implementation must use an undici Agent (valid Dispatcher),
     // not a node:https Agent. If the wrong Agent is passed as `dispatcher`, fetch
@@ -336,5 +513,100 @@ describe('validateOAuthCredentials — status codes', () => {
     } finally {
       globalThis.fetch = origFetch
     }
+  })
+})
+
+import { parseDn } from '../../src/probe.mjs'
+
+describe('parseDn', () => {
+  it('returns null/null for empty or null input', () => {
+    expect(parseDn('')).toEqual({ cn: null, o: null })
+    expect(parseDn(null)).toEqual({ cn: null, o: null })
+    expect(parseDn(undefined)).toEqual({ cn: null, o: null })
+  })
+
+  it('parses CN only', () => {
+    expect(parseDn('CN=foo')).toEqual({ cn: 'foo', o: null })
+  })
+
+  it('parses newline-separated CN and O', () => {
+    expect(parseDn('CN=foo\nO=Bar')).toEqual({ cn: 'foo', o: 'Bar' })
+  })
+
+  it('parses comma-separated RFC 4514 style', () => {
+    expect(parseDn('CN=foo, O=Bar, C=US')).toEqual({ cn: 'foo', o: 'Bar' })
+  })
+
+  it('parses quoted values with internal commas', () => {
+    expect(parseDn('O="Acme, Inc."\nCN=tc.example.com'))
+      .toEqual({ cn: 'tc.example.com', o: 'Acme, Inc.' })
+  })
+
+  it('parses backslash-escaped commas', () => {
+    expect(parseDn('O=Acme\\, Inc.\nCN=foo'))
+      .toEqual({ cn: 'foo', o: 'Acme, Inc.' })
+  })
+
+  it('preserves unicode in CN and O', () => {
+    expect(parseDn('CN=Фирма\nO=ООО «Ромашка»'))
+      .toEqual({ cn: 'Фирма', o: 'ООО «Ромашка»' })
+  })
+})
+
+import { parseCertFromPem } from '../../src/probe.mjs'
+
+describe('parseCertFromPem', () => {
+  it('returns CertSummary for valid self-signed PEM', () => {
+    const bytes = readFileSync(join(FIXTURES, 'ca-valid.pem'))
+    const cert = parseCertFromPem(bytes)
+    expect(cert).not.toBeNull()
+    expect(cert.subject).toBe('localhost')
+    expect(cert.issuerCN).toBe('localhost')
+    expect(cert.issuerOrg).toBe('Acme, Inc.')
+    expect(cert.fingerprint).toMatch(/^([0-9A-F]{2}:){31}[0-9A-F]{2}$/)
+    expect(cert.selfSigned).toBe(true)
+    expect(cert.validFrom).toBeTruthy()
+    expect(cert.validTo).toBeTruthy()
+  })
+
+  it('correctly extracts O with comma in value', () => {
+    const bytes = readFileSync(join(FIXTURES, 'ca-valid.pem'))
+    const cert = parseCertFromPem(bytes)
+    expect(cert.issuerOrg).toBe('Acme, Inc.')
+  })
+
+  it('returns CertSummary for expired cert without throwing', () => {
+    const bytes = readFileSync(join(FIXTURES, 'ca-expired.pem'))
+    const cert = parseCertFromPem(bytes)
+    expect(cert).not.toBeNull()
+    expect(cert.subject).toBe('expired.example')
+    expect(cert.validTo).toMatch(/2020/)
+  })
+
+  it('extracts SAN when present', () => {
+    const bytes = readFileSync(join(FIXTURES, 'ca-valid.pem'))
+    const cert = parseCertFromPem(bytes)
+    expect(cert.san).toMatch(/localhost/)
+  })
+
+  it('parses only the first cert in a multi-cert bundle', () => {
+    const bytes = readFileSync(join(FIXTURES, 'chain-bundle.pem'))
+    const cert = parseCertFromPem(bytes)
+    expect(cert).not.toBeNull()
+    // chain-bundle.pem starts with ca-valid; Acme is its O
+    expect(cert.issuerOrg).toBe('Acme, Inc.')
+  })
+
+  it('returns null for non-PEM bytes', () => {
+    expect(parseCertFromPem(Buffer.from('not a cert'))).toBeNull()
+  })
+
+  it('returns null for empty buffer', () => {
+    expect(parseCertFromPem(Buffer.alloc(0))).toBeNull()
+  })
+
+  it('returns null for truncated PEM', () => {
+    const bytes = Buffer.from('-----BEGIN CERTIFICATE-----\nABC\n-----END CERTIFICATE-----\n')
+    expect(parseCertFromPem(bytes)).toBeNull()
   })
 })

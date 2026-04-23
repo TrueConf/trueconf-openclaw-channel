@@ -40,14 +40,18 @@ function getChannelConfig(cfg: unknown): TrueConfChannelConfig {
 
 // Reads a CA bundle from account.caPath for custom-TLS TrueConf deployments
 // (downloaded by the setup wizard when the server presents an untrusted cert).
-// Returns undefined when caPath is absent or unreadable so callers can fall
-// back to the default system trust store.
+// Returns undefined when caPath is absent → caller falls back to system trust.
+// Throws when caPath is set but unreadable — failing silent here would
+// downgrade pinned trust to the system store without telling the operator.
 export function loadCaFromAccount(account: ResolvedAccount): Buffer | undefined {
   if (!account.caPath) return undefined
   try {
     return readFileSync(account.caPath)
-  } catch {
-    return undefined
+  } catch (err) {
+    throw new Error(
+      `trust anchor unreadable: caPath=${account.caPath} (${(err as Error).message}). ` +
+      `Fix permissions / re-run setup to re-TOFU, or remove caPath from config to fall back to system trust.`,
+    )
   }
 }
 
@@ -357,11 +361,21 @@ export const channelPlugin = {
         return
       }
 
-      // Two separate TLS trust surfaces: `ws` library accepts `ca: Buffer`
-      // directly, Node's global `fetch` needs an Undici Dispatcher. If caPath
-      // is unset, both stay undefined and the runtime uses the system trust
-      // store — same behavior as before Part 2.
-      const ca = loadCaFromAccount(resolved)
+      // Two separate TLS trust surfaces: the `ws` library accepts `ca: Buffer`
+      // directly; the built-in HTTP client (undici-backed) needs a Dispatcher
+      // built with that CA. If caPath is unset, both stay undefined and the
+      // runtime uses the system trust store — same behavior as before Part 2.
+      // loadCaFromAccount throws when caPath is set but unreadable so we never
+      // silently downgrade pinned trust to the system store.
+      let ca: Buffer | undefined
+      try {
+        ca = loadCaFromAccount(resolved)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        logger.error(`[trueconf] startAccount ${accountId}: ${msg}`)
+        setStatus({ accountId, running: false, lastStopAt: Date.now(), lastError: msg })
+        return
+      }
       const dispatcher: Dispatcher | undefined = ca
         ? new UndiciAgent({ connect: { ca } })
         : undefined

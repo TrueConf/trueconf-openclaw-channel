@@ -215,6 +215,63 @@ The plugin uses **OAuth 2.0 Password Grant** to obtain a token and sends the res
 
 The token is refreshed automatically a minute before `expires_at` — the user does nothing, reconnects are transparent.
 
+## TLS trust for TrueConf Server
+
+TrueConf Server typically runs on-prem with an internal-CA-signed or self-signed TLS certificate. The channel supports four paths to trust that certificate, in order of preference for production deployments:
+
+### 1. Public certificate (Let's Encrypt etc.)
+
+Nothing to do. The setup wizard detects the cert in the system trust store and skips the TOFU step.
+
+### 2. Enterprise CA via system trust (recommended for prod)
+
+Make the CA root trusted at the OS / Node level so it is picked up automatically:
+
+- **MDM / GPO / Ansible** — push the CA cert to `/usr/local/share/ca-certificates/` (Linux) or the platform equivalent, then run `update-ca-certificates`.
+- **`NODE_EXTRA_CA_CERTS`** — set this env var in your systemd unit, Dockerfile `ENV`, or shell profile:
+  ```bash
+  export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/corp-ca.pem
+  ```
+
+Probe detects `authorized: true` and skips TOFU entirely.
+
+### 3. `TRUECONF_CA_PATH` env var (recommended for CI / Docker / systemd)
+
+Explicitly point the setup to a CA file:
+
+```bash
+export TRUECONF_CA_PATH=/etc/trueconf/ca.pem
+openclaw plugins setup trueconf
+```
+
+The wizard validates the file (parses as PEM + verifies it actually validates the live server) before proceeding. If validation fails, setup aborts with a specific reason.
+
+### 4. Interactive wizard TOFU (for quick local setup only)
+
+When none of the above are set, the wizard shows the server's cert details (subject / issuer / validity / SHA-256 fingerprint) and asks you to confirm. **Verify the fingerprint out-of-band with the server admin** before accepting:
+
+```bash
+# On the TrueConf server, the admin runs:
+openssl x509 -in /path/to/server-cert.pem -fingerprint -sha256 -noout
+```
+
+The wizard saves the chain to `~/.openclaw/trueconf-ca.pem` (`0600`).
+
+### Re-running the wizard
+
+On every subsequent `openclaw plugins setup trueconf`, the stored CA is re-validated against the live server. Three outcomes:
+
+- **Silent happy** — stored CA still validates the server → no prompts.
+- **Trust anchor mismatch** — stored CA no longer validates (cert rotation or MITM). A banner shows both old + new fingerprints and offers: *Abort / Accept new cert / Use admin-provided file*. **Always verify the new fingerprint with the admin out-of-band before accepting.**
+- **Missing trust anchor** — the file recorded in config is gone from disk. Banner offers: *Abort / Re-download chain / Use admin-provided file*. If the file was removed by an attacker, re-downloading commits you to whatever the server is presenting — verify first.
+
+### Headless-specific notes
+
+`runHeadlessFinalize` (when invoked from non-interactive CLI with `TRUECONF_SERVER_URL`/`_USERNAME`/`_PASSWORD` env vars) mirrors the wizard flow but all failure modes are fatal — no prompts, no recovery. Options for headless TLS:
+
+- `TRUECONF_CA_PATH` — preferred (validated strictly as above).
+- `TRUECONF_ACCEPT_UNTRUSTED_CA=true` — allows auto-download of the server's chain. **Use only in trusted networks** (CI isolated from hostile traffic); anywhere MITM is possible, use `TRUECONF_CA_PATH` instead.
+
 ## Group Chats
 
 The channel works in group chats. Unlike direct messages, where the bot replies to every message, **in a group the bot only responds when explicitly addressed**:

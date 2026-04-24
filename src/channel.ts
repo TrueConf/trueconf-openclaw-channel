@@ -2,6 +2,11 @@ import type { PluginRuntime } from "openclaw/plugin-sdk/core"
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk"
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store"
 import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound"
+import {
+  deliverTextOrMediaReply,
+  resolveSendableOutboundReplyParts,
+  type OutboundReplyPayload,
+} from "openclaw/plugin-sdk/reply-payload"
 import { waitUntilAbort } from "openclaw/plugin-sdk/channel-lifecycle"
 import { readFileSync } from 'node:fs'
 import { Agent as UndiciAgent, type Dispatcher } from 'undici'
@@ -109,16 +114,6 @@ function clearAccountChats(accountId: string): void {
   // both survive a reconnect, so keeping the cache lets redirects keep
   // working until a genuine shutdown. Process-level reset happens via
   // __resetForTesting or module reload.
-}
-
-function toPlainText(payload: unknown): string {
-  const raw =
-    typeof payload === 'string'
-      ? payload
-      : ((payload as { text?: string; body?: string })?.text
-        ?? (payload as { text?: string; body?: string })?.body
-        ?? JSON.stringify(payload))
-  return sanitizeMarkdown(raw)
 }
 
 export const channelPlugin = {
@@ -354,7 +349,11 @@ export const channelPlugin = {
       const { accountId, setStatus } = ctx
       setStatus({ accountId, running: true, lastStartAt: Date.now() })
 
-      const resolved = resolveAccountImpl(store.channelConfig, accountId)
+      // Capture once after the guard so the closures below carry the proven
+      // non-null reference instead of reaching back through `store.channelConfig!`,
+      // which would silently NPE if a future refactor moves the early return.
+      const channelConfig = store.channelConfig
+      const resolved = resolveAccountImpl(channelConfig, accountId)
       if (!resolved.serverUrl || !resolved.username || !resolved.password) {
         logger.error(`[trueconf] startAccount: account ${accountId} missing required config`)
         setStatus({ accountId, running: false, lastError: 'missing required config' })
@@ -401,18 +400,65 @@ export const channelPlugin = {
         },
       )
 
-      const deliver = (inbound: InboundMessage) => async (payload: unknown) => {
-        const text = toPlainText(payload)
-        const result = inbound.isGroup
-          ? await sendTextToChat(wsClient, inbound.chatId, text, logger)
-          : await sendText(wsClient, inbound.peerId, text, logger, {
-              fallbackUserId: inbound.peerId,
-              directChatStore: store,
-              accountId,
-            })
-        if (result.ok && result.messageId) {
-          rememberBotMessage(store.recentBotMsgIdsByChat, result.chatId, result.messageId)
-        }
+      // Hoisted out of the deliver closure so the same dep bag isn't rebuilt
+      // per turn; handleOutboundAttachment requires the chat-store pointer,
+      // handleOutboundAttachmentToChat does not — layered on only on the DM
+      // branch.
+      const transport = {
+        wsClient,
+        resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
+        channelConfig,
+        logger,
+        dispatcher,
+      }
+
+      // Without this, a media-only OutboundReplyPayload ({mediaUrl, mediaUrls,
+      // replyToId}, no .text) would have to be hand-routed and any naive
+      // stringifier would publish a JSON envelope into the chat instead of the
+      // photo. deliverTextOrMediaReply handles that split.
+      const deliver = (inbound: InboundMessage) => async (payload: OutboundReplyPayload): Promise<void> => {
+        const reply = resolveSendableOutboundReplyParts(payload)
+        if (!reply.hasContent) return
+
+        await deliverTextOrMediaReply({
+          payload,
+          text: reply.text,
+          sendText: async (chunk) => {
+            const result = inbound.isGroup
+              ? await sendTextToChat(wsClient, inbound.chatId, chunk, logger)
+              : await sendText(wsClient, inbound.peerId, chunk, logger, {
+                  fallbackUserId: inbound.peerId,
+                  directChatStore: store,
+                  accountId,
+                })
+            if (!result.ok) {
+              logger.warn(`[trueconf] deliver: text chunk send failed (peer=${inbound.peerId}, isGroup=${inbound.isGroup})`)
+              return
+            }
+            if (result.messageId) {
+              rememberBotMessage(store.recentBotMsgIdsByChat, result.chatId, result.messageId)
+            }
+          },
+          sendMedia: async ({ mediaUrl, caption }) => {
+            if (inbound.isGroup) {
+              const result = await handleOutboundAttachmentToChat(
+                { chatId: inbound.chatId, text: caption ?? '', mediaUrl },
+                transport,
+              )
+              if (result.ok && result.messageId) {
+                rememberBotMessage(store.recentBotMsgIdsByChat, result.chatId, result.messageId)
+              }
+            } else {
+              const result = await handleOutboundAttachment(
+                { to: inbound.peerId, text: caption ?? '', mediaUrl, accountId },
+                { ...transport, store },
+              )
+              if (result.ok && result.messageId) {
+                rememberBotMessage(store.recentBotMsgIdsByChat, result.chatId, result.messageId)
+              }
+            }
+          },
+        })
       }
 
       const dispatch = async (inboundMsg: InboundMessage) => {

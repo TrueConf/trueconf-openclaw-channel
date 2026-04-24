@@ -106,8 +106,8 @@ describe('integration: text roundtrip', () => {
   it('deliver callback invoked with dispatch payload produces a reply on the wire', async () => {
     harness = await bootPlugin(server)
 
-    dispatch.mockImplementationOnce(async (arg: { deliver?: (text: string) => Promise<void> }) => {
-      if (arg.deliver) await arg.deliver('auto-reply')
+    dispatch.mockImplementationOnce(async (arg: { deliver?: (payload: { text: string }) => Promise<void> }) => {
+      if (arg.deliver) await arg.deliver({ text: 'auto-reply' })
       return {} as never
     })
 

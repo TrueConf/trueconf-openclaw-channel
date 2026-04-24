@@ -208,8 +208,8 @@ describe('integration: group chat mention/reply gate', () => {
     harness = await bootPlugin(server)
 
     // First: an activating message so the bot replies into the group, recording its messageId
-    dispatch.mockImplementationOnce(async (arg: { deliver?: (text: string) => Promise<void> }) => {
-      if (arg.deliver) await arg.deliver('first reply')
+    dispatch.mockImplementationOnce(async (arg: { deliver?: (payload: { text: string }) => Promise<void> }) => {
+      if (arg.deliver) await arg.deliver({ text: 'first reply' })
       return {} as never
     })
     server.pushInbound(groupTextEnvelope({
@@ -256,8 +256,8 @@ describe('integration: group chat mention/reply gate', () => {
   it('deliver in group sends to the group chatId, not to a P2P chat', async () => {
     harness = await bootPlugin(server)
 
-    dispatch.mockImplementationOnce(async (arg: { deliver?: (text: string) => Promise<void> }) => {
-      if (arg.deliver) await arg.deliver('hello group')
+    dispatch.mockImplementationOnce(async (arg: { deliver?: (payload: { text: string }) => Promise<void> }) => {
+      if (arg.deliver) await arg.deliver({ text: 'hello group' })
       return {} as never
     })
 

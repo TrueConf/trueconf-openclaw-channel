@@ -349,9 +349,9 @@ export const channelPlugin = {
       const { accountId, setStatus } = ctx
       setStatus({ accountId, running: true, lastStartAt: Date.now() })
 
-      // Capture once after the guard so the closures below carry the proven
-      // non-null reference instead of reaching back through `store.channelConfig!`,
-      // which would silently NPE if a future refactor moves the early return.
+      // Capture once after the guard so closures keep the proven non-null
+      // reference instead of `store.channelConfig!`, which would NPE if the
+      // early return ever moves.
       const channelConfig = store.channelConfig
       const resolved = resolveAccountImpl(channelConfig, accountId)
       if (!resolved.serverUrl || !resolved.username || !resolved.password) {
@@ -400,10 +400,9 @@ export const channelPlugin = {
         },
       )
 
-      // Hoisted out of the deliver closure so the same dep bag isn't rebuilt
-      // per turn; handleOutboundAttachment requires the chat-store pointer,
-      // handleOutboundAttachmentToChat does not — layered on only on the DM
-      // branch.
+      // Hoisted so the dep bag isn't rebuilt per turn. The DM branch layers
+      // `store` on top because handleOutboundAttachment needs the direct-chat
+      // cache; handleOutboundAttachmentToChat does not.
       const transport = {
         wsClient,
         resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
@@ -412,10 +411,8 @@ export const channelPlugin = {
         dispatcher,
       }
 
-      // Without this, a media-only OutboundReplyPayload ({mediaUrl, mediaUrls,
-      // replyToId}, no .text) would have to be hand-routed and any naive
-      // stringifier would publish a JSON envelope into the chat instead of the
-      // photo. deliverTextOrMediaReply handles that split.
+      // Routes via the SDK's text/media split so a media-only payload reaches
+      // sendFile instead of being JSON-stringified into the chat as text.
       const deliver = (inbound: InboundMessage) => async (payload: OutboundReplyPayload): Promise<void> => {
         const reply = resolveSendableOutboundReplyParts(payload)
         if (!reply.hasContent) return

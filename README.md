@@ -350,6 +350,17 @@ The channel sends and receives files via TrueConf: images, audio, video, and doc
   5. LLM provider is not configured — run `openclaw configure`.
   6. LLM provider is unreachable from the network — check access or use Ollama.
 
+### Bot sends a photo without the caption
+
+- **Symptom:** The agent replies "Here's a cat 🐱" with an attached picture; the TrueConf chat only shows the photo, the text is gone.
+- **Cause:** In openclaw `2026.4.22`, when `agents.defaults.blockStreamingDefault` is `"off"` (also the default when the field is unset), the caption and the media are split into separate blocks and the text part is dropped by the final filter before reaching the plugin's deliver.
+- **Fix:**
+  ```bash
+  openclaw config set agents.defaults.blockStreamingDefault on
+  openclaw config set agents.defaults.blockStreamingBreak message_end
+  ```
+  Then restart the gateway. The agent will hand text and media to the plugin as a single block, and the plugin will send the photo with the caption.
+
 ### Frequent reconnects
 
 - **Symptom:** `[trueconf] Connection closed, scheduling reconnect` repeats in the logs.

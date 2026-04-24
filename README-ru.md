@@ -350,6 +350,17 @@ openssl x509 -in /path/to/server-cert.pem -fingerprint -sha256 -noout
   5. LLM-провайдер не настроен — запустите `openclaw configure`.
   6. LLM-провайдер недоступен из сети — проверьте доступ или используйте Ollama.
 
+### Бот шлёт фото без подписи
+
+- **Симптом:** Агент отвечает «Держи кота 🐱» с прикреплённой картинкой, в TrueConf-чате приходит только фото, текст пропадает.
+- **Причина:** В openclaw `2026.4.22` при `agents.defaults.blockStreamingDefault: "off"` (или когда поле не задано — это значение по умолчанию) подпись и медиа разделяются на разные блоки, и текстовая часть теряется в финальном фильтре before деливерa плагину.
+- **Решение:**
+  ```bash
+  openclaw config set agents.defaults.blockStreamingDefault on
+  openclaw config set agents.defaults.blockStreamingBreak message_end
+  ```
+  Затем перезапустите gateway. Агент будет отдавать текст и медиа одним блоком, плагин пришлёт фото с подписью.
+
 ### Частые реконнекты
 
 - **Симптом:** `[trueconf] Connection closed, scheduling reconnect` повторяется в логах.

@@ -241,7 +241,7 @@ Explicitly point the setup to a CA file:
 
 ```bash
 export TRUECONF_CA_PATH=/etc/trueconf/ca.pem
-openclaw plugins setup trueconf
+npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
 ```
 
 The wizard validates the file (parses as PEM + verifies it actually validates the live server) before proceeding. If validation fails, setup aborts with a specific reason.
@@ -259,7 +259,7 @@ The wizard saves the chain to `~/.openclaw/trueconf-ca.pem` (`0600`).
 
 ### Re-running the wizard
 
-On every subsequent `openclaw plugins setup trueconf`, the stored CA is re-validated against the live server. Three outcomes:
+On every subsequent run of `trueconf-setup`, the stored CA is re-validated against the live server. Three outcomes:
 
 - **Silent happy** — stored CA still validates the server → no prompts.
 - **Trust anchor mismatch** — stored CA no longer validates (cert rotation or MITM). A banner shows both old + new fingerprints and offers: *Abort / Accept new cert / Use admin-provided file*. **Always verify the new fingerprint with the admin out-of-band before accepting.**

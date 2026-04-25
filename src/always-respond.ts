@@ -1,4 +1,5 @@
 import type { ParsedAlwaysRespondConfig } from './config'
+import { TrueConfChatType } from './types'
 
 export interface WireAdapter {
   botUserId: string | null
@@ -7,17 +8,16 @@ export interface WireAdapter {
   logger: { info: (s: string) => void; warn: (s: string) => void; error: (s: string) => void }
 }
 
-export interface ResolverEvent {
-  kind: 'add' | 'remove' | 'removeChat' | 'rename' | 'createGroup' | 'createChannel'
-  chatId: string
-  title?: string
-  userId?: string
-}
+export type ResolverEvent =
+  | { kind: 'add'; chatId: string; userId: string }
+  | { kind: 'remove'; chatId: string; userId: string }
+  | { kind: 'removeChat'; chatId: string }
+  | { kind: 'rename'; chatId: string; title: string }
+  | { kind: 'createGroup'; chatId: string }
 
 export class AlwaysRespondResolver {
   private static readonly GET_CHATS_PAGE_SIZE = 100
   private static readonly GET_CHATS_BACKOFF_MS = [500, 1000, 2000] as const
-  private static readonly GROUP_CHAT_TYPE = 2
 
   private readonly configuredChatIds: Set<string>
   private readonly configuredTitles: Set<string>
@@ -51,7 +51,7 @@ export class AlwaysRespondResolver {
 
       const snapshot = await this.fetchAllChats()
       for (const chat of snapshot) {
-        if (chat.chatType !== AlwaysRespondResolver.GROUP_CHAT_TYPE) continue
+        if (chat.chatType !== TrueConfChatType.GROUP) continue
         const normTitle = chat.title.trim().toLowerCase()
         this.titleByChatId.set(chat.chatId, normTitle)
         if (this.configuredTitles.has(normTitle)) {
@@ -106,7 +106,7 @@ export class AlwaysRespondResolver {
           )
           return
         }
-        if (info.chatType !== AlwaysRespondResolver.GROUP_CHAT_TYPE) return
+        if (info.chatType !== TrueConfChatType.GROUP) return
         const normTitle = info.title.trim().toLowerCase()
         this.titleByChatId.set(ev.chatId, normTitle)
         if (this.configuredTitles.has(normTitle)) {
@@ -120,8 +120,6 @@ export class AlwaysRespondResolver {
         }
         return
       }
-      case 'createChannel':
-        return  // never bypass channels
       case 'rename': {
         const oldNorm = this.titleByChatId.get(ev.chatId)
         if (oldNorm === undefined) {
@@ -132,7 +130,7 @@ export class AlwaysRespondResolver {
             )
             return
           }
-          if (info.chatType !== AlwaysRespondResolver.GROUP_CHAT_TYPE) return
+          if (info.chatType !== TrueConfChatType.GROUP) return
           const newNorm = info.title.trim().toLowerCase()
           this.titleByChatId.set(ev.chatId, newNorm)
           if (this.configuredTitles.has(newNorm)) {
@@ -144,7 +142,7 @@ export class AlwaysRespondResolver {
           }
           return
         }
-        const newNorm = (ev.title ?? '').trim().toLowerCase()
+        const newNorm = ev.title.trim().toLowerCase()
         this.titleByChatId.set(ev.chatId, newNorm)
         const wasMatch = this.configuredTitles.has(oldNorm)
         const isMatch = this.configuredTitles.has(newNorm)
@@ -184,6 +182,12 @@ export class AlwaysRespondResolver {
             this.wire.logger.info(`[trueconf] chat ${ev.chatId} removed — dropped from always-respond`)
           }
         }
+        return
+      }
+      default: {
+        // Adding a new ResolverEvent kind without a handler will fail to compile here.
+        const _exhaustive: never = ev
+        void _exhaustive
         return
       }
     }

@@ -113,8 +113,8 @@ export function mapPushToResolverEvent(
       if (!chatId) return drop('missing chatId')
       return { kind: 'createGroup', chatId }
     case 'createChannel':
-      if (!chatId) return drop('missing chatId')
-      return { kind: 'createChannel', chatId }
+      // Channels never bypass the activation gate; drop without warn.
+      return null
     case 'editChatTitle': {
       if (!chatId) return drop('missing chatId')
       const title = readNonEmptyString(payload, 'title')

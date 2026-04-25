@@ -28,7 +28,9 @@ import {
   isEnabled as isEnabledImpl,
   describeAccount as describeAccountImpl,
   shouldAllowMessage,
+  parseAlwaysRespondConfig,
 } from './config'
+import { AlwaysRespondResolver } from './always-respond'
 import { WsClient, ConnectionLifecycle } from './ws-client'
 import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage } from './types'
 
@@ -353,6 +355,9 @@ export const channelPlugin = {
       // reference instead of `store.channelConfig!`, which would NPE if the
       // early return ever moves.
       const channelConfig = store.channelConfig
+      const alwaysRespond = new AlwaysRespondResolver(
+        parseAlwaysRespondConfig(channelConfig.groupAlwaysRespondIn, logger),
+      )
       const resolved = resolveAccountImpl(channelConfig, accountId)
       if (!resolved.serverUrl || !resolved.username || !resolved.password) {
         logger.error(`[trueconf] startAccount: account ${accountId} missing required config`)
@@ -564,6 +569,7 @@ export const channelPlugin = {
           chatTypes: store.chatTypeByChatId,
           inflightChatTypes: store.inflightChatTypeLookups,
           recentBotMsgIds: store.recentBotMsgIdsByChat,
+          isAlwaysRespond: alwaysRespond.isAlwaysRespond,
         }
         Promise.resolve(handleInboundMessage(msg, inboundCtx)).catch((err) => {
           logger.error(`[trueconf] handleInboundMessage threw: ${err instanceof Error ? err.message : String(err)}`)

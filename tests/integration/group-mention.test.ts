@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { TrueConfFlatConfig } from '../../src/types'
 
 vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
   dispatchInboundDirectDmWithRuntime: vi.fn().mockResolvedValue({}),
@@ -15,7 +16,10 @@ interface Harness {
   startPromise: Promise<void>
 }
 
-async function bootPlugin(server: FakeServer): Promise<Harness> {
+async function bootPlugin(
+  server: FakeServer,
+  extraConfig: Partial<TrueConfFlatConfig> = {},
+): Promise<Harness> {
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
   const api = {
     logger,
@@ -28,6 +32,7 @@ async function bootPlugin(server: FakeServer): Promise<Harness> {
           useTls: false,
           username: 'bot@srv',
           password: 'secret',
+          ...extraConfig,
         },
       },
     },
@@ -54,10 +59,11 @@ function groupTextEnvelope(opts: {
   parseMode: 'text' | 'markdown' | 'html'
   messageId: string
   replyMessageId?: string
+  chatId?: string
 }) {
   return {
     type: 200,
-    chatId: GROUP_CHAT,
+    chatId: opts.chatId ?? GROUP_CHAT,
     author: { id: opts.author, type: 1 },
     content: { text: opts.text, parseMode: opts.parseMode },
     messageId: opts.messageId,
@@ -342,5 +348,40 @@ describe('integration: group chat mention/reply gate', () => {
     expect(arg.peer.kind).toBe('direct')
     expect(arg.peer.id).toBe(ALICE)
     expect(arg.senderId).toBe(ALICE)
+  })
+
+  it('bypasses mention gate when chatId is listed in groupAlwaysRespondIn', async () => {
+    const ALWAYS_CHAT = 'chat_group_abc'
+    server.setChatType(ALWAYS_CHAT, 2)
+    harness = await bootPlugin(server, { groupAlwaysRespondIn: ['chatId:chat_group_abc'] })
+
+    server.pushInbound(groupTextEnvelope({
+      author: ALICE,
+      text: 'no mention here',
+      parseMode: 'text',
+      messageId: 'gar1',
+      chatId: ALWAYS_CHAT,
+    }))
+
+    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
+    expect(dispatch).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps existing gate when chatId is absent from groupAlwaysRespondIn', async () => {
+    const OTHER_CHAT = 'chat_group_xyz'
+    server.setChatType(OTHER_CHAT, 2)
+    harness = await bootPlugin(server, { groupAlwaysRespondIn: ['chatId:not_this_one'] })
+
+    server.pushInbound(groupTextEnvelope({
+      author: ALICE,
+      text: 'no mention here',
+      parseMode: 'text',
+      messageId: 'gar2',
+      chatId: OTHER_CHAT,
+    }))
+
+    // Give it time to *not* dispatch
+    await new Promise((r) => setTimeout(r, 200))
+    expect(dispatch).not.toHaveBeenCalled()
   })
 })

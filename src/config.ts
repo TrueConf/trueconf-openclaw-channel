@@ -129,8 +129,8 @@ export function resolveSecret(value: string | SecretRef | undefined): string | u
 }
 
 export interface ParsedAlwaysRespondConfig {
-  configuredChatIds: Set<string>
-  configuredTitles: Set<string>
+  readonly configuredChatIds: ReadonlySet<string>
+  readonly configuredTitles: ReadonlySet<string>
 }
 
 interface ParseLogger {

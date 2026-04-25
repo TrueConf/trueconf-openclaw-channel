@@ -19,8 +19,8 @@ export class AlwaysRespondResolver {
   private static readonly GET_CHATS_PAGE_SIZE = 100
   private static readonly GET_CHATS_BACKOFF_MS = [500, 1000, 2000] as const
 
-  private readonly configuredChatIds: Set<string>
-  private readonly configuredTitles: Set<string>
+  private readonly configuredChatIds: ReadonlySet<string>
+  private readonly configuredTitles: ReadonlySet<string>
   private readonly titleByChatId = new Map<string, string>()
   private readonly titleResolvedChatIds = new Set<string>()
 

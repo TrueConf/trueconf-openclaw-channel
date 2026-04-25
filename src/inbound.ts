@@ -183,7 +183,7 @@ export interface InboundContext {
   chatTypes: Map<string, ResolvedChatKind>
   inflightChatTypes: Map<string, Promise<ResolvedChatKind>>
   recentBotMsgIds: Map<string, Set<string>>
-  isAlwaysRespond?: (chatId: string) => boolean
+  isAlwaysRespond: (chatId: string) => boolean
 }
 
 export async function handleInboundMessage(
@@ -235,31 +235,28 @@ export async function handleInboundMessage(
 
   const key = coalesceKey(ctx.accountId, chatId, stableUserId)
 
-  // Group activation gate: bot must be @-mentioned (html) or the message must
-  // reply to a recent bot message. Attachment-only messages still pass when a
-  // preceding gated text is waiting in the coalescer (text+file as one turn).
-  if (kind === 'group') {
-    if (ctx.isAlwaysRespond?.(chatId)) {
-      // bypass mention/reply gate; fall through to dispatch
-    } else {
-      let activated = false
-      if (envelope.type === EnvelopeType.PLAIN_MESSAGE) {
-        const content = envelope.content as { text: string; parseMode?: string }
-        const botUserId = ctx.wsClient.botUserId ?? ''
-        const normalizedBot = normalizeForCompare(botUserId)
-        const mentioned = normalizedBot.length > 0 && extractMentionedUserIds(content.text, content.parseMode).some(
-          (id) => normalizeForCompare(id) === normalizedBot,
-        )
-        const replied = isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))
-        activated = mentioned || replied
-      } else if (envelope.type === EnvelopeType.ATTACHMENT) {
-        const replied = isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))
-        activated = replied || pendingTextInbounds.has(key)
-      }
-      if (!activated) {
-        ctx.logger.info(`[trueconf] group ${chatId}: no mention/reply, dropping`)
-        return
-      }
+  // Group activation gate (skipped when isAlwaysRespond(chatId) is true):
+  // bot must be @-mentioned (html) or the message must reply to a recent bot
+  // message. Attachment-only messages still pass when a preceding gated text
+  // is waiting in the coalescer (text+file as one turn).
+  if (kind === 'group' && !ctx.isAlwaysRespond(chatId)) {
+    let activated = false
+    if (envelope.type === EnvelopeType.PLAIN_MESSAGE) {
+      const content = envelope.content as { text: string; parseMode?: string }
+      const botUserId = ctx.wsClient.botUserId ?? ''
+      const normalizedBot = normalizeForCompare(botUserId)
+      const mentioned = normalizedBot.length > 0 && extractMentionedUserIds(content.text, content.parseMode).some(
+        (id) => normalizeForCompare(id) === normalizedBot,
+      )
+      const replied = isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))
+      activated = mentioned || replied
+    } else if (envelope.type === EnvelopeType.ATTACHMENT) {
+      const replied = isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))
+      activated = replied || pendingTextInbounds.has(key)
+    }
+    if (!activated) {
+      ctx.logger.info(`[trueconf] group ${chatId}: no mention/reply, dropping`)
+      return
     }
   }
 

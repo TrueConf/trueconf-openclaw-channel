@@ -44,6 +44,12 @@ export class AlwaysRespondResolver {
 
   async rebuildFromWire(): Promise<void> {
     this.wire.logger.info('[trueconf] always-respond: rebuilding from wire')
+    // Flip BEFORE clearing derived state. `enqueueEvent` only invokes
+    // drainQueue when `!buffering`; if a push event arrives between
+    // `clear()` and the snapshot loop below, draining it against an
+    // empty cache would lose the resolution. Synchronous prefix runs
+    // before the first await, so callers that fire-and-forget this via
+    // `void rebuildFromWire()` still see buffering active immediately.
     this.buffering = true
     try {
       this.titleByChatId.clear()
@@ -79,6 +85,13 @@ export class AlwaysRespondResolver {
     }
   }
 
+  // 1 retry × 200ms — push handlers run inside the single FIFO drain, so a
+  // long backoff would stall every sibling event. Compare with `getChats`
+  // (3× 500/1000/2000ms): that runs only at startup/re-auth where stalls
+  // are acceptable. Persistent failures fall through to the next-enumerate
+  // reconcile via the warn-and-skip path in handleEvent. Retry only fires
+  // on thrown errors; non-zero `errorCode` from the wire adapter returns
+  // null directly (no retry — explicit "chat not found" is not transient).
   private async fetchChatByIDWithRetry(chatId: string): Promise<{ chatType: number; title: string } | null> {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {

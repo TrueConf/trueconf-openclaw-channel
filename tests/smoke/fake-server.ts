@@ -70,7 +70,7 @@ export interface FakeServer {
   clientAcks: number[]
   connections: Set<WebSocket>
   chats: ChatRegistry
-  configureFailures: (opts: { getChats?: number }) => void
+  configureFailures: (opts: { getChats?: number; getChatByID?: number; getChatByIDOmitErrorCode?: number }) => void
   pushInbound: (envelope: Json) => void
   pushFileProgress: (fileId: string, progress: number) => void
   pushEvent: (method: string, payload: Json) => void
@@ -129,8 +129,12 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
   }
 
   let getChatsFailures = 0
-  function configureFailures(opts: { getChats?: number }): void {
+  let getChatByIDFailures = 0
+  let getChatByIDOmitErrorCode = 0
+  function configureFailures(opts: { getChats?: number; getChatByID?: number; getChatByIDOmitErrorCode?: number }): void {
     if (opts.getChats !== undefined) getChatsFailures = opts.getChats
+    if (opts.getChatByID !== undefined) getChatByIDFailures = opts.getChatByID
+    if (opts.getChatByIDOmitErrorCode !== undefined) getChatByIDOmitErrorCode = opts.getChatByIDOmitErrorCode
   }
 
   const httpUploads: FakeHttpUpload[] = []
@@ -301,14 +305,22 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
       }
       if (method === 'getChatByID') {
         getChatByIdRequests.push({ id, method, payload })
-        const chatId = String(payload.chatId ?? '')
-        const reg = chats.getById(chatId)
-        if (reg) {
-          send(ws, { type: 2, id, payload: { errorCode: 0, chatId, title: reg.title, chatType: reg.chatType, unreadMessages: 0 } })
+        if (getChatByIDFailures > 0) {
+          getChatByIDFailures -= 1
+          send(ws, { type: 2, id, payload: { errorCode: 1, errorDescription: 'forced' } })
           return
         }
-        const chatType = chatTypeOverrides.get(chatId) ?? 1
-        send(ws, { type: 2, id, payload: { errorCode: 0, chatId, title: chatId, chatType, unreadMessages: 0 } })
+        const chatId = String(payload.chatId ?? '')
+        const reg = chats.getById(chatId)
+        const basePayload: Json = reg
+          ? { chatId, title: reg.title, chatType: reg.chatType, unreadMessages: 0 }
+          : { chatId, title: chatId, chatType: chatTypeOverrides.get(chatId) ?? 1, unreadMessages: 0 }
+        if (getChatByIDOmitErrorCode > 0) {
+          getChatByIDOmitErrorCode -= 1
+          send(ws, { type: 2, id, payload: basePayload })
+          return
+        }
+        send(ws, { type: 2, id, payload: { errorCode: 0, ...basePayload } })
         return
       }
       send(ws, { type: 2, id, payload: { errorCode: 0 } })

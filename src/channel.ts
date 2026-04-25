@@ -77,20 +77,53 @@ export function shutdownAccountEntry(entry: {
   entry.dispatcher?.close().catch(() => { /* best-effort */ })
 }
 
-function mapPushToResolverEvent(method: string, payload: Record<string, unknown>): ResolverEvent | null {
+function readNonEmptyString(payload: Record<string, unknown>, key: string): string | undefined {
+  const v = payload[key]
+  return typeof v === 'string' && v.length > 0 ? v : undefined
+}
+
+// Reject malformed payloads at the boundary instead of forwarding empty-string
+// chatIds into the resolver — those waste two getChatByID round-trips per push
+// and emit logs with empty parens that read like a different bug.
+export function mapPushToResolverEvent(
+  method: string,
+  payload: Record<string, unknown>,
+  logger: Logger,
+): ResolverEvent | null {
+  const drop = (reason: string): null => {
+    logger.warn(`[trueconf] always-respond: dropping push ${method}: ${reason}`)
+    return null
+  }
+  const chatId = readNonEmptyString(payload, 'chatId')
+
   switch (method) {
-    case 'addChatParticipant':
-      return { kind: 'add', chatId: String(payload.chatId ?? ''), userId: String(payload.userId ?? '') }
-    case 'removeChatParticipant':
-      return { kind: 'remove', chatId: String(payload.chatId ?? ''), userId: String(payload.userId ?? '') }
+    case 'addChatParticipant': {
+      if (!chatId) return drop('missing chatId')
+      const userId = readNonEmptyString(payload, 'userId')
+      if (!userId) return drop('missing userId')
+      return { kind: 'add', chatId, userId }
+    }
+    case 'removeChatParticipant': {
+      if (!chatId) return drop('missing chatId')
+      const userId = readNonEmptyString(payload, 'userId')
+      if (!userId) return drop('missing userId')
+      return { kind: 'remove', chatId, userId }
+    }
     case 'createGroupChat':
-      return { kind: 'createGroup', chatId: String(payload.chatId ?? '') }
+      if (!chatId) return drop('missing chatId')
+      return { kind: 'createGroup', chatId }
     case 'createChannel':
-      return { kind: 'createChannel', chatId: String(payload.chatId ?? '') }
-    case 'editChatTitle':
-      return { kind: 'rename', chatId: String(payload.chatId ?? ''), title: String(payload.title ?? '') }
+      if (!chatId) return drop('missing chatId')
+      return { kind: 'createChannel', chatId }
+    case 'editChatTitle': {
+      if (!chatId) return drop('missing chatId')
+      const title = readNonEmptyString(payload, 'title')
+      if (!title) return drop('missing title')
+      return { kind: 'rename', chatId, title }
+    }
     case 'removeChat':
-      return { kind: 'removeChat', chatId: String(payload.chatId ?? '') }
+      if (!chatId) return drop('missing chatId')
+      return { kind: 'removeChat', chatId }
     default:
       return null
   }
@@ -416,7 +449,11 @@ export const channelPlugin = {
         },
         getChatByID: async (chatId) => {
           const resp = await wsClient.sendRequest('getChatByID', { chatId })
-          if (resp.payload?.errorCode !== 0) return null
+          // Match resolveChatType (inbound.ts): missing errorCode === success.
+          // Some TrueConf servers omit errorCode on success — treating undefined
+          // as failure made every push lookup silently skip on those servers.
+          const errorCode = resp.payload?.errorCode
+          if (typeof errorCode === 'number' && errorCode !== 0) return null
           return { chatType: Number(resp.payload?.chatType), title: String(resp.payload?.title ?? '') }
         },
         logger,
@@ -617,7 +654,7 @@ export const channelPlugin = {
       }
 
       const unsubscribePush = wsClient.onPush((method, payload) => {
-        const ev = mapPushToResolverEvent(method, payload)
+        const ev = mapPushToResolverEvent(method, payload, logger)
         if (ev) alwaysRespond.enqueueEvent(ev)
       })
       const unsubscribeAuth = wsClient.onAuth(() => {

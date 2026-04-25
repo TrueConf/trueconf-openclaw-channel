@@ -145,7 +145,11 @@ export class WsClient {
               this.botUserId = (response.payload?.userId as string) ?? null
               for (const l of this.authListeners) {
                 try { l() }
-                catch (err) { this.logger?.warn(`[trueconf] auth listener error: ${err instanceof Error ? err.message : String(err)}`) }
+                catch (err) {
+                  this.logger?.error(
+                    `[trueconf] auth listener error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
+                  )
+                }
               }
               settle(() => resolve())
             }
@@ -173,7 +177,11 @@ export class WsClient {
             // Notify push listeners (skip uploadFileProgress — handled above).
             for (const l of this.pushListeners) {
               try { l(msg.method, (msg.payload ?? {}) as Record<string, unknown>) }
-              catch (err) { this.logger?.warn(`[trueconf] push listener error: ${err instanceof Error ? err.message : String(err)}`) }
+              catch (err) {
+                this.logger?.error(
+                  `[trueconf] push listener error for method=${msg.method}: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
+                )
+              }
             }
             if (this.onInboundMessage) this.onInboundMessage(msg as TrueConfRequest)
           }

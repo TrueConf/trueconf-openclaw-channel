@@ -127,3 +127,59 @@ export function resolveSecret(value: string | SecretRef | undefined): string | u
   }
   return undefined
 }
+
+export interface ParsedAlwaysRespondConfig {
+  configuredChatIds: Set<string>
+  configuredTitles: Set<string>
+}
+
+interface ParseLogger {
+  warn: (msg: string) => void
+}
+
+export function parseAlwaysRespondConfig(
+  raw: unknown,
+  logger: ParseLogger,
+): ParsedAlwaysRespondConfig {
+  const configuredChatIds = new Set<string>()
+  const configuredTitles = new Set<string>()
+  if (raw === undefined || raw === null) return { configuredChatIds, configuredTitles }
+  if (!Array.isArray(raw)) {
+    logger.warn('[trueconf] always-respond: groupAlwaysRespondIn must be an array of strings; ignoring')
+    return { configuredChatIds, configuredTitles }
+  }
+
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || entry.length === 0 || entry.includes('\0')) {
+      logger.warn(`[trueconf] always-respond: entry ${JSON.stringify(entry)} is not a non-empty NUL-free string, skipping`)
+      continue
+    }
+
+    let kind: 'chatId' | 'title'
+    let suffix: string
+    if (entry.startsWith('chatId:')) {
+      kind = 'chatId'
+      suffix = entry.slice('chatId:'.length).trim()
+    } else if (entry.startsWith('title:')) {
+      kind = 'title'
+      suffix = entry.slice('title:'.length).trim().toLowerCase()
+    } else {
+      kind = 'title'
+      suffix = entry.trim().toLowerCase()
+    }
+
+    if (suffix.length === 0) {
+      logger.warn(`[trueconf] always-respond: entry "${entry}" has empty suffix, skipping`)
+      continue
+    }
+
+    const target = kind === 'chatId' ? configuredChatIds : configuredTitles
+    if (target.has(suffix)) {
+      logger.warn(`[trueconf] always-respond: duplicate ${kind} entry "${suffix}", deduplicating`)
+      continue
+    }
+    target.add(suffix)
+  }
+
+  return { configuredChatIds, configuredTitles }
+}

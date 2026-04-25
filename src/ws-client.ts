@@ -87,6 +87,9 @@ export class WsClient {
   // written to caPath). Passed straight through to ws's `ca` option.
   public ca: Buffer | undefined = undefined
 
+  private pushListeners: Array<(method: string, payload: Record<string, unknown>) => void> = []
+  private authListeners: Array<() => void> = []
+
   constructor(options?: { ca?: Buffer }) {
     if (options?.ca) this.ca = options.ca
   }
@@ -97,6 +100,20 @@ export class WsClient {
 
   offFileProgress(fileId: string): void {
     this.progressHandlers.delete(fileId)
+  }
+
+  onPush(listener: (method: string, payload: Record<string, unknown>) => void): () => void {
+    this.pushListeners.push(listener)
+    return () => {
+      this.pushListeners = this.pushListeners.filter((l) => l !== listener)
+    }
+  }
+
+  onAuth(listener: () => void): () => void {
+    this.authListeners.push(listener)
+    return () => {
+      this.authListeners = this.authListeners.filter((l) => l !== listener)
+    }
   }
 
   connect(config: TrueConfAccountConfig, token: string): Promise<void> {
@@ -126,6 +143,10 @@ export class WsClient {
               settle(() => reject(new Error(`Auth failed: errorCode ${errorCode}${desc ? ' - ' + desc : ''}`)))
             } else {
               this.botUserId = (response.payload?.userId as string) ?? null
+              for (const l of this.authListeners) {
+                try { l() }
+                catch (err) { this.logger?.warn(`[trueconf] auth listener error: ${err instanceof Error ? err.message : String(err)}`) }
+              }
               settle(() => resolve())
             }
           })
@@ -148,6 +169,11 @@ export class WsClient {
                 this.progressHandlers.get(fileId)?.(progress)
               }
               return
+            }
+            // Notify push listeners (skip uploadFileProgress — handled above).
+            for (const l of this.pushListeners) {
+              try { l(msg.method, (msg.payload ?? {}) as Record<string, unknown>) }
+              catch (err) { this.logger?.warn(`[trueconf] push listener error: ${err instanceof Error ? err.message : String(err)}`) }
             }
             if (this.onInboundMessage) this.onInboundMessage(msg as TrueConfRequest)
           }

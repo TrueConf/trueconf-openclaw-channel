@@ -30,7 +30,7 @@ import {
   shouldAllowMessage,
   parseAlwaysRespondConfig,
 } from './config'
-import { AlwaysRespondResolver, type WireAdapter } from './always-respond'
+import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './always-respond'
 import { WsClient, ConnectionLifecycle } from './ws-client'
 import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage } from './types'
 
@@ -70,16 +70,37 @@ export function shutdownAccountEntry(entry: {
   lifecycle: ConnectionLifecycle
   wsClient: WsClient
   dispatcher?: Dispatcher
+  unsubscribers?: Array<() => void>
 }): void {
+  for (const u of entry.unsubscribers ?? []) try { u() } catch { /* ignore */ }
   entry.lifecycle.shutdown()
   entry.dispatcher?.close().catch(() => { /* best-effort */ })
+}
+
+function mapPushToResolverEvent(method: string, payload: Record<string, unknown>): ResolverEvent | null {
+  switch (method) {
+    case 'addChatParticipant':
+      return { kind: 'add', chatId: String(payload.chatId ?? ''), userId: String(payload.userId ?? '') }
+    case 'removeChatParticipant':
+      return { kind: 'remove', chatId: String(payload.chatId ?? ''), userId: String(payload.userId ?? '') }
+    case 'createGroupChat':
+      return { kind: 'createGroup', chatId: String(payload.chatId ?? '') }
+    case 'createChannel':
+      return { kind: 'createChannel', chatId: String(payload.chatId ?? '') }
+    case 'editChatTitle':
+      return { kind: 'rename', chatId: String(payload.chatId ?? ''), title: String(payload.title ?? '') }
+    case 'removeChat':
+      return { kind: 'removeChat', chatId: String(payload.chatId ?? '') }
+    default:
+      return null
+  }
 }
 
 const pluginRuntimeStore = createPluginRuntimeStore<PluginRuntime>("TrueConf runtime not initialized")
 
 export function createRuntimeStore() {
   return {
-    accounts: new Map<string, { lifecycle: ConnectionLifecycle; wsClient: WsClient; dispatcher?: Dispatcher }>(),
+    accounts: new Map<string, { lifecycle: ConnectionLifecycle; wsClient: WsClient; dispatcher?: Dispatcher; unsubscribers?: Array<() => void> }>(),
     logger: null as Logger | null,
     runtime: null as unknown,
     fullConfig: null as unknown,
@@ -595,7 +616,17 @@ export const channelPlugin = {
         })
       }
 
-      store.accounts.set(accountId, { lifecycle, wsClient, dispatcher })
+      const unsubscribePush = wsClient.onPush((method, payload) => {
+        const ev = mapPushToResolverEvent(method, payload)
+        if (ev) alwaysRespond.enqueueEvent(ev)
+      })
+      const unsubscribeAuth = wsClient.onAuth(() => {
+        void alwaysRespond.rebuildFromWire().catch((err) => {
+          logger.warn(`[trueconf] always-respond: re-auth rebuild failed: ${err instanceof Error ? err.message : String(err)}`)
+        })
+      })
+
+      store.accounts.set(accountId, { lifecycle, wsClient, dispatcher, unsubscribers: [unsubscribePush, unsubscribeAuth] })
 
       try {
         await lifecycle.start()
@@ -608,12 +639,6 @@ export const channelPlugin = {
           lastError: err instanceof Error ? err.message : String(err),
         })
         return
-      }
-
-      try {
-        await alwaysRespond.rebuildFromWire()
-      } catch (err) {
-        logger.warn(`[trueconf] always-respond: rebuild failed: ${err instanceof Error ? err.message : String(err)}`)
       }
 
       await waitUntilAbort(ctx.abortSignal, () => {

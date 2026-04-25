@@ -73,6 +73,7 @@ export interface FakeServer {
   configureFailures: (opts: { getChats?: number }) => void
   pushInbound: (envelope: Json) => void
   pushFileProgress: (fileId: string, progress: number) => void
+  pushEvent: (method: string, payload: Json) => void
   dropAll: () => void
   setFile: (fileId: string, file: FakeFile) => void
   setFileInfoSequence: (fileId: string, sequence: FakeFileInfoReply[]) => void
@@ -342,6 +343,10 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
     pushInbound(envelope) {
       const id = nextServerRequestId++
       for (const ws of connections) send(ws, { type: 1, id, method: 'sendMessage', payload: envelope })
+    },
+    pushEvent(method, payload) {
+      const id = nextServerRequestId++
+      for (const ws of connections) send(ws, { type: 1, id, method, payload })
     },
     pushFileProgress(fileId, progress) {
       const id = nextServerRequestId++

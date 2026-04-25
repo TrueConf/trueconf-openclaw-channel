@@ -30,7 +30,7 @@ import {
   shouldAllowMessage,
   parseAlwaysRespondConfig,
 } from './config'
-import { AlwaysRespondResolver } from './always-respond'
+import { AlwaysRespondResolver, type WireAdapter } from './always-respond'
 import { WsClient, ConnectionLifecycle } from './ws-client'
 import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage } from './types'
 
@@ -355,9 +355,6 @@ export const channelPlugin = {
       // reference instead of `store.channelConfig!`, which would NPE if the
       // early return ever moves.
       const channelConfig = store.channelConfig
-      const alwaysRespond = new AlwaysRespondResolver(
-        parseAlwaysRespondConfig(channelConfig.groupAlwaysRespondIn, logger),
-      )
       const resolved = resolveAccountImpl(channelConfig, accountId)
       if (!resolved.serverUrl || !resolved.username || !resolved.password) {
         logger.error(`[trueconf] startAccount: account ${accountId} missing required config`)
@@ -386,6 +383,28 @@ export const channelPlugin = {
 
       const wsClient = new WsClient({ ca })
       wsClient.logger = logger
+
+      const wireAdapter: WireAdapter = {
+        get botUserId() { return wsClient.botUserId },
+        getChats: async (p) => {
+          const resp = await wsClient.sendRequest('getChats', p as unknown as Record<string, unknown>)
+          if (!resp.payload || (resp.payload.errorCode !== 0 && resp.payload.errorCode !== undefined)) {
+            throw new Error(`getChats: unexpected response (errorCode=${resp.payload?.errorCode ?? 'missing'})`)
+          }
+          return ((resp.payload.chats as Array<{ chatId: string; title: string; chatType: number }> | undefined) ?? [])
+        },
+        getChatByID: async (chatId) => {
+          const resp = await wsClient.sendRequest('getChatByID', { chatId })
+          if (resp.payload?.errorCode !== 0) return null
+          return { chatType: Number(resp.payload?.chatType), title: String(resp.payload?.title ?? '') }
+        },
+        logger,
+      }
+
+      const alwaysRespond = new AlwaysRespondResolver(
+        parseAlwaysRespondConfig(channelConfig.groupAlwaysRespondIn, logger),
+        wireAdapter,
+      )
 
       const lifecycle = new ConnectionLifecycle(
         wsClient,
@@ -589,6 +608,12 @@ export const channelPlugin = {
           lastError: err instanceof Error ? err.message : String(err),
         })
         return
+      }
+
+      try {
+        await alwaysRespond.rebuildFromWire()
+      } catch (err) {
+        logger.warn(`[trueconf] always-respond: rebuild failed: ${err instanceof Error ? err.message : String(err)}`)
       }
 
       await waitUntilAbort(ctx.abortSignal, () => {

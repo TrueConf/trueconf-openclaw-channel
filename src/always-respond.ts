@@ -31,6 +31,7 @@ export class AlwaysRespondResolver {
   private queue: ResolverEvent[] = []
   private draining = false
   private buffering = false
+  private rebuildInFlight: Promise<void> | null = null
 
   constructor(
     parsed: ParsedAlwaysRespondConfig,
@@ -50,7 +51,21 @@ export class AlwaysRespondResolver {
     if (!this.buffering) void this.drainQueue()
   }
 
+  // Re-auth fires `rebuildFromWire` on every reconnect. If a second auth
+  // races in while pagination is mid-flight, two concurrent rebuilds would
+  // share `clear()` + the title maps and corrupt each other's snapshot.
+  // Coalesce overlapping callers onto the in-flight promise — the snapshot
+  // from the first call is still authoritative; any state change between
+  // the two reconnects will be replayed via push events anyway.
   async rebuildFromWire(): Promise<void> {
+    if (this.rebuildInFlight) return this.rebuildInFlight
+    this.rebuildInFlight = this.doRebuildFromWire().finally(() => {
+      this.rebuildInFlight = null
+    })
+    return this.rebuildInFlight
+  }
+
+  private async doRebuildFromWire(): Promise<void> {
     this.logger.info('[trueconf] always-respond: rebuilding from wire')
     // Flip BEFORE clearing derived state. `enqueueEvent` only invokes
     // drainQueue when `!buffering`; if a push event arrives between

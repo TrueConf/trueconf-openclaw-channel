@@ -291,4 +291,33 @@ describe('unit: AlwaysRespondResolver — retry exhaustion and FIFO ordering', (
     expect(resolver.isAlwaysRespond('grp_anything')).toBe(false)
     expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('"hr" not found now'))
   })
+
+  it('coalesces overlapping rebuildFromWire calls onto a single in-flight promise', async () => {
+    const logger = makeLogger()
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => { release = r })
+    const getChats = vi.fn().mockImplementation(async () => { await gate; return [] })
+
+    const wire: WireAdapter = {
+      botUserId: BOT_ID,
+      getChats,
+      getChatByID: vi.fn(),
+    }
+    const resolver = new AlwaysRespondResolver(parseAlwaysRespondConfig(['HR'], logger), wire, logger)
+
+    const first = resolver.rebuildFromWire()
+    const second = resolver.rebuildFromWire()
+    const third = resolver.rebuildFromWire()
+
+    await new Promise((r) => setTimeout(r, 30))
+    expect(getChats).toHaveBeenCalledTimes(1)
+
+    release()
+    await Promise.all([first, second, third])
+    expect(getChats).toHaveBeenCalledTimes(1)
+
+    // After the in-flight promise settles, a fresh call paginates again.
+    await resolver.rebuildFromWire()
+    expect(getChats).toHaveBeenCalledTimes(2)
+  })
 })

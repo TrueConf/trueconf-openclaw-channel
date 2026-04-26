@@ -101,7 +101,7 @@ export async function sendRequestWithReconnectRetry(
   throw lastError instanceof Error ? lastError : new Error(String(lastError))
 }
 
-function responseErrorCode(response: TrueConfResponse): number | undefined {
+export function responseErrorCode(response: TrueConfResponse): number | undefined {
   const code = response.payload?.errorCode
   return typeof code === 'number' ? code : undefined
 }

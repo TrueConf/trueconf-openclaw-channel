@@ -1,11 +1,16 @@
 import type { ParsedAlwaysRespondConfig } from './config'
 import { TrueConfChatType } from './types'
+import type { Logger } from './types'
 
 export interface WireAdapter {
   botUserId: string | null
   getChats: (payload: { count: number; page: number }) => Promise<Array<{ chatId: string; title: string; chatType: number }>>
   getChatByID: (chatId: string) => Promise<{ chatType: number; title: string } | null>
-  logger: { info: (s: string) => void; warn: (s: string) => void; error: (s: string) => void }
+  logger: Logger
+}
+
+export function normalizeTitle(raw: string): string {
+  return raw.trim().toLowerCase()
 }
 
 export type ResolverEvent =
@@ -58,7 +63,7 @@ export class AlwaysRespondResolver {
       const snapshot = await this.fetchAllChats()
       for (const chat of snapshot) {
         if (chat.chatType !== TrueConfChatType.GROUP) continue
-        const normTitle = chat.title.trim().toLowerCase()
+        const normTitle = normalizeTitle(chat.title)
         this.titleByChatId.set(chat.chatId, normTitle)
         if (this.configuredTitles.has(normTitle)) {
           this.titleResolvedChatIds.add(chat.chatId)
@@ -120,7 +125,7 @@ export class AlwaysRespondResolver {
           return
         }
         if (info.chatType !== TrueConfChatType.GROUP) return
-        const normTitle = info.title.trim().toLowerCase()
+        const normTitle = normalizeTitle(info.title)
         this.titleByChatId.set(ev.chatId, normTitle)
         if (this.configuredTitles.has(normTitle)) {
           this.titleResolvedChatIds.add(ev.chatId)
@@ -144,7 +149,7 @@ export class AlwaysRespondResolver {
             return
           }
           if (info.chatType !== TrueConfChatType.GROUP) return
-          const newNorm = info.title.trim().toLowerCase()
+          const newNorm = normalizeTitle(info.title)
           this.titleByChatId.set(ev.chatId, newNorm)
           if (this.configuredTitles.has(newNorm)) {
             this.titleResolvedChatIds.add(ev.chatId)
@@ -155,7 +160,7 @@ export class AlwaysRespondResolver {
           }
           return
         }
-        const newNorm = ev.title.trim().toLowerCase()
+        const newNorm = normalizeTitle(ev.title)
         this.titleByChatId.set(ev.chatId, newNorm)
         const wasMatch = this.configuredTitles.has(oldNorm)
         const isMatch = this.configuredTitles.has(newNorm)

@@ -16,6 +16,7 @@ import {
   sanitizeMarkdown,
   handleOutboundAttachment,
   handleOutboundAttachmentToChat,
+  responseErrorCode,
 } from './outbound'
 import { handleInboundMessage, prepareInboundAttachment, unlinkTempFile, normalizeForCompare, rememberBotMessage, __resetCoalesceBufferForTesting } from './inbound'
 import type { InboundContext } from './inbound'
@@ -79,7 +80,7 @@ export function shutdownAccountEntry(entry: {
 
 function readNonEmptyString(payload: Record<string, unknown>, key: string): string | undefined {
   const v = payload[key]
-  return typeof v === 'string' && v.length > 0 ? v : undefined
+  return typeof v === 'string' && v.length > 0 && !v.includes('\0') ? v : undefined
 }
 
 // Reject malformed payloads at the boundary instead of forwarding empty-string
@@ -442,18 +443,19 @@ export const channelPlugin = {
         get botUserId() { return wsClient.botUserId },
         getChats: async (p) => {
           const resp = await wsClient.sendRequest('getChats', p as unknown as Record<string, unknown>)
-          if (!resp.payload || (resp.payload.errorCode !== 0 && resp.payload.errorCode !== undefined)) {
-            throw new Error(`getChats: unexpected response (errorCode=${resp.payload?.errorCode ?? 'missing'})`)
+          const errorCode = responseErrorCode(resp)
+          if (errorCode !== undefined && errorCode !== 0) {
+            throw new Error(`getChats: unexpected response (errorCode=${errorCode})`)
           }
-          return ((resp.payload.chats as Array<{ chatId: string; title: string; chatType: number }> | undefined) ?? [])
+          return ((resp.payload?.chats as Array<{ chatId: string; title: string; chatType: number }> | undefined) ?? [])
         },
         getChatByID: async (chatId) => {
           const resp = await wsClient.sendRequest('getChatByID', { chatId })
           // Match resolveChatType (inbound.ts): missing errorCode === success.
           // Some TrueConf servers omit errorCode on success — treating undefined
           // as failure made every push lookup silently skip on those servers.
-          const errorCode = resp.payload?.errorCode
-          if (typeof errorCode === 'number' && errorCode !== 0) return null
+          const errorCode = responseErrorCode(resp)
+          if (errorCode !== undefined && errorCode !== 0) return null
           return { chatType: Number(resp.payload?.chatType), title: String(resp.payload?.title ?? '') }
         },
         logger,

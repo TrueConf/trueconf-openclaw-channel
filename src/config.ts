@@ -4,7 +4,9 @@ import type {
   TrueConfAccountConfig,
   ResolvedAccount,
   AccountDescription,
+  Logger,
 } from './types'
+import { normalizeTitle } from './always-respond'
 
 interface NormalizedConfig {
   accounts: Record<string, TrueConfAccountConfig & { enabled?: boolean }>
@@ -133,13 +135,9 @@ export interface ParsedAlwaysRespondConfig {
   readonly configuredTitles: ReadonlySet<string>
 }
 
-interface ParseLogger {
-  warn: (msg: string) => void
-}
-
 export function parseAlwaysRespondConfig(
   raw: unknown,
-  logger: ParseLogger,
+  logger: Pick<Logger, 'warn'>,
 ): ParsedAlwaysRespondConfig {
   const configuredChatIds = new Set<string>()
   const configuredTitles = new Set<string>()
@@ -162,10 +160,10 @@ export function parseAlwaysRespondConfig(
       suffix = entry.slice('chatId:'.length).trim()
     } else if (entry.startsWith('title:')) {
       kind = 'title'
-      suffix = entry.slice('title:'.length).trim().toLowerCase()
+      suffix = normalizeTitle(entry.slice('title:'.length))
     } else {
       kind = 'title'
-      suffix = entry.trim().toLowerCase()
+      suffix = normalizeTitle(entry)
     }
 
     if (suffix.length === 0) {

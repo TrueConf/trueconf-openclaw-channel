@@ -219,9 +219,8 @@ describe('unit: AlwaysRespondResolver — retry exhaustion and FIFO ordering', (
       botUserId: BOT_ID,
       getChats: async () => [],
       getChatByID: vi.fn().mockRejectedValue(new Error('transport down')),
-      logger,
     }
-    const resolver = new AlwaysRespondResolver(parseAlwaysRespondConfig(['HR'], logger), wire)
+    const resolver = new AlwaysRespondResolver(parseAlwaysRespondConfig(['HR'], logger), wire, logger)
     await resolver.rebuildFromWire()
 
     resolver.enqueueEvent({ kind: 'add', chatId: 'grp_x', userId: BOT_ID })
@@ -236,9 +235,8 @@ describe('unit: AlwaysRespondResolver — retry exhaustion and FIFO ordering', (
       botUserId: BOT_ID,
       getChats: async () => [],
       getChatByID: vi.fn().mockResolvedValue(null),
-      logger,
     }
-    const resolver = new AlwaysRespondResolver(parseAlwaysRespondConfig(['HR'], logger), wire)
+    const resolver = new AlwaysRespondResolver(parseAlwaysRespondConfig(['HR'], logger), wire, logger)
     await resolver.rebuildFromWire()
 
     resolver.enqueueEvent({ kind: 'add', chatId: 'grp_y', userId: BOT_ID })
@@ -259,9 +257,8 @@ describe('unit: AlwaysRespondResolver — retry exhaustion and FIFO ordering', (
         callOrder.push(chatId)
         return { chatType: 2, title: 'HR' }
       }),
-      logger,
     }
-    const resolver = new AlwaysRespondResolver(parseAlwaysRespondConfig(['HR'], logger), wire)
+    const resolver = new AlwaysRespondResolver(parseAlwaysRespondConfig(['HR'], logger), wire, logger)
 
     const rebuildDone = resolver.rebuildFromWire()
     // While rebuildFromWire is awaiting on getChats (blocked by `gate`),
@@ -288,9 +285,8 @@ describe('unit: AlwaysRespondResolver — retry exhaustion and FIFO ordering', (
       botUserId: BOT_ID,
       getChats: async () => [],
       getChatByID: vi.fn(),
-      logger,
     }
-    const resolver = new AlwaysRespondResolver(parseAlwaysRespondConfig(['HR'], logger), wire)
+    const resolver = new AlwaysRespondResolver(parseAlwaysRespondConfig(['HR'], logger), wire, logger)
     await resolver.rebuildFromWire()
     expect(resolver.isAlwaysRespond('grp_anything')).toBe(false)
     expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('"hr" not found now'))

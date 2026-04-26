@@ -4,9 +4,8 @@ import type { Logger } from './types'
 
 export interface WireAdapter {
   botUserId: string | null
-  getChats: (payload: { count: number; page: number }) => Promise<Array<{ chatId: string; title: string; chatType: number }>>
+  getChats: (page: number, pageSize: number) => Promise<Array<{ chatId: string; title: string; chatType: number }>>
   getChatByID: (chatId: string) => Promise<{ chatType: number; title: string } | null>
-  logger: Logger
 }
 
 export function normalizeTitle(raw: string): string {
@@ -33,7 +32,11 @@ export class AlwaysRespondResolver {
   private draining = false
   private buffering = false
 
-  constructor(parsed: ParsedAlwaysRespondConfig, private readonly wire: WireAdapter) {
+  constructor(
+    parsed: ParsedAlwaysRespondConfig,
+    private readonly wire: WireAdapter,
+    private readonly logger: Logger,
+  ) {
     this.configuredChatIds = parsed.configuredChatIds
     this.configuredTitles = parsed.configuredTitles
   }
@@ -48,7 +51,7 @@ export class AlwaysRespondResolver {
   }
 
   async rebuildFromWire(): Promise<void> {
-    this.wire.logger.info('[trueconf] always-respond: rebuilding from wire')
+    this.logger.info('[trueconf] always-respond: rebuilding from wire')
     // Flip BEFORE clearing derived state. `enqueueEvent` only invokes
     // drainQueue when `!buffering`; if a push event arrives between
     // `clear()` and the snapshot loop below, draining it against an
@@ -63,11 +66,7 @@ export class AlwaysRespondResolver {
       const snapshot = await this.fetchAllChats()
       for (const chat of snapshot) {
         if (chat.chatType !== TrueConfChatType.GROUP) continue
-        const normTitle = normalizeTitle(chat.title)
-        this.titleByChatId.set(chat.chatId, normTitle)
-        if (this.configuredTitles.has(normTitle)) {
-          this.titleResolvedChatIds.add(chat.chatId)
-        }
+        this.setTitleAndActivate(chat.chatId, chat.title)
       }
 
       this.emitStartupWarnings()
@@ -110,6 +109,14 @@ export class AlwaysRespondResolver {
     return null
   }
 
+  private setTitleAndActivate(chatId: string, rawTitle: string): { normTitle: string; activated: boolean } {
+    const normTitle = normalizeTitle(rawTitle)
+    this.titleByChatId.set(chatId, normTitle)
+    const activated = this.configuredTitles.has(normTitle)
+    if (activated) this.titleResolvedChatIds.add(chatId)
+    return { normTitle, activated }
+  }
+
   private async handleEvent(ev: ResolverEvent): Promise<void> {
     switch (ev.kind) {
       case 'add':
@@ -119,22 +126,18 @@ export class AlwaysRespondResolver {
         if (ev.kind === 'add' && ev.userId !== this.wire.botUserId) return
         const info = await this.fetchChatByIDWithRetry(ev.chatId)
         if (!info) {
-          this.wire.logger.warn(
+          this.logger.warn(
             `[trueconf] always-respond: getChatByID(${ev.chatId}) failed for ${ev.kind}; skipping bypass update — will reconcile at next enumerate`,
           )
           return
         }
         if (info.chatType !== TrueConfChatType.GROUP) return
-        const normTitle = normalizeTitle(info.title)
-        this.titleByChatId.set(ev.chatId, normTitle)
-        if (this.configuredTitles.has(normTitle)) {
-          this.titleResolvedChatIds.add(ev.chatId)
-          this.wire.logger.info(
-            `[trueconf] chat ${ev.chatId} joined group "${normTitle}" — added to always-respond`,
-          )
+        const { normTitle, activated } = this.setTitleAndActivate(ev.chatId, info.title)
+        if (activated) {
+          this.logger.info(`[trueconf] chat ${ev.chatId} joined group "${normTitle}" — added to always-respond`)
           this.warnIfDuplicate(normTitle, ev.chatId)
         } else {
-          this.wire.logger.info(`[trueconf] chat ${ev.chatId} joined group "${normTitle}"`)
+          this.logger.info(`[trueconf] chat ${ev.chatId} joined group "${normTitle}"`)
         }
         return
       }
@@ -143,20 +146,16 @@ export class AlwaysRespondResolver {
         if (oldNorm === undefined) {
           const info = await this.fetchChatByIDWithRetry(ev.chatId)
           if (!info) {
-            this.wire.logger.warn(
+            this.logger.warn(
               `[trueconf] always-respond: getChatByID(${ev.chatId}) failed for rename; skipping bypass update — will reconcile at next enumerate`,
             )
             return
           }
           if (info.chatType !== TrueConfChatType.GROUP) return
-          const newNorm = normalizeTitle(info.title)
-          this.titleByChatId.set(ev.chatId, newNorm)
-          if (this.configuredTitles.has(newNorm)) {
-            this.titleResolvedChatIds.add(ev.chatId)
-            this.wire.logger.info(
-              `[trueconf] chat ${ev.chatId} joined group "${newNorm}" — added to always-respond`,
-            )
-            this.warnIfDuplicate(newNorm, ev.chatId)
+          const { normTitle, activated } = this.setTitleAndActivate(ev.chatId, info.title)
+          if (activated) {
+            this.logger.info(`[trueconf] chat ${ev.chatId} joined group "${normTitle}" — added to always-respond`)
+            this.warnIfDuplicate(normTitle, ev.chatId)
           }
           return
         }
@@ -167,22 +166,22 @@ export class AlwaysRespondResolver {
         if (wasMatch && !isMatch) {
           this.titleResolvedChatIds.delete(ev.chatId)
           if (this.configuredChatIds.has(ev.chatId)) {
-            this.wire.logger.info(
+            this.logger.info(
               `[trueconf] chat ${ev.chatId} renamed "${oldNorm}" → "${newNorm}", removed from title-resolved (still active via configured chatId)`,
             )
           } else {
-            this.wire.logger.info(
+            this.logger.info(
               `[trueconf] chat ${ev.chatId} renamed "${oldNorm}" → "${newNorm}", removed from always-respond`,
             )
           }
         } else if (!wasMatch && isMatch) {
           this.titleResolvedChatIds.add(ev.chatId)
-          this.wire.logger.info(
+          this.logger.info(
             `[trueconf] chat ${ev.chatId} renamed "${oldNorm}" → "${newNorm}", added to always-respond`,
           )
           this.warnIfDuplicate(newNorm, ev.chatId)
         } else {
-          this.wire.logger.info(`[trueconf] chat ${ev.chatId} renamed "${oldNorm}" → "${newNorm}"`)
+          this.logger.info(`[trueconf] chat ${ev.chatId} renamed "${oldNorm}" → "${newNorm}"`)
         }
         return
       }
@@ -193,11 +192,11 @@ export class AlwaysRespondResolver {
         const wasTitleResolved = this.titleResolvedChatIds.delete(ev.chatId)
         if (wasTitleResolved) {
           if (this.configuredChatIds.has(ev.chatId)) {
-            this.wire.logger.info(
+            this.logger.info(
               `[trueconf] chat ${ev.chatId} removed — dropped from title-resolved (still active via configured chatId)`,
             )
           } else {
-            this.wire.logger.info(`[trueconf] chat ${ev.chatId} removed — dropped from always-respond`)
+            this.logger.info(`[trueconf] chat ${ev.chatId} removed — dropped from always-respond`)
           }
         }
         return
@@ -217,7 +216,7 @@ export class AlwaysRespondResolver {
       if (this.titleByChatId.get(chatId) === title && chatId !== newChatId) others.push(chatId)
     }
     if (others.length > 0) {
-      this.wire.logger.warn(
+      this.logger.warn(
         `[trueconf] always-respond: title "${title}" now matches ${others.length + 1} chats: ${[newChatId, ...others].join(', ')}`,
       )
     }
@@ -229,12 +228,12 @@ export class AlwaysRespondResolver {
     while (true) {
       const chunk = await this.fetchChatsPageWithRetry(page)
       if (chunk === null) {
-        this.wire.logger.warn(
+        this.logger.warn(
           '[trueconf] always-respond: getChats failed after 3 attempts; title entries inactive until next enumerate; configured chatIds remain active',
         )
         return []
       }
-      this.wire.logger.info(`[trueconf] always-respond: getChats page ${page} returned ${chunk.length} chats`)
+      this.logger.info(`[trueconf] always-respond: getChats page ${page} returned ${chunk.length} chats`)
       all.push(...chunk)
       if (chunk.length < AlwaysRespondResolver.GET_CHATS_PAGE_SIZE) break
       page += 1
@@ -245,7 +244,7 @@ export class AlwaysRespondResolver {
   private async fetchChatsPageWithRetry(page: number): Promise<Array<{ chatId: string; title: string; chatType: number }> | null> {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        return await this.wire.getChats({ count: AlwaysRespondResolver.GET_CHATS_PAGE_SIZE, page })
+        return await this.wire.getChats(page, AlwaysRespondResolver.GET_CHATS_PAGE_SIZE)
       } catch {
         if (attempt < 2) await new Promise((r) => setTimeout(r, AlwaysRespondResolver.GET_CHATS_BACKOFF_MS[attempt]))
       }
@@ -265,11 +264,11 @@ export class AlwaysRespondResolver {
     for (const title of this.configuredTitles) {
       const matches = titleMatches.get(title) ?? []
       if (matches.length === 0) {
-        this.wire.logger.info(
+        this.logger.info(
           `[trueconf] always-respond: title "${title}" not found now (will resolve when bot joins a matching group)`,
         )
       } else if (matches.length > 1) {
-        this.wire.logger.warn(
+        this.logger.warn(
           `[trueconf] always-respond: title "${title}" matches ${matches.length} chats, applying to all: ${matches.join(', ')}`,
         )
       }
@@ -277,13 +276,13 @@ export class AlwaysRespondResolver {
 
     for (const chatId of this.configuredChatIds) {
       if (!this.titleByChatId.has(chatId)) {
-        this.wire.logger.info(
+        this.logger.info(
           `[trueconf] always-respond: configured chatId ${chatId} not a group bot is in; bypass stays armed`,
         )
       }
     }
 
-    this.wire.logger.info(
+    this.logger.info(
       `[trueconf] always-respond: ready — ${this.configuredChatIds.size} direct chatIds, ${this.titleResolvedChatIds.size} title-resolved chatIds (${this.configuredTitles.size - titleMatches.size} titles pending)`,
     )
   }

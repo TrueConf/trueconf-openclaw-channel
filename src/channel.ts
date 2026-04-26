@@ -441,8 +441,8 @@ export const channelPlugin = {
 
       const wireAdapter: WireAdapter = {
         get botUserId() { return wsClient.botUserId },
-        getChats: async (p) => {
-          const resp = await wsClient.sendRequest('getChats', p as unknown as Record<string, unknown>)
+        getChats: async (page, pageSize) => {
+          const resp = await wsClient.sendRequest('getChats', { count: pageSize, page })
           const errorCode = responseErrorCode(resp)
           if (errorCode !== undefined && errorCode !== 0) {
             throw new Error(`getChats: unexpected response (errorCode=${errorCode})`)
@@ -458,12 +458,12 @@ export const channelPlugin = {
           if (errorCode !== undefined && errorCode !== 0) return null
           return { chatType: Number(resp.payload?.chatType), title: String(resp.payload?.title ?? '') }
         },
-        logger,
       }
 
       const alwaysRespond = new AlwaysRespondResolver(
         parseAlwaysRespondConfig(channelConfig.groupAlwaysRespondIn, logger),
         wireAdapter,
+        logger,
       )
 
       const lifecycle = new ConnectionLifecycle(

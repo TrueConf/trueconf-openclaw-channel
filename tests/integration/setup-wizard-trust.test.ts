@@ -404,7 +404,7 @@ describe('runHeadlessFinalize — trust paths', () => {
   let server: Awaited<ReturnType<typeof startTlsFixtureServer>>
   beforeEach(async () => { server = await startTlsFixtureServer('ca-valid') })
   afterEach(async () => {
-    for (const k of ['TRUECONF_SERVER_URL','TRUECONF_USERNAME','TRUECONF_PASSWORD','TRUECONF_USE_TLS','TRUECONF_PORT','TRUECONF_CA_PATH','TRUECONF_ACCEPT_UNTRUSTED_CA']) {
+    for (const k of ['TRUECONF_SERVER_URL','TRUECONF_USERNAME','TRUECONF_PASSWORD','TRUECONF_USE_TLS','TRUECONF_PORT','TRUECONF_CA_PATH','TRUECONF_ACCEPT_UNTRUSTED_CA','TRUECONF_TLS_VERIFY']) {
       delete process.env[k]
     }
     await server.close()
@@ -452,6 +452,41 @@ describe('runHeadlessFinalize — trust paths', () => {
     expect((next as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
     const args = oauth().mock.calls[0][0]
     expect(Buffer.from(args.ca!).equals(readFileSync(join(FIXTURES, 'ca-valid.pem')))).toBe(true)
+  })
+
+  it('TRUECONF_TLS_VERIFY=false → tlsVerify=false saved, OAuth gets tlsVerify=false and no ca', async () => {
+    baseEnv()
+    process.env.TRUECONF_TLS_VERIFY = 'false'
+    const next = await runHeadlessFinalize({} as never)
+    expect((next as any).channels.trueconf.tlsVerify).toBe(false)
+    expect((next as any).channels.trueconf.caPath).toBeUndefined()
+    const args = oauth().mock.calls[0][0] as { tlsVerify?: boolean; ca?: unknown }
+    expect(args.tlsVerify).toBe(false)
+    expect(args.ca).toBeUndefined()
+  })
+
+  it('TRUECONF_TLS_VERIFY=false + TRUECONF_CA_PATH together → fatal abort', async () => {
+    baseEnv()
+    process.env.TRUECONF_TLS_VERIFY = 'false'
+    process.env.TRUECONF_CA_PATH = join(FIXTURES, 'ca-valid.pem')
+    await expect(runHeadlessFinalize({} as never)).rejects.toThrow(/TRUECONF_CA_PATH.*TRUECONF_TLS_VERIFY/)
+  })
+
+  it('TRUECONF_TLS_VERIFY=garbage → fail-fast with both supported values listed', async () => {
+    baseEnv()
+    process.env.TRUECONF_TLS_VERIFY = 'true' // anything other than 'false' or unset is invalid
+    // Loose matcher — file is pinned to ru locale, so the en suffix
+    // ("or unset") and ru suffix ("или не задано") both follow `'false'`.
+    await expect(runHeadlessFinalize({} as never)).rejects.toThrow(/TRUECONF_TLS_VERIFY.*'false'/)
+  })
+
+  it('TRUECONF_TLS_VERIFY=false clears stale caPath from cfg', async () => {
+    baseEnv()
+    process.env.TRUECONF_TLS_VERIFY = 'false'
+    const cfg = { channels: { trueconf: { caPath: join(FIXTURES, 'ca-valid.pem') } } }
+    const next = await runHeadlessFinalize(cfg as never)
+    expect((next as any).channels.trueconf.caPath).toBeUndefined()
+    expect((next as any).channels.trueconf.tlsVerify).toBe(false)
   })
 
   // The TRUECONF_ACCEPT_UNTRUSTED_CA gate lives behind the raw-probe branch,

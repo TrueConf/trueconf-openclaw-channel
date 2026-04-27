@@ -839,11 +839,30 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
   let resolvedPort = portHint
   let caPath: string | undefined
   let caBytes: ValidatedCaBytes | undefined
+  let tlsVerify: boolean | undefined
 
   const envCaPath = process.env.TRUECONF_CA_PATH?.trim()
+  const envTlsVerify = process.env.TRUECONF_TLS_VERIFY?.trim()
 
-  // 1) Explicit env override takes precedence
-  if (envCaPath) {
+  // Operator-acknowledged insecure mode via env. Only `'false'` or unset
+  // are accepted — `'true'`/anything else throws so a typo doesn't silently
+  // fall through to strict mode under the wrong assumption. Conflict with
+  // TRUECONF_CA_PATH is fatal: pinning a CA AND skipping verification is
+  // contradictory operator intent and we'd rather refuse than guess.
+  if (envTlsVerify !== undefined && envTlsVerify !== '') {
+    if (envTlsVerify !== 'false') {
+      throw new Error(t('tls.insecure.invalidEnv', locale, { value: envTlsVerify }))
+    }
+    if (envCaPath) {
+      throw new Error(t('tls.insecure.conflict', locale))
+    }
+    tlsVerify = false
+    resolvedUseTls = true
+    resolvedPort = resolvedPort ?? 443
+  }
+
+  // 1) Explicit CA env override takes precedence (skipped when in insecure mode)
+  if (tlsVerify !== false && envCaPath) {
     const loaded = await loadAndValidateEnvCa({
       envPath: envCaPath,
       host: serverUrl,
@@ -853,8 +872,8 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
     resolvedPort = resolvedPort ?? 443
     caPath = loaded.abs
     caBytes = loaded.caBytes
-  } else {
-    // 2) Check configured caPath in current cfg
+  } else if (tlsVerify !== false) {
+    // 2) Check configured caPath in current cfg (skipped in insecure mode)
     const tc = (cfg as { channels?: { trueconf?: { caPath?: string } } }).channels?.trueconf
     const existing = tc?.caPath
 
@@ -927,16 +946,33 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
     password,
     useTls: resolvedUseTls,
     port: resolvedPort,
-    ca: caBytes,
+    // Insecure mode discards any stale ca bytes — verifier must see a clean
+    // "no trust anchor + skip verification" call so behavior matches the
+    // wizard's interactive insecure path.
+    ca: tlsVerify === false ? undefined : caBytes,
+    tlsVerify,
   })
   if (!result.ok) {
     throw new Error(`OAuth failed (user="${username}", server="${serverUrl}"): ${result.category}: ${result.error}`)
+  }
+
+  // Same three-mode mutual-exclusion rule as interactiveFinalize: useTls:false
+  // drops both trust knobs, insecure drops caPath (and sets tlsVerify), strict
+  // drops tlsVerify.
+  const clearFields: string[] = []
+  if (resolvedUseTls === false) {
+    clearFields.push('caPath', 'tlsVerify')
+  } else if (tlsVerify === false) {
+    clearFields.push('caPath')
+  } else {
+    clearFields.push('tlsVerify')
   }
 
   return patchTopLevelChannelConfigSection({
     cfg,
     channel,
     enabled: true,
+    clearFields,
     patch: {
       serverUrl,
       username,
@@ -944,7 +980,8 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
       setupLocale: locale,
       ...(resolvedUseTls !== undefined && { useTls: resolvedUseTls }),
       ...(resolvedPort !== undefined && { port: resolvedPort }),
-      caPath: resolvedUseTls === false ? undefined : caPath,
+      ...(tlsVerify === false && { tlsVerify: false }),
+      ...(resolvedUseTls !== false && tlsVerify !== false && caPath !== undefined && { caPath }),
     },
   })
 }

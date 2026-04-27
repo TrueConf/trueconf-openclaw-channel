@@ -1,3 +1,5 @@
+export type SetupLocale = 'en' | 'ru'
+
 export interface TrueConfAccountConfig {
   serverUrl: string
   username: string
@@ -8,6 +10,7 @@ export interface TrueConfAccountConfig {
   clientSecret?: string
   enabled?: boolean
   caPath?: string
+  setupLocale?: SetupLocale
 }
 
 export interface TrueConfRequest {
@@ -172,6 +175,7 @@ export interface ResolvedAccount {
   useTls?: boolean
   port?: number
   caPath?: string
+  setupLocale?: SetupLocale
 }
 
 export interface AccountDescription {

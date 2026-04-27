@@ -59,3 +59,17 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --access public
+
+      - name: Print npm debug logs
+        if: failure()
+        run: |
+          echo "Looking for npm debug logs..."
+          if ls ~/.npm/_logs/*-debug-0.log >/dev/null 2>&1; then
+            for log in ~/.npm/_logs/*-debug-0.log; do
+              echo ""
+              echo "===== $log ====="
+              cat "$log"
+            done
+          else
+            echo "No npm debug logs found."
+          fi

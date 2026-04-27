@@ -116,6 +116,32 @@ const TRANSLATIONS = {
   'probe.preview.reason.tlsInsecure':  { en: 'TLS on {{port}}, certificate verification disabled (this TrueConf only)', ru: 'TLS на {{port}}, проверка сертификата отключена (только для TrueConf)' },
   'probe.preview.reason.bridgeOpen':   { en: 'no TLS, Bridge on {{port}}', ru: 'без TLS, Bridge на {{port}}' },
   'probe.preview.reason.fallback':     { en: 'probe did not respond, trying HTTPS:{{port}}', ru: 'probe не ответил, пробую HTTPS:{{port}}' },
+
+  // Standalone bin entry-point messages
+  'bin.cancel':                        { en: 'Cancelled', ru: 'Отменено' },
+  'bin.fieldRequired':                 { en: 'Field required: {{message}}', ru: 'Поле обязательно: {{message}}' },
+  'bin.useEnvVar':                     { en: 'Use {{var}} from the environment?', ru: 'Использовать {{var}} из окружения?' },
+  'bin.passwordKeep':                  { en: 'Password is already set. Keep it?', ru: 'Пароль уже задан. Оставить?' },
+  'bin.passwordPrompt':                { en: 'Enter password', ru: 'Введите пароль' },
+  'bin.passwordEmpty':                 { en: 'Password cannot be empty', ru: 'Пароль не может быть пустым' },
+  'bin.overwrite.confirm':             { en: 'cfg already has channels.trueconf. Overwrite?', ru: 'В конфиге уже есть channels.trueconf. Перезаписать?' },
+  'bin.overwrite.untouched':           { en: 'Config left as-is. To run unchanged: openclaw gateway', ru: 'Конфиг не тронут. Чтобы запустить без изменений: openclaw gateway' },
+  'bin.completion.title':              { en: 'Done', ru: 'Готово' },
+  'bin.completion.backupSaved':        { en: 'Previous config saved at: {{path}}', ru: 'Предыдущий конфиг сохранён: {{path}}' },
+  'bin.completion.next':               { en: 'Next:', ru: 'Дальше:' },
+  'bin.completion.step1':              { en: '  1. Configure the LLM provider if you have not yet: openclaw configure', ru: '  1. Настроить LLM-провайдера, если ещё не: openclaw configure' },
+  'bin.completion.step2':              { en: '  2. Start the gateway:', ru: '  2. Запустить gateway:' },
+  'bin.completion.gatewayCa':          { en: '       openclaw gateway      (CA is already in cfg, no extra env needed)', ru: '       openclaw gateway      (CA уже прописан в конфиг, доп. env не нужен)' },
+  'bin.completion.gatewayLegacy':      { en: '       # or on older openclaw without caPath support:', ru: '       # или на старой openclaw без caPath-поддержки:' },
+  'bin.completion.expectedLogs':       { en: 'Expected success logs:', ru: 'Ожидаемые логи успеха:' },
+  'bin.oauth.errorBody':               { en: 'OAuth error: {{error}}\nThe server may be temporarily unreachable, behind a proxy, or have an unusual TLS configuration.', ru: 'OAuth ошибка: {{error}}\nСервер мог быть временно недоступен, за прокси, или TLS-конфигурация странная.' },
+  'bin.oauth.errorTitle':              { en: 'Validation failed', ru: 'Проверка не прошла' },
+  'bin.oauth.saveAnyway':              { en: 'Save credentials as-is? OAuth will be retried at `openclaw gateway`.', ru: 'Сохранить креды как есть? OAuth проверится при `openclaw gateway`' },
+  'bin.backupFailed':                  { en: 'Could not create backup ({{message}}). Continuing without it.', ru: 'Не смог создать backup ({{message}}). Продолжаем без него.' },
+  'bin.cleanup.title':                 { en: 'Cleanup', ru: 'Очистка' },
+  'bin.cleanup.removed':               { en: 'Removed stale plugins.entries.trueconf from the config', ru: 'Удалил устаревший plugins.entries.trueconf из конфига' },
+  'bin.savedNoOauth.title':            { en: 'Important', ru: 'Важно' },
+  'bin.savedNoOauth.body':             { en: 'Config written without OAuth validation. If you see connection errors at `openclaw gateway` — run `npm run setup` again.', ru: 'Конфиг записан без OAuth-валидации. Если при `openclaw gateway` будут ошибки подключения — запусти `npm run setup` ещё раз.' },
 } as const
 
 export type TranslationKey = keyof typeof TRANSLATIONS

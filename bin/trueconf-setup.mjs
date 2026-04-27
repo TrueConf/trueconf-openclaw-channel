@@ -25,7 +25,7 @@ function checkNodeVersion() {
   const [maj, min] = process.versions.node.split('.').map((n) => Number.parseInt(n, 10))
   if (!Number.isFinite(maj) || maj < MIN_NODE_MAJOR || (maj === MIN_NODE_MAJOR && min < MIN_NODE_MINOR)) {
     throw new Error(
-      `Node.js ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR}+ требуется, у вас ${process.versions.node}. Обновитесь: https://nodejs.org/`,
+      `Node.js ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR}+ required, you have ${process.versions.node}. Upgrade: https://nodejs.org/`,
     )
   }
 }
@@ -68,11 +68,12 @@ async function loadProbe() {
   }
 }
 
-async function loadClackPrompter() {
+async function loadClackPrompter(t, locale) {
   // Direct @clack/prompts usage avoids coupling to the openclaw SDK's
   // setup-runtime re-export, which isn't guaranteed across our peerDep range.
   const clack = await import('@clack/prompts')
   const unwrap = (v) => (typeof v === 'symbol' ? null : v)
+  const cancelMsg = t('bin.cancel', locale)
   return {
     intro: async (msg) => clack.intro(msg),
     outro: async (msg) => clack.outro(msg),
@@ -84,27 +85,27 @@ async function loadClackPrompter() {
         initialValue: opts.initialValue,
         validate: opts.validate,
       })
-      if (clack.isCancel(r)) { clack.cancel('Отменено'); process.exit(1) }
+      if (clack.isCancel(r)) { clack.cancel(cancelMsg); process.exit(1) }
       return unwrap(r) ?? ''
     },
     password: async (opts) => {
       const r = await clack.password({ message: opts.message, validate: opts.validate })
-      if (clack.isCancel(r)) { clack.cancel('Отменено'); process.exit(1) }
+      if (clack.isCancel(r)) { clack.cancel(cancelMsg); process.exit(1) }
       return unwrap(r) ?? ''
     },
     confirm: async (opts) => {
       const r = await clack.confirm({ message: opts.message, initialValue: opts.initialValue })
-      if (clack.isCancel(r)) { clack.cancel('Отменено'); process.exit(1) }
+      if (clack.isCancel(r)) { clack.cancel(cancelMsg); process.exit(1) }
       return Boolean(r)
     },
     select: async (opts) => {
       const r = await clack.select({ message: opts.message, options: opts.options })
-      if (clack.isCancel(r)) { clack.cancel('Отменено'); process.exit(1) }
+      if (clack.isCancel(r)) { clack.cancel(cancelMsg); process.exit(1) }
       return r
     },
     multiselect: async (opts) => {
       const r = await clack.multiselect({ message: opts.message, options: opts.options, required: false })
-      if (clack.isCancel(r)) { clack.cancel('Отменено'); process.exit(1) }
+      if (clack.isCancel(r)) { clack.cancel(cancelMsg); process.exit(1) }
       return Array.isArray(r) ? r : []
     },
     progress: (opts) => {
@@ -190,7 +191,7 @@ function hasExistingTrueconfChannel(cfg) {
   return Boolean(cfg.channels?.trueconf)
 }
 
-async function promptInteractiveInputs(prompter, wizard, currentCfg) {
+async function promptInteractiveInputs(prompter, wizard, currentCfg, t, locale) {
   // Optional inputs with no existing value are skipped; probe step owns TLS/port.
   let cfg = currentCfg
   for (const input of wizard.textInputs) {
@@ -205,7 +206,7 @@ async function promptInteractiveInputs(prompter, wizard, currentCfg) {
     })
     const value = typeof raw === 'string' ? raw.trim() : ''
     if (value === '' && !input.applyEmptyValue && current !== undefined) continue
-    if (value === '' && input.required) throw new Error(`Поле обязательно: ${input.message}`)
+    if (value === '' && input.required) throw new Error(t('bin.fieldRequired', locale, { message: input.message }))
     if (input.validate) {
       const err = input.validate({ value, cfg, accountId: 'default' })
       if (err) throw new Error(`${input.message}: ${err}`)
@@ -218,14 +219,14 @@ async function promptInteractiveInputs(prompter, wizard, currentCfg) {
   return cfg
 }
 
-async function promptPassword(prompter, wizard, cfg) {
+async function promptPassword(prompter, wizard, cfg, t, locale) {
   const credential = wizard.credentials[0]
   const state = credential.inspect({ cfg, accountId: 'default' })
   const allowEnv = credential.allowEnv?.({ cfg, accountId: 'default' }) ?? false
 
   if (allowEnv && state.envValue) {
     const useEnv = await prompter.confirm({
-      message: credential.envPrompt ?? `Использовать ${credential.preferredEnvVar} из окружения?`,
+      message: credential.envPrompt ?? t('bin.useEnvVar', locale, { var: credential.preferredEnvVar }),
       initialValue: true,
     })
     if (useEnv) {
@@ -236,14 +237,14 @@ async function promptPassword(prompter, wizard, cfg) {
 
   if (state.hasConfiguredValue) {
     const keep = await prompter.confirm({
-      message: credential.keepPrompt ?? 'Пароль уже задан. Оставить?',
+      message: credential.keepPrompt ?? t('bin.passwordKeep', locale),
       initialValue: true,
     })
     if (keep) return { cfg, credentialValues: {} }
   }
 
-  const pwd = await prompter.password({ message: credential.inputPrompt ?? 'Введите пароль' })
-  if (typeof pwd !== 'string' || pwd === '') throw new Error('Пароль не может быть пустым')
+  const pwd = await prompter.password({ message: credential.inputPrompt ?? t('bin.passwordPrompt', locale) })
+  if (typeof pwd !== 'string' || pwd === '') throw new Error(t('bin.passwordEmpty', locale))
   const nextCfg = credential.applySet({ cfg, value: pwd, accountId: 'default' })
   return { cfg: nextCfg, credentialValues: { [credential.inputKey]: pwd } }
 }
@@ -420,23 +421,23 @@ function patchChannelWithFinalValues(cfg, { serverUrl, username, password, useTl
   }
 }
 
-function showFinalBanner(prompter, { backupPath, caPath, wizard }) {
+function showFinalBanner(prompter, { backupPath, caPath, wizard, t, locale }) {
   const lines = []
-  if (backupPath) lines.push(`Предыдущий конфиг сохранён: ${backupPath}`)
-  lines.push('', 'Дальше:')
-  lines.push('  1. Настроить LLM-провайдера, если ещё не: openclaw configure')
-  lines.push('  2. Запустить gateway:')
+  if (backupPath) lines.push(t('bin.completion.backupSaved', locale, { path: backupPath }))
+  lines.push('', t('bin.completion.next', locale))
+  lines.push(t('bin.completion.step1', locale))
+  lines.push(t('bin.completion.step2', locale))
   if (caPath) {
-    lines.push(`       openclaw gateway      (CA уже прописан в конфиг, доп. env не нужен)`)
-    lines.push(`       # или на старой openclaw без caPath-поддержки:`)
+    lines.push(t('bin.completion.gatewayCa', locale))
+    lines.push(t('bin.completion.gatewayLegacy', locale))
     lines.push(`       NODE_EXTRA_CA_CERTS=${caPath} openclaw gateway`)
   } else {
     lines.push('       openclaw gateway')
   }
-  lines.push('', 'Ожидаемые логи успеха:')
+  lines.push('', t('bin.completion.expectedLogs', locale))
   lines.push('  [trueconf] Starting 1 account(s)')
   lines.push('  [trueconf] Connected and authenticated')
-  return prompter.note(lines.join('\n'), wizard.completionNote?.title ?? 'Готово')
+  return prompter.note(lines.join('\n'), wizard.completionNote?.title ?? t('bin.completion.title', locale))
 }
 
 export async function runSetup({ configPath: configPathArg, prompter: injectedPrompter, probeModule: injectedProbe } = {}) {
@@ -450,6 +451,7 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
   // backup/probe/OAuth work — and so the interactive bin path persists the
   // resolved value into cfg the same way runHeadlessFinalize does.
   const locale = resolveBinLocale(cfg)
+  const { t } = await loadI18n()
 
   if (hasEnvShortcut()) {
     const nextCfg = await runHeadlessFinalize(cfg)
@@ -464,17 +466,17 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
     return { backupPath, mode: 'headless' }
   }
 
-  const prompter = injectedPrompter ?? (await loadClackPrompter())
+  const prompter = injectedPrompter ?? (await loadClackPrompter(t, locale))
 
   if (hasExistingTrueconfChannel(cfg)) {
     const overwrite = await prompter.confirm({
-      message: 'В конфиге уже есть channels.trueconf. Перезаписать?',
+      message: t('bin.overwrite.confirm', locale),
       initialValue: false,
     })
     if (!overwrite) {
       await prompter.note(
-        'Конфиг не тронут. Чтобы запустить без изменений: openclaw gateway',
-        'Отменено',
+        t('bin.overwrite.untouched', locale),
+        t('bin.cancel', locale),
       )
       return { mode: 'cancelled-overwrite' }
     }
@@ -487,11 +489,13 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
     )
   }
 
-  const cfgWithInputs = await promptInteractiveInputs(prompter, trueconfSetupWizard, cfg)
+  const cfgWithInputs = await promptInteractiveInputs(prompter, trueconfSetupWizard, cfg, t, locale)
   const { cfg: cfgWithPassword, credentialValues } = await promptPassword(
     prompter,
     trueconfSetupWizard,
     cfgWithInputs,
+    t,
+    locale,
   )
 
   const tcFields = cfgWithPassword.channels?.trueconf ?? {}
@@ -499,11 +503,10 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
   const username = tcFields.username
   const password = credentialValues.password ?? tcFields.password
   if (!serverUrl || !username || !password) {
-    throw new Error('Invariant: серверU/логин/пароль не собрались к финальной стадии')
+    throw new Error('Invariant: serverUrl/username/password missing at finalize entry')
   }
 
   const probeModule = injectedProbe ?? (await loadProbe())
-  const { t } = await loadI18n()
   const { useTls, port, caPath, caBytes, tlsVerify } = await promptProbePreview(
     prompter,
     probeModule,
@@ -532,10 +535,10 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
     if (result.ok) { oauthOk = true; break }
     oauthError = result
     if (result.category === 'invalid-credentials' && attempt < 2) {
-      await prompter.note(`Неверный пароль (${attempt + 1}/3)`, 'OAuth')
-      currentPassword = await prompter.password({ message: 'Введите пароль ещё раз' })
+      await prompter.note(t('oauth.invalidPassword', locale, { attempt: attempt + 1 }), t('oauth.title', locale))
+      currentPassword = await prompter.password({ message: t('oauth.passwordRetry', locale) })
       if (typeof currentPassword !== 'string' || currentPassword === '') {
-        throw new Error('Пароль не может быть пустым')
+        throw new Error(t('bin.passwordEmpty', locale))
       }
       continue
     }
@@ -557,15 +560,15 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
       throw new Error(`OAuth failed (user="${username}", server="${serverUrl}"): ${errMsg}`)
     }
     await prompter.note(
-      `OAuth ошибка: ${errMsg}\nСервер мог быть временно недоступен, за прокси, или TLS-конфигурация странная.`,
-      'Проверка не прошла',
+      t('bin.oauth.errorBody', locale, { error: errMsg }),
+      t('bin.oauth.errorTitle', locale),
     )
     // Default=true only for `network` (transient/intermittent). For `tls`
     // and `server-error`, retry at gateway startup will hit the same wall,
     // so default=false and require user to actively opt in.
     const saveAnywayDefault = oauthError.category === 'network'
     const saveAnyway = await prompter.confirm({
-      message: 'Сохранить креды как есть? OAuth проверится при `openclaw gateway`',
+      message: t('bin.oauth.saveAnyway', locale),
       initialValue: saveAnywayDefault,
     })
     if (!saveAnyway) {
@@ -581,25 +584,25 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
   const { backupPath, error: backupErr } = backupConfigIfExists(configPath)
   if (backupErr) {
     await prompter.note(
-      `Не смог создать backup (${backupErr.message}). Продолжаем без него.`,
+      t('bin.backupFailed', locale, { message: backupErr.message }),
       'Backup warning',
     )
   }
   writeJsonConfigAtomic(configPath, cleanedFinal)
 
   if (cleaned) {
-    await prompter.note('Удалил устаревший plugins.entries.trueconf из конфига', 'Очистка')
+    await prompter.note(t('bin.cleanup.removed', locale), t('bin.cleanup.title', locale))
   }
   if (savedWithoutValidation) {
     await prompter.note(
-      'Конфиг записан без OAuth-валидации. Если при `openclaw gateway` будут ошибки подключения — запусти `npm run setup` ещё раз.',
-      'Важно',
+      t('bin.savedNoOauth.body', locale),
+      t('bin.savedNoOauth.title', locale),
     )
   } else {
-    await prompter.note(`Подключено как ${username}`, 'TrueConf ready')
+    await prompter.note(t('connected.body', locale, { username }), t('connected.title', locale))
   }
 
-  await showFinalBanner(prompter, { backupPath, caPath, wizard: trueconfSetupWizard })
+  await showFinalBanner(prompter, { backupPath, caPath, wizard: trueconfSetupWizard, t, locale })
 
   return { backupPath, caPath, mode: savedWithoutValidation ? 'saved-without-validation' : 'saved' }
 }

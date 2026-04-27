@@ -856,6 +856,9 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
     if (envCaPath) {
       throw new Error(t('tls.insecure.conflict', locale))
     }
+    if (useTlsHint === false) {
+      throw new Error(t('tls.insecure.useTlsConflict', locale))
+    }
     tlsVerify = false
     resolvedUseTls = true
     resolvedPort = resolvedPort ?? 443

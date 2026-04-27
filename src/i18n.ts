@@ -25,6 +25,7 @@ const TRANSLATIONS = {
   'tls.insecure.confirm':              { en: 'Disable TLS certificate verification?', ru: 'Отключить проверку TLS-сертификата?' },
   'tls.insecure.invalidEnv':           { en: "TRUECONF_TLS_VERIFY must be 'false' or unset, got: {{value}}", ru: "TRUECONF_TLS_VERIFY должно быть 'false' или не задано, получено: {{value}}" },
   'tls.insecure.conflict':             { en: 'TRUECONF_CA_PATH and TRUECONF_TLS_VERIFY=false are incompatible — pick one trust mode.', ru: 'TRUECONF_CA_PATH и TRUECONF_TLS_VERIFY=false несовместимы — выберите один режим доверия.' },
+  'tls.insecure.useTlsConflict':       { en: 'TRUECONF_USE_TLS=false and TRUECONF_TLS_VERIFY=false are incompatible — TLS verification cannot be disabled when TLS is off.', ru: 'TRUECONF_USE_TLS=false и TRUECONF_TLS_VERIFY=false несовместимы — нельзя отключать проверку TLS-сертификата, если TLS отключён.' },
 
   // CA file interactive prompt
   'cafile.prompt':                     { en: 'Path to certificate file (PEM):', ru: 'Путь к файлу сертификата (PEM):' },

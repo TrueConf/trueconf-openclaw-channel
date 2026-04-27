@@ -472,6 +472,13 @@ describe('runHeadlessFinalize — trust paths', () => {
     await expect(runHeadlessFinalize({} as never)).rejects.toThrow(/TRUECONF_CA_PATH.*TRUECONF_TLS_VERIFY/)
   })
 
+  it('TRUECONF_TLS_VERIFY=false + TRUECONF_USE_TLS=false together → fatal abort', async () => {
+    baseEnv()
+    process.env.TRUECONF_USE_TLS = 'false'
+    process.env.TRUECONF_TLS_VERIFY = 'false'
+    await expect(runHeadlessFinalize({} as never)).rejects.toThrow(/TRUECONF_USE_TLS.*TRUECONF_TLS_VERIFY/)
+  })
+
   it('TRUECONF_TLS_VERIFY=garbage → fail-fast with both supported values listed', async () => {
     baseEnv()
     process.env.TRUECONF_TLS_VERIFY = 'true' // anything other than 'false' or unset is invalid

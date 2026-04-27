@@ -759,6 +759,200 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
     }
   })
 
+  it('use-file happy: valid CA path saved into channels.trueconf.caPath', async () => {
+    const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
+      { oauthResponse: { status: 200, body: { access_token: 'ok' } } },
+    )
+    writeFileSync(configPath, JSON.stringify({}, null, 2))
+    const validCa = join(process.cwd(), 'tests', '__fixtures__', 'ca-valid.pem')
+
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: fake.port, caUntrusted: true }),
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
+      validateOAuthCredentials: async () => ({ ok: true }),
+      parseCertFromPem: () => ({
+        subject: 'localhost', issuerCN: 'localhost', issuerOrg: null,
+        validFrom: 'Jan  1 00:00:00 2026 GMT', validTo: 'Jan  1 00:00:00 2099 GMT',
+        fingerprint: 'AB:CD', san: 'DNS:localhost', selfSigned: true,
+      }),
+      validateCaAgainstServer: async ({ caBytes }: { caBytes: Buffer }) => ({
+        ok: true, caBytes,
+      }),
+    }
+
+    const prompter = makeFakePrompter({
+      textResponses: [fake.host, 'bot@localhost', validCa],
+      passwordResponses: ['secret'],
+      selectResponses: ['use-file'],
+      confirmResponses: [true],
+    })
+
+    try {
+      const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+        runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<{ mode: string }>
+      }
+      const result = await runSetup({ configPath, prompter, probeModule: probeStub })
+      expect(result.mode).toBe('saved')
+      const written = JSON.parse(readFileSync(configPath, 'utf8')) as {
+        channels?: { trueconf?: { caPath?: string; tlsVerify?: boolean } }
+      }
+      expect(written.channels?.trueconf?.caPath).toBe(validCa)
+      expect(written.channels?.trueconf?.tlsVerify).toBeUndefined()
+    } finally {
+      await (stopFakeServer as (f: unknown) => Promise<void>)(fake)
+    }
+  })
+
+  it('use-file: ~ expansion resolves against homedir', async () => {
+    const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const { homedir } = await import('node:os')
+    const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
+      { oauthResponse: { status: 200, body: { access_token: 'ok' } } },
+    )
+    writeFileSync(configPath, JSON.stringify({}, null, 2))
+    // Place a fixture under homedir so ~ expansion has a real target.
+    const homeFixture = join(homedir(), `.tmp-bin-trust-${Date.now()}.pem`)
+    const validBytes = readFileSync(join(process.cwd(), 'tests', '__fixtures__', 'ca-valid.pem'))
+    writeFileSync(homeFixture, validBytes)
+
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: fake.port, caUntrusted: true }),
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
+      validateOAuthCredentials: async () => ({ ok: true }),
+      parseCertFromPem: () => ({ subject: 'localhost', issuerCN: 'localhost' }),
+      validateCaAgainstServer: async ({ caBytes }: { caBytes: Buffer }) => ({ ok: true, caBytes }),
+    }
+
+    const tildePath = `~/${homeFixture.slice(homedir().length + 1)}`
+    const prompter = makeFakePrompter({
+      textResponses: [fake.host, 'bot@localhost', tildePath],
+      passwordResponses: ['secret'],
+      selectResponses: ['use-file'],
+      confirmResponses: [true],
+    })
+
+    try {
+      const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+        runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<{ mode: string }>
+      }
+      await runSetup({ configPath, prompter, probeModule: probeStub })
+      const written = JSON.parse(readFileSync(configPath, 'utf8')) as {
+        channels?: { trueconf?: { caPath?: string } }
+      }
+      expect(written.channels?.trueconf?.caPath).toBe(homeFixture)
+    } finally {
+      try { rmSync(homeFixture) } catch { /* ignore */ }
+      await (stopFakeServer as (f: unknown) => Promise<void>)(fake)
+    }
+  })
+
+  it('use-file: empty path aborts', async () => {
+    const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
+      { oauthResponse: { status: 200, body: { access_token: 'ok' } } },
+    )
+    writeFileSync(configPath, JSON.stringify({}, null, 2))
+
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: fake.port, caUntrusted: true }),
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
+      validateOAuthCredentials: async () => ({ ok: true }),
+    }
+
+    const prompter = makeFakePrompter({
+      textResponses: [fake.host, 'bot@localhost', '   '],
+      passwordResponses: ['secret'],
+      selectResponses: ['use-file'],
+    })
+
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<unknown>
+    }
+    try {
+      await expect(runSetup({ configPath, prompter, probeModule: probeStub })).rejects.toThrow(/empty CA path/)
+    } finally {
+      await (stopFakeServer as (f: unknown) => Promise<void>)(fake)
+    }
+  })
+
+  it('use-file: non-PEM file throws notPem error', async () => {
+    const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
+      { oauthResponse: { status: 200, body: { access_token: 'ok' } } },
+    )
+    writeFileSync(configPath, JSON.stringify({}, null, 2))
+    const garbagePath = join(tmpDir, 'not-pem.bin')
+    writeFileSync(garbagePath, Buffer.from([0x00, 0x01, 0x02, 0x03]))
+
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: fake.port, caUntrusted: true }),
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
+      validateOAuthCredentials: async () => ({ ok: true }),
+      parseCertFromPem: () => null,
+      validateCaAgainstServer: async () => ({ ok: true }),
+    }
+
+    const prompter = makeFakePrompter({
+      textResponses: [fake.host, 'bot@localhost', garbagePath],
+      passwordResponses: ['secret'],
+      selectResponses: ['use-file'],
+    })
+
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<unknown>
+    }
+    try {
+      await expect(runSetup({ configPath, prompter, probeModule: probeStub })).rejects.toThrow(/not PEM|не PEM/)
+    } finally {
+      await (stopFakeServer as (f: unknown) => Promise<void>)(fake)
+    }
+  })
+
+  it('use-file: chain mismatch throws chainMismatch error', async () => {
+    const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
+      { oauthResponse: { status: 200, body: { access_token: 'ok' } } },
+    )
+    writeFileSync(configPath, JSON.stringify({}, null, 2))
+    const wrongCa = join(process.cwd(), 'tests', '__fixtures__', 'ca-other.pem')
+
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: fake.port, caUntrusted: true }),
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
+      validateOAuthCredentials: async () => ({ ok: true }),
+      parseCertFromPem: () => ({
+        subject: 'other', issuerCN: 'OtherCA', issuerOrg: null,
+        validFrom: 'x', validTo: 'y', fingerprint: 'XX:XX', san: '', selfSigned: false,
+      }),
+      validateCaAgainstServer: async () => ({
+        ok: false, kind: 'mismatch',
+        serverCert: { subject: 'localhost', issuerCN: 'localhost', issuerOrg: null, validFrom: 'a', validTo: 'b', fingerprint: 'YY:YY', san: '', selfSigned: false },
+        error: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+      }),
+    }
+
+    const prompter = makeFakePrompter({
+      textResponses: [fake.host, 'bot@localhost', wrongCa],
+      passwordResponses: ['secret'],
+      selectResponses: ['use-file'],
+    })
+
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<unknown>
+    }
+    try {
+      await expect(runSetup({ configPath, prompter, probeModule: probeStub })).rejects.toThrow(/does not validate|не валидирует/)
+    } finally {
+      await (stopFakeServer as (f: unknown) => Promise<void>)(fake)
+    }
+  })
+
   it('use-file: bin throws loud when entered CA path is unreadable', async () => {
     // Probe says caUntrusted=true; user picks use-file and supplies a path
     // that does not exist on disk. readCaBuffer is the loud-throw choke
@@ -789,7 +983,7 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
       runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<unknown>
     }
     try {
-      await expect(runSetup({ configPath, prompter, probeModule: probeStub })).rejects.toThrow(/CA file unreadable/)
+      await expect(runSetup({ configPath, prompter, probeModule: probeStub })).rejects.toThrow(/Cannot read CA file|Не могу прочитать файл CA/)
     } finally {
       await (stopFakeServer as (f: unknown) => Promise<void>)(fake)
     }

@@ -63,6 +63,8 @@ async function loadProbe() {
   return {
     probeTls: mod.probeTls,
     downloadCAChain: mod.downloadCAChain,
+    parseCertFromPem: mod.parseCertFromPem,
+    validateCaAgainstServer: mod.validateCaAgainstServer,
   }
 }
 
@@ -288,7 +290,37 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
           throw new Error(`User aborted: empty CA path`)
         }
         const expanded = raw.startsWith('~/') || raw === '~' ? raw.replace(/^~/, homedir()) : raw
-        caPath = resolve(expanded)
+        const abs = resolve(expanded)
+        // Inline validate before assignment so a non-PEM / wrong-CA file
+        // surfaces as a localized error instead of an opaque downstream
+        // OAuth TLS failure that could be saved-anyway with garbage caPath.
+        // Mirrors loadAndValidateEnvCa in src/channel-setup.ts.
+        let bytes
+        try {
+          bytes = readFileSync(abs)
+        } catch (err) {
+          throw new Error(t('tls.cafile.unreadable', locale, {
+            path: abs, reason: err instanceof Error ? err.message : String(err),
+          }))
+        }
+        const cert = probeModule.parseCertFromPem(bytes)
+        if (!cert) {
+          throw new Error(t('cafile.notPem', locale))
+        }
+        const v = await probeModule.validateCaAgainstServer({ caBytes: bytes, host: serverUrl, port })
+        if (!v.ok) {
+          if (v.kind === 'unreachable') {
+            throw new Error(t('cafile.unreachable', locale, { host: serverUrl, port, error: v.error }))
+          }
+          throw new Error(t('cafile.chainMismatch', locale, {
+            fileIssuer: cert.issuerCN ?? cert.subject ?? '?',
+            fileFp: cert.fingerprint ?? '?',
+            serverIssuer: v.serverCert?.issuerCN ?? '?',
+            serverFp: v.serverCert?.fingerprint ?? '?',
+            error: v.error,
+          }))
+        }
+        caPath = abs
       } else {
         // insecure — show the spec-mandated MITM warning, then a second
         // confirm defaulting to false so a thoughtless Enter does not

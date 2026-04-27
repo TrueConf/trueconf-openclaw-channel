@@ -98,13 +98,17 @@ You can run `trueconf-setup` again. You can change and save specific field value
 
 ### Self-signed certificates
 
-If TrueConf Server uses a self-signed certificate, there are three ways to make the channel trust it:
+If TrueConf Server uses a self-signed certificate, the wizard offers three trust paths in decreasing order of safety:
 
-1. **The wizard downloads the chain** (easiest, not the most secure). On encountering an untrusted cert, `trueconf-setup` offers to download the chain to `~/.openclaw/trueconf-ca.pem` and writes the path to the `caPath` field. The gateway picks it up automatically.
-2. **Point to a CA from your admin**. If the TrueConf Server administrator gave you a `.pem`, just put `"caPath": "/path/to/server-ca.pem"` into the config.
-3. **`NODE_EXTRA_CA_CERTS`** — the standard Node.js env var. If the certificate is already in the system trust store or in a file exported via this variable, the probe sees the cert as trusted and `caPath` isn't needed at all.
+1. **Point to a CA from your admin** — the recommended path. If the TrueConf Server administrator gave you a root CA in PEM format, set `"caPath": "/path/to/server-ca.pem"` in the config (or pick "Specify path to a root CA certificate" in the interactive wizard).
+   - On TrueConf Server the certificate is usually stored as `*.crt`. If the file is in PEM format you can rename it to `*.pem`.
+   - If you own the server, find the certificate in the TrueConf Server control panel under HTTPS.
+2. **`NODE_EXTRA_CA_CERTS` / system trust** — make the CA root trusted at the OS or Node level (MDM, `update-ca-certificates`, or `export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/corp-ca.pem`). The probe sees the cert as trusted and `caPath` isn't needed at all.
+3. **Disable TLS verification** (`tlsVerify: false`) — last resort. Skips certificate verification for **this TrueConf Server only** (other Node HTTPS calls stay verified). Pick "Disable TLS certificate verification for this TrueConf Server" in the wizard, or set `"tlsVerify": false` in the config, or pass `TRUECONF_TLS_VERIFY=false` to the headless setup.
 
-> **Security.** Option #1 is "Trust On First Use": on the first run the wizard trusts whatever certificate the server presents. If there's an active MITM between you and the server at that moment, the wizard will save the attacker's certificate as trusted. For stronger guarantees, use option #2 or #3 and verify the SHA-256 fingerprint with the server administrator.
+> **Security.** Option #3 makes a MITM attack possible against TrueConf traffic — use it only in a safe or restricted environment (offline lab, trusted internal network). Option #1 is the closest to production-grade.
+
+> **What not to do.** Do **not** set `NODE_TLS_REJECT_UNAUTHORIZED=0`. That env var disables TLS validation for the **entire** Node process — every LLM provider, every webhook, every HTTPS call. The `tlsVerify: false` option above is per-TrueConf only.
 
 ### Verifying the channel
 
@@ -179,6 +183,8 @@ Open the TrueConf client, find the bot in your contacts, and send it a message.
 | `clientId` | string | No | `"chat_bot"` | OAuth client_id. Override only if the server is configured with a non-standard chatbot client |
 | `clientSecret` | string | No | `""` | OAuth client_secret. Most TrueConf Server installations use a public client (empty secret) |
 | `caPath` | string | No | — | Path to a PEM file with the TrueConf Server certificate. Needed if the server uses a self-signed or corporate CA |
+| `tlsVerify` | boolean | No | `true` | When `false`, disables TLS certificate verification **for this TrueConf account only** (per-undici/per-ws). Last-resort insecure mode for self-signed servers; do not use in production. Mutually exclusive with `caPath` — the wizard clears the unused field when you switch modes |
+| `setupLocale` | `"en"` \| `"ru"` | No | `en` | Wizard interface language. Set automatically by `trueconf-setup` on first run; you can edit it manually or override via `TRUECONF_SETUP_LOCALE=en\|ru`. Runtime logs always stay English |
 | `enabled` | boolean | No | `true` | If false, the account won't run in the gateway but remains in the config |
 
 ### Channel field reference
@@ -222,15 +228,11 @@ The token is refreshed automatically a minute before `expires_at` — the user d
 
 ## TLS trust for TrueConf Server
 
-TrueConf Server typically runs on-prem with an internal-CA-signed or self-signed TLS certificate. The channel supports four paths to trust that certificate, in order of preference for production deployments:
+TrueConf Server typically runs on-prem with an internal-CA-signed or self-signed TLS certificate. The channel offers three explicit trust paths, listed in decreasing order of safety:
 
-### 1. Public certificate (Let's Encrypt etc.)
+### 1. System trust (default, no action)
 
-Nothing to do. The setup wizard detects the cert in the system trust store and skips the TOFU step.
-
-### 2. Enterprise CA via system trust (recommended for prod)
-
-Make the CA root trusted at the OS / Node level so it is picked up automatically:
+Public certificates (Let's Encrypt, etc.) work out-of-the-box. For an internal CA, make the CA root trusted at the OS or Node level:
 
 - **MDM / GPO / Ansible** — push the CA cert to `/usr/local/share/ca-certificates/` (Linux) or the platform equivalent, then run `update-ca-certificates`.
 - **`NODE_EXTRA_CA_CERTS`** — set this env var in your systemd unit, Dockerfile `ENV`, or shell profile:
@@ -238,44 +240,51 @@ Make the CA root trusted at the OS / Node level so it is picked up automatically
   export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/corp-ca.pem
   ```
 
-Probe detects `authorized: true` and skips TOFU entirely.
+The probe detects `authorized: true` and the wizard skips trust prompts.
 
-### 3. `TRUECONF_CA_PATH` env var (recommended for CI / Docker / systemd)
+### 2. `caPath` — admin-provided root CA (recommended)
 
-Explicitly point the setup to a CA file:
+If the TrueConf Server administrator gave you a root CA in PEM format, point the channel at it:
 
-```bash
-export TRUECONF_CA_PATH=/etc/trueconf/ca.pem
-npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
-```
+- **Wizard interactive**: pick "Specify path to a root CA certificate" on the trust prompt, then enter the path.
+- **Manual config**: `"caPath": "/path/to/server-ca.pem"` in `~/.openclaw/openclaw.json`.
+- **Headless / CI / Docker / systemd**: `export TRUECONF_CA_PATH=/etc/trueconf/ca.pem` before running `trueconf-setup`.
 
-The wizard validates the file (parses as PEM + verifies it actually validates the live server) before proceeding. If validation fails, setup aborts with a specific reason.
+The wizard validates the file (parses as PEM and verifies it validates the live server) before proceeding. If validation fails, setup aborts with a specific reason.
 
-### 4. Interactive wizard TOFU (for quick local setup only)
+> On TrueConf Server the certificate is usually stored as `*.crt`. If the file is in PEM format you can rename it to `*.pem`. If you own the server, find the certificate in the TrueConf Server control panel under HTTPS.
 
-When none of the above are set, the wizard shows the server's cert details (subject / issuer / validity / SHA-256 fingerprint) and asks you to confirm. **Verify the fingerprint out-of-band with the server admin** before accepting:
+### 3. `tlsVerify: false` — disable certificate verification (last resort)
 
-```bash
-# On the TrueConf server, the admin runs:
-openssl x509 -in /path/to/server-cert.pem -fingerprint -sha256 -noout
-```
+For self-signed servers in safe or restricted environments where obtaining the CA isn't practical:
 
-The wizard saves the chain to `~/.openclaw/trueconf-ca.pem` (`0600`).
+- **Wizard interactive**: pick "Disable TLS certificate verification for this TrueConf Server" on the trust prompt and confirm the MITM warning.
+- **Manual config**: `"tlsVerify": false` in `channels.trueconf` (or per account).
+- **Headless**: `export TRUECONF_TLS_VERIFY=false` before running `trueconf-setup`.
+
+This is per-TrueConf only — every other Node HTTPS call (LLM provider, webhooks, etc.) keeps verification on. Setting `tlsVerify:false` and `caPath` together is rejected; `TRUECONF_TLS_VERIFY=false` together with `TRUECONF_CA_PATH` is rejected.
+
+> **Security.** Disabling verification opens TrueConf traffic to a MITM. Use this mode only in a safe or restricted environment (offline lab, trusted internal network).
 
 ### Re-running the wizard
 
-On every subsequent run of `trueconf-setup`, the stored CA is re-validated against the live server. Three outcomes:
+On every subsequent run of `trueconf-setup`, the stored trust mode is re-checked against the live server. Three outcomes:
 
-- **Silent happy** — stored CA still validates the server → no prompts.
+- **Silent happy** — stored `caPath` still validates the server, or `tlsVerify:false` is still in effect → no prompts.
 - **Trust anchor mismatch** — stored CA no longer validates (cert rotation or MITM). A banner shows both old + new fingerprints and offers: *Abort / Accept new cert / Use admin-provided file*. **Always verify the new fingerprint with the admin out-of-band before accepting.**
-- **Missing trust anchor** — the file recorded in config is gone from disk. Banner offers: *Abort / Re-download chain / Use admin-provided file*. If the file was removed by an attacker, re-downloading commits you to whatever the server is presenting — verify first.
+- **Missing trust anchor** — the file recorded in config is gone from disk. Banner offers: *Abort / Re-download chain (legacy) / Use admin-provided file*. If the file was removed by an attacker, re-downloading commits you to whatever the server is presenting — verify first.
 
 ### Headless-specific notes
 
-`runHeadlessFinalize` (when invoked from non-interactive CLI with `TRUECONF_SERVER_URL`/`_USERNAME`/`_PASSWORD` env vars) mirrors the wizard flow but all failure modes are fatal — no prompts, no recovery. Options for headless TLS:
+`runHeadlessFinalize` (non-interactive setup invoked with `TRUECONF_SERVER_URL`/`_USERNAME`/`_PASSWORD`) mirrors the trust paths above but all failure modes are fatal — no prompts, no recovery:
 
-- `TRUECONF_CA_PATH` — preferred (validated strictly as above).
-- `TRUECONF_ACCEPT_UNTRUSTED_CA=true` — allows auto-download of the server's chain. **Use only in trusted networks** (CI isolated from hostile traffic); anywhere MITM is possible, use `TRUECONF_CA_PATH` instead.
+- `TRUECONF_CA_PATH=/etc/trueconf/ca.pem` — preferred for production CI/Docker.
+- `TRUECONF_TLS_VERIFY=false` — last-resort insecure mode. Mutually exclusive with `TRUECONF_CA_PATH`.
+- `TRUECONF_ACCEPT_UNTRUSTED_CA=true` — legacy option that auto-downloads the server's chain into `~/.openclaw/trueconf-ca.pem`. **Use only in trusted networks**; anywhere MITM is possible, use `TRUECONF_CA_PATH` or `TRUECONF_TLS_VERIFY=false` instead.
+
+### Wizard language
+
+The setup wizard defaults to **English**. On first run it prompts you to pick `English` or `Russian`; the choice is saved as `channels.trueconf.setupLocale` so re-runs do not re-prompt. Override via `TRUECONF_SETUP_LOCALE=en|ru` (env wins over config; invalid value fails fast). Runtime logs from the gateway stay English regardless.
 
 ## Group Chats
 
@@ -352,8 +361,8 @@ The channel sends and receives files via TrueConf: images, audio, video, and doc
 ### `fetch failed` on startup
 
 - **Cause:** The TrueConf Server certificate is not from a public CA (self-signed or from a corporate CA), and Node.js doesn't trust it.
-- **Solution:** Re-run `trueconf-setup` — the wizard will offer to download the CA chain and write the path to the config. Alternatively, get the CA from the server administrator and set `"caPath": "/path/to/ca.pem"` in the config manually, or put the cert into `NODE_EXTRA_CA_CERTS`.
-- **What not to do:** `NODE_TLS_REJECT_UNAUTHORIZED=0` disables TLS validation for the **entire** Node process, including calls to the LLM provider and any other endpoints. Not safe even as a quick check.
+- **Solution:** Re-run `trueconf-setup`. Pick "Specify path to a root CA certificate" and provide a `.pem` from the server admin (preferred), or "Disable TLS certificate verification for this TrueConf Server" if you accept the MITM risk for this transport (last resort). You can also set `"caPath": "/path/to/ca.pem"` or `"tlsVerify": false` in the config manually, or export `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` for system-wide trust. See [TLS trust for TrueConf Server](#tls-trust-for-trueconf-server).
+- **What not to do:** `NODE_TLS_REJECT_UNAUTHORIZED=0` disables TLS validation for the **entire** Node process, including calls to the LLM provider and any other endpoints. Use the per-account `tlsVerify: false` option above if you need an insecure mode — it scopes the bypass to TrueConf only.
 
 ### `blocked URL fetch ... resolves to private/internal/special-use IP address`
 

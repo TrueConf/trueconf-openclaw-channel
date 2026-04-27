@@ -447,7 +447,16 @@ export const channelPlugin = {
           if (errorCode !== undefined && errorCode !== 0) {
             throw new Error(`getChats: unexpected response (errorCode=${errorCode})`)
           }
-          return ((resp.payload?.chats as Array<{ chatId: string; title: string; chatType: number }> | undefined) ?? [])
+          // TrueConf returns the chat list as a bare array in `payload`
+          // (`{ type: 2, id, payload: [chat0, chat1, ...] }`). The previous
+          // implementation read `payload.chats`, which is the shape used by
+          // some other endpoints — but never by `getChats`. Accept both forms
+          // so older / mocked servers that wrap the list still work.
+          const p = resp.payload as unknown
+          type ChatRow = { chatId: string; title: string; chatType: number }
+          if (Array.isArray(p)) return p as ChatRow[]
+          const wrapped = (p as { chats?: ChatRow[] } | undefined)?.chats
+          return wrapped ?? []
         },
         getChatByID: async (chatId) => {
           const resp = await wsClient.sendRequest('getChatByID', { chatId })

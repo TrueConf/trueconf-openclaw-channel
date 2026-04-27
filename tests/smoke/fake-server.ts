@@ -300,7 +300,10 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
         const count = Number(payload.count ?? 100)
         const page = Number(payload.page ?? 1)
         const result = chats.getPage(page, count)
-        send(ws, { type: 2, id, payload: { errorCode: 0, chats: result } })
+        // Real TrueConf returns the chat list as a bare array in `payload`,
+        // not wrapped in `{ chats: [...] }`. Mirror that here so adapter
+        // tests exercise the production envelope.
+        send(ws, { type: 2, id, payload: result as unknown as Record<string, unknown> })
         return
       }
       if (method === 'getChatByID') {

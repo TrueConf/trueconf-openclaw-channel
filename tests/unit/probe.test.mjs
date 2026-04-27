@@ -481,6 +481,46 @@ describe('validateOAuthCredentials — status codes', () => {
     }
   })
 
+  it('passes an undici dispatcher with rejectUnauthorized=false when tlsVerify=false', async () => {
+    // Same harness as the ca+useTls test: lock in that the dispatcher is an
+    // undici Agent (real Dispatcher.dispatch). The actual rejectUnauthorized
+    // wiring is tested at the WS-level integration (Task 4) — here we only
+    // assert that the dispatcher is constructed and passed when tlsVerify=false.
+    const origFetch = globalThis.fetch
+    let seenDispatcher
+    globalThis.fetch = vi.fn(async (_url, init) => {
+      seenDispatcher = init?.dispatcher
+      return new Response('Unauthorized', { status: 401, statusText: 'Unauthorized' })
+    })
+    try {
+      const result = await validateOAuthCredentials({
+        serverUrl: 'tc.example.com',
+        username: 'bot',
+        password: 'wrong',
+        useTls: true,
+        port: 443,
+        tlsVerify: false,
+      })
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.category).toBe('invalid-credentials')
+      expect(seenDispatcher).toBeDefined()
+      expect(typeof seenDispatcher.dispatch).toBe('function')
+    } finally {
+      globalThis.fetch = origFetch
+    }
+  })
+
+  it('rejects tlsVerify=false without useTls=true', async () => {
+    await expect(validateOAuthCredentials({
+      serverUrl: 'tc.example.com',
+      username: 'bot',
+      password: 'x',
+      useTls: false,
+      port: 80,
+      tlsVerify: false,
+    })).rejects.toThrow(/tlsVerify.*useTls/i)
+  })
+
   it('passes through undici dispatcher when ca+useTls is set (401 path)', async () => {
     // Lock in C1: the implementation must use an undici Agent (valid Dispatcher),
     // not a node:https Agent. If the wrong Agent is passed as `dispatcher`, fetch

@@ -67,6 +67,11 @@ export interface ValidateOAuthCredentialsParams {
   useTls?: boolean
   port?: number
   ca?: ValidatedCaBytes
+  // When true (or omitted), the OAuth request validates the server cert
+  // against the system trust store (or `ca` if provided). Set to false to
+  // skip verification — operator-acknowledged insecure mode for self-signed
+  // TrueConf Servers. Requires `useTls: true`.
+  tlsVerify?: boolean
 }
 
 export function validateOAuthCredentials(

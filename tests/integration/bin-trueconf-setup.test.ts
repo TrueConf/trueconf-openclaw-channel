@@ -529,7 +529,7 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
     const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
       runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<unknown>
     }
-    await expect(runSetup({ configPath, prompter, probeModule: probeStub })).rejects.toThrow(/Невалидный порт/)
+    await expect(runSetup({ configPath, prompter, probeModule: probeStub })).rejects.toThrow(/Invalid port|Невалидный порт/)
   })
 
   // --- OAuth retry loop coverage ----------------------------------------

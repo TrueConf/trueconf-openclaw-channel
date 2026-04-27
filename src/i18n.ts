@@ -103,6 +103,19 @@ const TRANSLATIONS = {
   'tls.banner.missing.verifyAdmin':    { en: 'Verify the fingerprint with the admin BEFORE re-TOFU.', ru: 'Сверьте отпечаток сервера с админом ДО re-TOFU.' },
   'tls.banner.missing.reasonAbsent':   { en: 'file is missing', ru: 'файл отсутствует' },
   'tls.banner.missing.reasonReadErr':  { en: 'read error: {{message}}', ru: 'ошибка чтения: {{message}}' },
+
+  // Probe preview (bin standalone CLI)
+  'probe.preview.title':               { en: 'Connecting as', ru: 'Подключусь как' },
+  'probe.preview.accept':              { en: 'Accept?', ru: 'Принять?' },
+  'probe.preview.tlsToggle':           { en: 'TLS (https/wss)?', ru: 'TLS (https/wss)?' },
+  'probe.preview.port':                { en: 'Port (empty = {{default}})', ru: 'Порт (пусто = {{default}})' },
+  'probe.preview.invalidPort':         { en: 'Invalid port: {{value}}', ru: 'Невалидный порт: {{value}}' },
+  'probe.preview.reason.tlsValid':     { en: 'TLS on {{port}}, valid certificate', ru: 'TLS на {{port}}, валидный сертификат' },
+  'probe.preview.reason.tlsUntrusted': { en: 'TLS on {{port}}, corporate/self-signed CA{{caClause}}', ru: 'TLS на {{port}}, корпоративный/самоподписанный CA{{caClause}}' },
+  'probe.preview.reason.caClause':     { en: ' (CA: {{path}})', ru: ' (CA: {{path}})' },
+  'probe.preview.reason.tlsInsecure':  { en: 'TLS on {{port}}, certificate verification disabled (this TrueConf only)', ru: 'TLS на {{port}}, проверка сертификата отключена (только для TrueConf)' },
+  'probe.preview.reason.bridgeOpen':   { en: 'no TLS, Bridge on {{port}}', ru: 'без TLS, Bridge на {{port}}' },
+  'probe.preview.reason.fallback':     { en: 'probe did not respond, trying HTTPS:{{port}}', ru: 'probe не ответил, пробую HTTPS:{{port}}' },
 } as const
 
 export type TranslationKey = keyof typeof TRANSLATIONS

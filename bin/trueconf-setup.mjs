@@ -254,7 +254,7 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
     return { useTls: currentUseTls, port: currentPort, caPath: undefined, tlsVerify: undefined }
   }
 
-  await prompter.note('Определяю TLS/порт...', 'Проверка сервера')
+  await prompter.note(t('probe.detecting', locale), t('probe.title', locale))
   const probe = await probeModule.probeTls({ host: serverUrl, port: currentPort })
 
   let useTls, port, caPath, tlsVerify, reason
@@ -339,8 +339,8 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
     // Probe failure is a hint, not a gate: OAuth over a corporate proxy can
     // still succeed even when a raw TLS probe is firewalled.
     await prompter.note(
-      `Probe не смог определить TLS/порт: ${probe.error ?? 'unknown'}.\nПо умолчанию пробую HTTPS:443. OAuth вернёт точную причину если не сработает.`,
-      'Probe пропущен',
+      t('probe.skipped', locale, { error: probe.error ?? 'unknown' }),
+      t('probe.skippedTitle', locale),
     )
     useTls = currentUseTls ?? true
     port = currentPort ?? 443
@@ -351,34 +351,36 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
   const scheme = useTls ? 'wss' : 'ws'
   const isDefaultPort = (useTls && port === 443) || (!useTls && port === 80)
   const hostPart = isDefaultPort ? serverUrl : `${serverUrl}:${port}`
+  const caClause = caPath ? t('probe.preview.reason.caClause', locale, { path: caPath }) : ''
   const reasonLabels = {
-    'tls-valid': `TLS на ${port}, валидный сертификат`,
-    'tls-untrusted': `TLS на ${port}, корпоративный/самоподписанный CA${caPath ? ` (скачан в ${caPath})` : ''}`,
-    'tls-insecure': `TLS на ${port}, проверка сертификата отключена (только для TrueConf)`,
-    'bridge-open': `без TLS, Bridge на ${port}`,
-    'fallback': `probe не ответил, пробую HTTPS:${port}`,
+    'tls-valid': t('probe.preview.reason.tlsValid', locale, { port }),
+    'tls-untrusted': t('probe.preview.reason.tlsUntrusted', locale, { port, caClause }),
+    'tls-insecure': t('probe.preview.reason.tlsInsecure', locale, { port }),
+    'bridge-open': t('probe.preview.reason.bridgeOpen', locale, { port }),
+    'fallback': t('probe.preview.reason.fallback', locale, { port }),
   }
   await prompter.note(
     `${scheme}://${hostPart}/websocket/chat_bot/\n(${reasonLabels[reason] ?? reason})`,
-    'Подключусь как',
+    t('probe.preview.title', locale),
   )
 
   const accept = await prompter.confirm({
-    message: 'Принять?',
+    message: t('probe.preview.accept', locale),
     initialValue: true,
   })
   if (accept) return { useTls, port, caPath, tlsVerify }
 
   // Manual override branch.
-  const manualTls = await prompter.confirm({ message: 'TLS (https/wss)?', initialValue: useTls })
+  const manualTls = await prompter.confirm({ message: t('probe.preview.tlsToggle', locale), initialValue: useTls })
+  const manualPortDefault = manualTls ? 443 : 4309
   const manualPortRaw = await prompter.text({
-    message: `Порт (пусто = ${manualTls ? 443 : 4309})`,
-    placeholder: String(manualTls ? 443 : 4309),
+    message: t('probe.preview.port', locale, { default: manualPortDefault }),
+    placeholder: String(manualPortDefault),
   })
   const manualPortTrimmed = typeof manualPortRaw === 'string' ? manualPortRaw.trim() : ''
-  const manualPort = manualPortTrimmed === '' ? (manualTls ? 443 : 4309) : Number.parseInt(manualPortTrimmed, 10)
+  const manualPort = manualPortTrimmed === '' ? manualPortDefault : Number.parseInt(manualPortTrimmed, 10)
   if (!Number.isFinite(manualPort) || manualPort < 1 || manualPort > 65535) {
-    throw new Error(`Невалидный порт: ${manualPortRaw}`)
+    throw new Error(t('probe.preview.invalidPort', locale, { value: String(manualPortRaw) }))
   }
   return { useTls: manualTls, port: manualPort, caPath, tlsVerify }
 }

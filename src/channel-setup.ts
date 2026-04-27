@@ -807,12 +807,13 @@ export async function interactiveFinalize(params: {
 // OAuth once (no retry — fail fast in CI/bootstrap contexts), and returns a
 // patched cfg with channels.trueconf filled in. Exported for integration tests.
 export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClawConfig> {
+  const cfgTc = readTrueConfSection(cfg)
+
   // Resolve locale at top of function. Headless never prompts; if neither env
   // nor cfg sets it, fall back to DEFAULT_LOCALE ('en'). Invalid env throws.
   const envLocale = readEnvLocale()
-  const cfgLocale = readTrueConfSection(cfg).setupLocale
   const locale: Locale = envLocale
-    ?? (cfgLocale === 'en' || cfgLocale === 'ru' ? cfgLocale : DEFAULT_LOCALE)
+    ?? (cfgTc.setupLocale === 'en' || cfgTc.setupLocale === 'ru' ? cfgTc.setupLocale : DEFAULT_LOCALE)
 
   const serverUrl = process.env.TRUECONF_SERVER_URL?.trim()
   const username = process.env.TRUECONF_USERNAME?.trim()
@@ -850,11 +851,7 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
     if (envCaPath) {
       throw new Error(t('tls.insecure.conflict', locale))
     }
-    // Catch both env-supplied (TRUECONF_USE_TLS=false) and cfg-supplied
-    // (channels.trueconf.useTls=false) opt-outs of TLS — disabling cert
-    // verification while TLS itself is off is contradictory operator intent
-    // either way.
-    if (useTlsHint === false || readTrueConfSection(cfg).useTls === false) {
+    if (useTlsHint === false || cfgTc.useTls === false) {
       throw new Error(t('tls.insecure.useTlsConflict', locale))
     }
     tlsVerify = false
@@ -876,7 +873,7 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
     caBytes = loaded.caBytes
   } else if (tlsVerify !== false) {
     // 2) Check configured caPath in current cfg (skipped in insecure mode)
-    const existing = readTrueConfSection(cfg).caPath
+    const existing = cfgTc.caPath
 
     if (existing) {
       const abs = resolveAbsPath(existing)

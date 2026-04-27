@@ -17,10 +17,8 @@ export interface TrueConfAccountConfig {
   setupLocale?: SetupLocale
 }
 
-// Operator-settable subset of TrueConfAccountConfig as it appears in
-// cfg.channels.trueconf. Pick (rather than a free-standing interface)
-// ties drift to a single source: adding a field to TrueConfAccountConfig
-// surfaces it here on demand without re-typing the shape.
+// Pick over free-standing interface so renames in TrueConfAccountConfig
+// break this type at compile time instead of drifting silently.
 export type TrueConfChannelSection = Partial<Pick<TrueConfAccountConfig,
   | 'serverUrl'
   | 'username'

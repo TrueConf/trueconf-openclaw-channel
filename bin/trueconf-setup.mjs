@@ -251,18 +251,17 @@ async function promptPassword(prompter, wizard, cfg) {
 async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTls, currentPort, t, locale) {
   // If user has pinned useTls or port in cfg, skip probe and respect choice.
   if (currentUseTls !== undefined && currentPort !== undefined) {
-    return { useTls: currentUseTls, port: currentPort, caPath: undefined, tlsVerify: undefined }
+    return { useTls: currentUseTls, port: currentPort, caPath: undefined, caBytes: undefined, tlsVerify: undefined }
   }
 
   await prompter.note(t('probe.detecting', locale), t('probe.title', locale))
   const probe = await probeModule.probeTls({ host: serverUrl, port: currentPort })
 
-  let useTls, port, caPath, tlsVerify, reason
+  let useTls, port, caPath, caBytes, tlsVerify, reason
   if (probe.reachable) {
     useTls = currentUseTls ?? probe.useTls
     port = currentPort ?? probe.port
     if (probe.caUntrusted && useTls) {
-      // UX-parity with src/channel-setup.ts wizard: select-of-three; legacy auto-download intentionally dropped.
       const choice = await prompter.select({
         message: t('select.whatToDo', locale),
         options: [
@@ -287,10 +286,10 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
         }
         const expanded = raw.startsWith('~/') || raw === '~' ? raw.replace(/^~/, homedir()) : raw
         const abs = resolve(expanded)
-        // Inline validate before assignment so a non-PEM / wrong-CA file
-        // surfaces as a localized error instead of an opaque downstream
-        // OAuth TLS failure that could be saved-anyway with garbage caPath.
-        // Mirrors loadAndValidateEnvCa in src/channel-setup.ts.
+        // Validate inline so non-PEM / wrong-CA surfaces as a localized error
+        // before the operator-supplied path can be saved through the OAuth
+        // save-anyway fallback. Bytes are reused below for the OAuth call —
+        // single read closes the TOCTOU window between validate and use.
         let bytes
         try {
           bytes = readFileSync(abs)
@@ -317,8 +316,8 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
           }))
         }
         caPath = abs
+        caBytes = bytes
       } else {
-        // initialValue:false on the confirm so a thoughtless Enter does not flip TLS verification off.
         await prompter.note(t('tls.insecure.warning', locale), t('tls.untrusted.title', locale))
         const confirmed = await prompter.confirm({
           message: t('tls.insecure.confirm', locale),
@@ -362,7 +361,7 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
     message: t('probe.preview.accept', locale),
     initialValue: true,
   })
-  if (accept) return { useTls, port, caPath, tlsVerify }
+  if (accept) return { useTls, port, caPath, caBytes, tlsVerify }
 
   // Manual override branch.
   const manualTls = await prompter.confirm({ message: t('probe.preview.tlsToggle', locale), initialValue: useTls })
@@ -376,7 +375,7 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
   if (!Number.isFinite(manualPort) || manualPort < 1 || manualPort > 65535) {
     throw new Error(t('probe.preview.invalidPort', locale, { value: String(manualPortRaw) }))
   }
-  return { useTls: manualTls, port: manualPort, caPath, tlsVerify }
+  return { useTls: manualTls, port: manualPort, caPath, caBytes, tlsVerify }
 }
 
 function patchChannelWithFinalValues(cfg, { serverUrl, username, password, useTls, port, caPath, tlsVerify, setupLocale }) {
@@ -496,7 +495,7 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
 
   const probeModule = injectedProbe ?? (await loadProbe())
   const { t } = await loadI18n()
-  const { useTls, port, caPath, tlsVerify } = await promptProbePreview(
+  const { useTls, port, caPath, caBytes, tlsVerify } = await promptProbePreview(
     prompter,
     probeModule,
     serverUrl,
@@ -517,7 +516,7 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
     // of pinning when they picked insecure mode.
     const result = await validateOAuthCredentials({
       serverUrl, username, password: currentPassword, useTls, port,
-      ca: tlsVerify === false ? undefined : readCaBuffer(caPath),
+      ca: tlsVerify === false ? undefined : (caBytes ?? readCaBuffer(caPath)),
       tlsVerify,
     })
     if (result.ok) { oauthOk = true; break }

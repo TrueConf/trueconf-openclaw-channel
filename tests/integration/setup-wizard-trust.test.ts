@@ -62,6 +62,9 @@ beforeEach(() => {
   for (const k of Object.keys(process.env)) {
     if (k.startsWith('TRUECONF_')) delete process.env[k]
   }
+  // Pin to Russian so existing assertions on Russian wizard copy keep matching;
+  // the language prompt is skipped when TRUECONF_SETUP_LOCALE is set.
+  process.env.TRUECONF_SETUP_LOCALE = 'ru'
   oauth().mockReset()
   oauth().mockResolvedValue({ ok: true })
   tmpCaDir = mkdtempSync(join(tmpdir(), 'trust-test-'))

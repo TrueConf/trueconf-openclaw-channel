@@ -99,12 +99,28 @@ export class WsClient {
   // Custom CA bundle for WebSocket TLS (downloaded by the setup wizard and
   // written to caPath). Passed straight through to ws's `ca` option.
   public ca: Buffer | undefined = undefined
+  // When false, the WebSocket handshake skips cert verification — the
+  // operator-acknowledged insecure mode for self-signed TrueConf Servers.
+  // Defaults to true so any code path that forgets to thread the flag stays
+  // safe-by-default.
+  public tlsVerify = true
 
   private pushListeners: Array<(method: string, payload: Record<string, unknown>) => void> = []
   private authListeners: Array<() => void> = []
 
-  constructor(options?: { ca?: Buffer }) {
+  constructor(options?: { ca?: Buffer; tlsVerify?: boolean }) {
     if (options?.ca) this.ca = options.ca
+    if (options?.tlsVerify === false) this.tlsVerify = false
+  }
+
+  // Returns the option bag passed to `new WebSocket(..., options)`. When
+  // tlsVerify=false, the insecure flag wins over a stale ca pin so the
+  // outcome is unambiguous. When neither knob is set, returns undefined so
+  // ws falls back to the system trust store (default behavior).
+  buildClientOptions(): { rejectUnauthorized: false } | { ca: Buffer } | undefined {
+    if (this.tlsVerify === false) return { rejectUnauthorized: false }
+    if (this.ca) return { ca: this.ca }
+    return undefined
   }
 
   onFileProgress(fileId: string, handler: (progress: number) => void): void {
@@ -136,7 +152,7 @@ export class WsClient {
     const ws = new WebSocket(
       buildWsUrl(config),
       'json.v1',
-      this.ca ? { ca: this.ca } : undefined,
+      this.buildClientOptions(),
     )
     this.ws = ws
 

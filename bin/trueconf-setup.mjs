@@ -262,11 +262,7 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
     useTls = currentUseTls ?? probe.useTls
     port = currentPort ?? probe.port
     if (probe.caUntrusted && useTls) {
-      // UX-parity with src/channel-setup.ts interactive wizard: a single
-      // select of three options (use-file | insecure | abort). The legacy
-      // download-CA-chain auto path is intentionally absent — operators
-      // either provide an admin-issued CA file or explicitly disable
-      // verification for this TrueConf account.
+      // UX-parity with src/channel-setup.ts wizard: select-of-three; legacy auto-download intentionally dropped.
       const choice = await prompter.select({
         message: t('select.whatToDo', locale),
         options: [
@@ -322,9 +318,7 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
         }
         caPath = abs
       } else {
-        // insecure — show the spec-mandated MITM warning, then a second
-        // confirm defaulting to false so a thoughtless Enter does not
-        // disable verification.
+        // initialValue:false on the confirm so a thoughtless Enter does not flip TLS verification off.
         await prompter.note(t('tls.insecure.warning', locale), t('tls.untrusted.title', locale))
         const confirmed = await prompter.confirm({
           message: t('tls.insecure.confirm', locale),

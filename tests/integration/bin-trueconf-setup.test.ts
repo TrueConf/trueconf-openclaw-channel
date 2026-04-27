@@ -627,8 +627,6 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
       },
     }
 
-    // New select-of-three UX: choice=insecure → second confirm gates the
-    // tlsVerify=false flip; final confirm is probe-preview accept.
     const prompter = makeFakePrompter({
       textResponses: [fake.host, 'bot@localhost'],
       passwordResponses: ['secret'],
@@ -674,7 +672,6 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
       validateOAuthCredentials: async () => ({ ok: true }),
     }
 
-    // Confirm order: overwrite=true, insecure-warn=true, probe-accept=true
     const prompter = makeFakePrompter({
       textResponses: [fake.host, 'bot@localhost'],
       passwordResponses: ['secret'],

@@ -606,7 +606,7 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
 
   // --- TLS trust flow (tlsVerify=false) coverage ------------------------
 
-  it('untrusted cert → decline download → accept insecure → saves tlsVerify=false without caPath', async () => {
+  it('untrusted cert → select insecure → saves tlsVerify=false without caPath', async () => {
     // Stub probe to report caUntrusted=true on the fake-server's port. Stub
     // validateOAuthCredentials so it succeeds without actually connecting
     // (the fake-server is HTTP-only so a real https handshake would fail).
@@ -627,11 +627,13 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
       },
     }
 
-    // Confirm order: download=false, insecure=true, probe-accept=true
+    // New select-of-three UX: choice=insecure → second confirm gates the
+    // tlsVerify=false flip; final confirm is probe-preview accept.
     const prompter = makeFakePrompter({
       textResponses: [fake.host, 'bot@localhost'],
       passwordResponses: ['secret'],
-      confirmResponses: [false, true, true],
+      selectResponses: ['insecure'],
+      confirmResponses: [true, true],
     })
 
     try {
@@ -672,11 +674,12 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
       validateOAuthCredentials: async () => ({ ok: true }),
     }
 
-    // Confirm order: overwrite=true, download=false, insecure=true, probe-accept=true
+    // Confirm order: overwrite=true, insecure-warn=true, probe-accept=true
     const prompter = makeFakePrompter({
       textResponses: [fake.host, 'bot@localhost'],
       passwordResponses: ['secret'],
-      confirmResponses: [true, false, true, true],
+      selectResponses: ['insecure'],
+      confirmResponses: [true, true, true],
     })
 
     try {
@@ -695,7 +698,7 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
     }
   })
 
-  it('untrusted cert → decline download → decline insecure → throws', async () => {
+  it('untrusted cert → select abort → throws', async () => {
     const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
     const { makeFakePrompter } = await import('../smoke/fake-prompter')
     const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
@@ -712,7 +715,7 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
     const prompter = makeFakePrompter({
       textResponses: [fake.host, 'bot@localhost'],
       passwordResponses: ['secret'],
-      confirmResponses: [false, false],  // download=false, insecure=false
+      selectResponses: ['abort'],
     })
 
     const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
@@ -725,11 +728,7 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
     }
   })
 
-  it('readCaBuffer no longer silently swallows unreadable CA: bin throws when downloaded path is missing', async () => {
-    // Probe says caUntrusted=true; user accepts download; downloadCAChain
-    // stub returns a path that does NOT exist on disk. The old silent-undef
-    // behavior would forward `ca: undefined` to OAuth (downgrading the
-    // operator's pin to system trust). Bin now throws loud.
+  it('untrusted cert → select insecure → decline insecure-warn → throws', async () => {
     const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
     const { makeFakePrompter } = await import('../smoke/fake-prompter')
     const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
@@ -739,16 +738,51 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
 
     const probeStub = {
       probeTls: async () => ({ reachable: true, useTls: true, port: fake.port, caUntrusted: true }),
-      // Returns a path that does not exist anywhere — readCaBuffer would
-      // silently swallow ENOENT in the old code; now must throw loud.
-      downloadCAChain: async () => ({ path: '/tmp/does-not-exist-ca-bin-test.pem', bytes: Buffer.from('') }),
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
       validateOAuthCredentials: async () => ({ ok: true }),
     }
 
     const prompter = makeFakePrompter({
       textResponses: [fake.host, 'bot@localhost'],
       passwordResponses: ['secret'],
-      confirmResponses: [true, true],  // accept download + accept preview
+      selectResponses: ['insecure'],
+      confirmResponses: [false],
+    })
+
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<unknown>
+    }
+    try {
+      await expect(runSetup({ configPath, prompter, probeModule: probeStub })).rejects.toThrow(/User aborted: untrusted cert/)
+    } finally {
+      await (stopFakeServer as (f: unknown) => Promise<void>)(fake)
+    }
+  })
+
+  it('use-file: bin throws loud when entered CA path is unreadable', async () => {
+    // Probe says caUntrusted=true; user picks use-file and supplies a path
+    // that does not exist on disk. readCaBuffer is the loud-throw choke
+    // point; entering a bad path here must NOT silently downgrade the
+    // operator's pinned-CA trust mode to system trust.
+    const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
+      { oauthResponse: { status: 200, body: { access_token: 'ok' } } },
+    )
+    writeFileSync(configPath, JSON.stringify({}, null, 2))
+
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: fake.port, caUntrusted: true }),
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
+      validateOAuthCredentials: async () => ({ ok: true }),
+    }
+
+    const prompter = makeFakePrompter({
+      // FIFO: serverUrl, username, then CA-file path inside the use-file branch.
+      textResponses: [fake.host, 'bot@localhost', '/tmp/does-not-exist-ca-bin-test.pem'],
+      passwordResponses: ['secret'],
+      selectResponses: ['use-file'],
+      confirmResponses: [true],  // probe-preview accept
     })
 
     const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {

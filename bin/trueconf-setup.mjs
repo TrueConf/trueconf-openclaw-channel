@@ -260,23 +260,45 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
     useTls = currentUseTls ?? probe.useTls
     port = currentPort ?? probe.port
     if (probe.caUntrusted && useTls) {
-      const confirmCa = await prompter.confirm({
-        message: 'Сертификат самоподписанный или от корпоративного CA. Скачать цепочку в ~/.openclaw/trueconf-ca.pem?',
-        initialValue: true,
+      // UX-parity with src/channel-setup.ts interactive wizard: a single
+      // select of three options (use-file | insecure | abort). The legacy
+      // download-CA-chain auto path is intentionally absent — operators
+      // either provide an admin-issued CA file or explicitly disable
+      // verification for this TrueConf account.
+      const choice = await prompter.select({
+        message: t('select.whatToDo', locale),
+        options: [
+          { value: 'use-file', label: t('tls.untrusted.choice.use-file', locale) },
+          { value: 'insecure', label: t('tls.untrusted.choice.insecure', locale) },
+          { value: 'abort',    label: t('select.option.abortSetup', locale) },
+        ],
       })
-      if (confirmCa) {
-        caPath = (await probeModule.downloadCAChain({ host: serverUrl, port })).path
+      if (choice === 'abort') {
+        throw new Error(`User aborted: untrusted cert on ${serverUrl}`)
+      }
+      if (choice === 'use-file') {
+        const hint = [
+          t('tls.cafile.hint.intro', locale),
+          t('tls.cafile.hint.format', locale),
+          t('tls.cafile.hint.location', locale),
+        ].join('\n')
+        await prompter.note(hint, t('cafile.title', locale))
+        const raw = await prompter.text({ message: t('cafile.prompt', locale) })
+        if (typeof raw !== 'string' || raw.trim() === '') {
+          throw new Error(`User aborted: empty CA path`)
+        }
+        const expanded = raw.startsWith('~/') || raw === '~' ? raw.replace(/^~/, homedir()) : raw
+        caPath = resolve(expanded)
       } else {
-        // Escape hatch: declining download routes to the per-TrueConf insecure
-        // mode. Show the spec-mandated MITM warning and require an explicit
-        // second confirm, defaulting to false so a thoughtless Enter doesn't
-        // disable verification. Reused i18n keys keep copy in lockstep with
-        // the SDK wizard's insecure path.
-        const goInsecure = await prompter.confirm({
-          message: `${t('tls.insecure.warning', locale)}\n\n${t('tls.insecure.confirm', locale)}`,
+        // insecure — show the spec-mandated MITM warning, then a second
+        // confirm defaulting to false so a thoughtless Enter does not
+        // disable verification.
+        await prompter.note(t('tls.insecure.warning', locale), t('tls.untrusted.title', locale))
+        const confirmed = await prompter.confirm({
+          message: t('tls.insecure.confirm', locale),
           initialValue: false,
         })
-        if (!goInsecure) throw new Error(`User aborted: untrusted cert on ${serverUrl}`)
+        if (!confirmed) throw new Error(`User aborted: untrusted cert on ${serverUrl}`)
         tlsVerify = false
       }
     }

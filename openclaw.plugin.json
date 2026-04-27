@@ -5,6 +5,82 @@
   "version": "1.1.0",
   "channels": ["trueconf"],
   "minOpenClawVersion": "2026.3.22",
+  "channelConfigs": {
+    "trueconf": {
+      "label": "TrueConf",
+      "description": "Connect OpenClaw to TrueConf Server corporate messenger.",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "serverUrl": { "type": "string", "minLength": 1 },
+          "username": { "type": "string", "minLength": 1 },
+          "password": {
+            "anyOf": [
+              { "type": "string", "minLength": 1 },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["useEnv"],
+                "properties": {
+                  "useEnv": { "type": "string", "minLength": 1 }
+                }
+              }
+            ]
+          },
+          "useTls": { "type": "boolean" },
+          "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+          "clientId": { "type": "string" },
+          "clientSecret": { "type": "string" },
+          "caPath": { "type": "string", "minLength": 1 },
+          "enabled": { "type": "boolean" },
+          "accounts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "serverUrl": { "type": "string", "minLength": 1 },
+                "username": { "type": "string", "minLength": 1 },
+                "password": {
+                  "anyOf": [
+                    { "type": "string", "minLength": 1 },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["useEnv"],
+                      "properties": {
+                        "useEnv": { "type": "string", "minLength": 1 }
+                      }
+                    }
+                  ]
+                },
+                "useTls": { "type": "boolean" },
+                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "clientId": { "type": "string" },
+                "clientSecret": { "type": "string" },
+                "caPath": { "type": "string", "minLength": 1 },
+                "enabled": { "type": "boolean" }
+              }
+            }
+          },
+          "dmPolicy": {
+            "type": "string",
+            "enum": ["open", "pairing", "allowlist", "closed", "disabled"]
+          },
+          "allowFrom": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "maxFileSize": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 2147483648
+          }
+        }
+      }
+    }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

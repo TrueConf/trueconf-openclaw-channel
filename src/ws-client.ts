@@ -35,22 +35,35 @@ export function buildTokenUrl(config: TrueConfAccountConfig): string {
   return `${config.useTls ? 'https' : 'http'}://${hostPort(config)}/bridge/api/client/v1/oauth/token`
 }
 
+function describeFetchError(err: unknown): string {
+  const outerMsg = err instanceof Error ? err.message : String(err)
+  const cause = err instanceof Error ? err.cause : undefined
+  if (!(cause instanceof Error)) return outerMsg
+  const code = 'code' in cause ? String(cause.code) : ''
+  return `${outerMsg} (${code ? `${code}: ` : ''}${cause.message})`
+}
+
 export async function acquireToken(
   config: TrueConfAccountConfig,
   options?: { dispatcher?: Dispatcher },
 ): Promise<OAuthTokenResponse> {
-  const response = await fetch(buildTokenUrl(config), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      client_id: config.clientId ?? 'chat_bot',
-      client_secret: config.clientSecret ?? '',
-      grant_type: 'password',
-      username: config.username,
-      password: config.password,
-    }),
-    ...(options?.dispatcher && { dispatcher: options.dispatcher }),
-  } as RequestInit)
+  let response: Response
+  try {
+    response = await fetch(buildTokenUrl(config), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: config.clientId ?? 'chat_bot',
+        client_secret: config.clientSecret ?? '',
+        grant_type: 'password',
+        username: config.username,
+        password: config.password,
+      }),
+      ...(options?.dispatcher && { dispatcher: options.dispatcher }),
+    } as RequestInit)
+  } catch (err) {
+    throw new Error(`OAuth token request failed: ${describeFetchError(err)}`)
+  }
 
   if (!response.ok) {
     let detail = response.statusText

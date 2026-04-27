@@ -39,6 +39,20 @@ async function loadFinalizers() {
   }
 }
 
+// Resolve setup locale for bin's standalone path. Mirrors precedence used by
+// src/channel-setup.ts: env > cfg.channels.trueconf.setupLocale > 'en'.
+// Throws on an invalid env value to fail loud in CI/Ansible bootstrap.
+function resolveBinLocale(cfg) {
+  const raw = process.env.TRUECONF_SETUP_LOCALE
+  if (raw === 'en' || raw === 'ru') return raw
+  if (raw !== undefined) {
+    throw new Error(`TRUECONF_SETUP_LOCALE must be 'en' or 'ru', got: ${raw}`)
+  }
+  const cfgLocale = cfg?.channels?.trueconf?.setupLocale
+  if (cfgLocale === 'en' || cfgLocale === 'ru') return cfgLocale
+  return 'en'
+}
+
 async function loadProbe() {
   const mod = await import(join(REPO_ROOT, 'src/probe.mjs'))
   return {
@@ -289,7 +303,7 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
   return { useTls: manualTls, port: manualPort, caPath }
 }
 
-function patchChannelWithFinalValues(cfg, { serverUrl, username, password, useTls, port, caPath }) {
+function patchChannelWithFinalValues(cfg, { serverUrl, username, password, useTls, port, caPath, setupLocale }) {
   // Shallow-patch channels.trueconf preserving any existing side-fields
   // (dmPolicy, allowFrom, maxFileSize, etc.) that the user configured manually.
   const existing = cfg.channels?.trueconf ?? {}
@@ -306,6 +320,7 @@ function patchChannelWithFinalValues(cfg, { serverUrl, username, password, useTl
         useTls,
         port,
         ...(caPath && { caPath }),
+        ...(setupLocale && { setupLocale }),
       },
     },
   }
@@ -336,6 +351,11 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
   const configPath = configPathArg ?? join(homedir(), '.openclaw', 'openclaw.json')
   const cfg = readJsonConfig(configPath)
   const { trueconfSetupWizard, runHeadlessFinalize } = await loadFinalizers()
+
+  // Resolve once so an invalid TRUECONF_SETUP_LOCALE fails fast — before any
+  // backup/probe/OAuth work — and so the interactive bin path persists the
+  // resolved value into cfg the same way runHeadlessFinalize does.
+  const locale = resolveBinLocale(cfg)
 
   if (hasEnvShortcut()) {
     const nextCfg = await runHeadlessFinalize(cfg)
@@ -424,7 +444,7 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
 
   if (oauthOk) {
     finalCfg = patchChannelWithFinalValues(cfgWithPassword, {
-      serverUrl, username, password: currentPassword, useTls, port, caPath,
+      serverUrl, username, password: currentPassword, useTls, port, caPath, setupLocale: locale,
     })
   } else {
     // Save-without-validation fallback — only for categories other than
@@ -449,7 +469,7 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
       throw new Error(`OAuth failed (user="${username}", server="${serverUrl}"): ${errMsg}`)
     }
     finalCfg = patchChannelWithFinalValues(cfgWithPassword, {
-      serverUrl, username, password: currentPassword, useTls, port, caPath,
+      serverUrl, username, password: currentPassword, useTls, port, caPath, setupLocale: locale,
     })
     savedWithoutValidation = true
   }

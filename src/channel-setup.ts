@@ -9,6 +9,18 @@ import {
 import { parseCertFromPem, probeTls, downloadCAChain, validateOAuthCredentials, validateCaAgainstServer } from './probe.mjs'
 import type { CertSummary, ValidatedCaBytes } from './probe.d.mts'
 import { resolveSecret } from './config'
+import type { Locale } from './i18n'
+import { DEFAULT_LOCALE, t } from './i18n'
+
+// Read TRUECONF_SETUP_LOCALE env once and validate. Throws if set to anything
+// other than 'en'/'ru' so misconfigured CI fails loud instead of silently
+// falling back to a default the operator did not pick.
+function readEnvLocale(): Locale | undefined {
+  const raw = process.env.TRUECONF_SETUP_LOCALE
+  if (raw === undefined) return undefined
+  if (raw === 'en' || raw === 'ru') return raw
+  throw new Error(t('locale.invalidEnv', DEFAULT_LOCALE, { value: raw }))
+}
 
 // Brand-mint for CA bytes produced by the TOFU path. The wizard just
 // downloaded these from the server and wrote them to disk atomically, so
@@ -340,12 +352,13 @@ async function readCaFileInteractive(args: {
   prompter: WizardPrompter
   host: string
   port: number
+  locale: Locale
 }): Promise<{ nextCaPath: string; nextCaBytes: ValidatedCaBytes }> {
-  const { prompter, host, port } = args
+  const { prompter, host, port, locale } = args
   const reasons: string[] = []
   for (let attempt = 0; attempt < MAX_CA_FILE_ATTEMPTS; attempt++) {
     const rawPath = String(await prompter.text({
-      message: 'Путь к файлу сертификата (PEM):',
+      message: t('cafile.prompt', locale),
     }))
     // Empty input = the user cancelled the prompt (Ctrl+C in real prompters,
     // drained script queue in test prompters). Bail out fast with an
@@ -358,9 +371,9 @@ async function readCaFileInteractive(args: {
     try {
       bytes = readFileSync(abs)
     } catch (err) {
-      const reason = `${abs}: не могу прочитать (${(err as Error).message})`
+      const reason = t('tls.cafile.unreadable', locale, { path: abs, reason: (err as Error).message })
       reasons.push(reason)
-      await prompter.note(reason, 'CA file input')
+      await prompter.note(reason, t('cafile.title', locale))
       continue
     }
     const cert = parseCertFromPem(bytes)
@@ -368,8 +381,8 @@ async function readCaFileInteractive(args: {
       const reason = `${abs}: не PEM`
       reasons.push(reason)
       await prompter.note(
-        'Файл не PEM. DER/P7B не поддерживаются — конвертируй: openssl x509 -in cert.der -inform DER -out cert.pem',
-        'CA file input',
+        t('cafile.notPem', locale),
+        t('cafile.title', locale),
       )
       continue
     }
@@ -378,20 +391,20 @@ async function readCaFileInteractive(args: {
       if (v.kind === 'unreachable') {
         reasons.push(`${abs}: server unreachable (${v.error})`)
         await prompter.note(
-          `Не могу подключиться к ${host}:${port} — ${v.error}.\nCA-файл не проверить пока сервер недоступен. Проверь сеть/DNS/firewall и повтори.`,
-          'CA file input',
+          t('cafile.unreachable', locale, { host, port, error: v.error }),
+          t('cafile.title', locale),
         )
       } else {
         reasons.push(`${abs}: chain mismatch (${v.error})`)
         await prompter.note(
-          [
-            'Файл не валидирует этот сервер:',
-            `  Trust anchor в файле: ${cert.issuerCN ?? cert.subject ?? '?'} (отпечаток ${shortFp(cert.fingerprint)})`,
-            `  Сервер подписан: ${v.serverCert?.issuerCN ?? v.serverCert?.subject ?? '?'} (отпечаток ${shortFp(v.serverCert?.fingerprint)})`,
-            '  Возможно: не тот файл / не тот сервер / chain не полный.',
-            `  TLS-стек: ${v.error}`,
-          ].join('\n'),
-          'CA file input',
+          t('cafile.chainMismatch', locale, {
+            fileIssuer: cert.issuerCN ?? cert.subject ?? '?',
+            fileFp: shortFp(cert.fingerprint),
+            serverIssuer: v.serverCert?.issuerCN ?? v.serverCert?.subject ?? '?',
+            serverFp: shortFp(v.serverCert?.fingerprint),
+            error: v.error,
+          }),
+          t('cafile.title', locale),
         )
       }
       continue
@@ -419,8 +432,10 @@ async function downloadAndAudit(args: {
   prompter?: WizardPrompter
   // Headless override: accept rotation unattended (CI / bootstrap).
   acceptRotated?: boolean
+  // Locale for the rotation prompt. Headless callers pass DEFAULT_LOCALE.
+  locale: Locale
 }): Promise<{ nextCaPath: string; nextCaBytes: ValidatedCaBytes }> {
-  const { host, port, mode, expected, prompter, acceptRotated } = args
+  const { host, port, mode, expected, prompter, acceptRotated, locale } = args
   const { path: ca, bytes } = await downloadCAChain({ host, port })
   const cert = parseCertFromPem(bytes)
 
@@ -431,22 +446,16 @@ async function downloadAndAudit(args: {
   const expFp = expected?.fingerprint ?? null
   const gotFp = cert?.fingerprint ?? null
   if (expFp && gotFp && expFp !== gotFp) {
-    const diff = [
-      '⚠⚠ Сертификат сервера ИЗМЕНИЛСЯ между показом баннера и скачиванием',
-      '',
-      'В баннере был:',
-      `  ${expected?.subject ?? '?'} / отпечаток ${expFp}`,
-      '',
-      'Скачан:',
-      `  ${cert?.subject ?? '?'} / отпечаток ${gotFp}`,
-      '',
-      'Либо плановая ротация сервером в момент setup, либо active MITM.',
-      'Сверь новый отпечаток с админом по отдельному каналу перед принятием.',
-    ].join('\n')
+    const diff = t('rotation.body', locale, {
+      expectedSubject: expected?.subject ?? '?',
+      expectedFp: expFp,
+      gotSubject: cert?.subject ?? '?',
+      gotFp,
+    })
     if (prompter) {
-      await prompter.note(diff, 'Обнаружена ротация cert')
+      await prompter.note(diff, t('rotation.title', locale))
       const confirmed = await prompter.confirm({
-        message: 'Всё равно закрепить только что скачанный cert?',
+        message: t('rotation.confirm', locale),
         initialValue: false,
       })
       if (!confirmed) {
@@ -480,8 +489,9 @@ async function handleUntrustedCert(args: {
   port: number
   existingCaPath: string | undefined
   currentCert: CertSummary | undefined
+  locale: Locale
 }): Promise<{ nextCaPath: string; nextCaBytes: ValidatedCaBytes }> {
-  const { prompter, host, port, existingCaPath, currentCert } = args
+  const { prompter, host, port, existingCaPath, currentCert, locale } = args
 
   if (existingCaPath) {
     const resolved = resolveAbsPath(existingCaPath)
@@ -501,11 +511,11 @@ async function handleUntrustedCert(args: {
       )
       await prompter.note(banner.body, banner.title)
       const choice = await prompter.select<string>({
-        message: 'Что делать?',
+        message: t('select.whatToDo', locale),
         options: [
-          { value: 'abort',    label: 'Отменить и разобраться (безопасно)' },
-          { value: 're-tofu',  label: 'Скачать цепочку заново (re-TOFU)' },
-          { value: 'use-file', label: 'Указать новый путь к файлу' },
+          { value: 'abort',    label: t('select.option.abort', locale) },
+          { value: 're-tofu',  label: t('select.option.reTofu', locale) },
+          { value: 'use-file', label: t('select.option.useFile', locale) },
         ],
       })
       if (choice === 'abort') {
@@ -518,9 +528,10 @@ async function handleUntrustedCert(args: {
           mode: 're-tofu',
           expected: currentCert ?? null,
           prompter,
+          locale,
         })
       }
-      return await readCaFileInteractive({ prompter, host, port })
+      return await readCaFileInteractive({ prompter, host, port, locale })
     }
 
     const v = await validateCaAgainstServer({ caBytes: storedBytes, host, port })
@@ -541,11 +552,11 @@ async function handleUntrustedCert(args: {
     const banner = buildMismatchBanner(storedCert, currentCert ?? null, resolved, v.error)
     await prompter.note(banner.body, banner.title)
     const choice = await prompter.select<string>({
-      message: 'Что делать?',
+      message: t('select.whatToDo', locale),
       options: [
-        { value: 'abort',      label: 'Отменить и разобраться (безопасно)' },
-        { value: 'accept-new', label: 'Принять новый сертификат и перезаписать цепочку' },
-        { value: 'use-file',   label: 'Использовать файл от админа — укажу путь' },
+        { value: 'abort',      label: t('select.option.abort', locale) },
+        { value: 'accept-new', label: t('select.option.acceptNew', locale) },
+        { value: 'use-file',   label: t('select.option.useFileFromAdmin', locale) },
       ],
     })
     if (choice === 'abort') {
@@ -558,9 +569,10 @@ async function handleUntrustedCert(args: {
         mode: 'accept-new',
         expected: currentCert ?? null,
         prompter,
+        locale,
       })
     }
-    return await readCaFileInteractive({ prompter, host, port })
+    return await readCaFileInteractive({ prompter, host, port, locale })
   }
 
   // Fresh TOFU
@@ -570,11 +582,11 @@ async function handleUntrustedCert(args: {
   const banner = buildFreshTofuBanner(currentCert)
   await prompter.note(banner.body, banner.title)
   const choice = await prompter.select<string>({
-    message: 'Что делать?',
+    message: t('select.whatToDo', locale),
     options: [
-      { value: 'accept',   label: 'Принять и сохранить цепочку в ~/.openclaw/trueconf-ca.pem' },
-      { value: 'use-file', label: 'У меня есть файл сертификата от админа — укажу путь' },
-      { value: 'abort',    label: 'Отменить настройку' },
+      { value: 'accept',   label: t('select.option.accept', locale) },
+      { value: 'use-file', label: t('select.option.useFileFreshTofu', locale) },
+      { value: 'abort',    label: t('select.option.abortSetup', locale) },
     ],
   })
   if (choice === 'abort') {
@@ -587,9 +599,10 @@ async function handleUntrustedCert(args: {
       mode: 'fresh-tofu',
       expected: currentCert,
       prompter,
+      locale,
     })
   }
-  return await readCaFileInteractive({ prompter, host, port })
+  return await readCaFileInteractive({ prompter, host, port, locale })
 }
 
 export async function interactiveFinalize(params: {
@@ -610,7 +623,28 @@ export async function interactiveFinalize(params: {
       useTls?: boolean
       port?: number
       caPath?: string
+      setupLocale?: Locale
     } } }).channels?.trueconf ?? {}
+
+  // Resolve locale before any prompter call. Precedence: env > cfg > prompt.
+  // Env raw-read here (not via resolveAccount) to keep the precedence check
+  // simple and avoid threading through normalize().
+  const envLocale = readEnvLocale()
+  let locale: Locale
+  if (envLocale) {
+    locale = envLocale
+  } else if (tc.setupLocale === 'en' || tc.setupLocale === 'ru') {
+    locale = tc.setupLocale
+  } else {
+    const picked = await prompter.select<Locale>({
+      message: t('language.prompt', DEFAULT_LOCALE),
+      options: [
+        { value: 'en', label: t('language.option.en', DEFAULT_LOCALE) },
+        { value: 'ru', label: t('language.option.ru', DEFAULT_LOCALE) },
+      ],
+    })
+    locale = picked === 'ru' ? 'ru' : 'en'
+  }
 
   const serverUrl = tc.serverUrl
   const username = tc.username
@@ -641,12 +675,12 @@ export async function interactiveFinalize(params: {
     // on re-setup with a stored caPath, `probe.caUntrusted` fires when the
     // server cert has rotated or been MITM'd, routing us into the mismatch
     // branch in handleUntrustedCert. First-setup path uses the same probe.
-    await prompter.note('Определяю TLS/порт...', 'Проверка сервера')
+    await prompter.note(t('probe.detecting', locale), t('probe.title', locale))
     const probe = await probeTls({ host: serverUrl, port })
     if (!probe.reachable) {
       await prompter.note(
-        `Probe не смог определить TLS/порт (${probe.error ?? 'unknown'}).\nПробую HTTPS на порту 443 — если не сработает, OAuth вернёт точную причину.`,
-        'Probe пропущен',
+        t('probe.skipped', locale, { error: probe.error ?? 'unknown' }),
+        t('probe.skippedTitle', locale),
       )
       useTls = true
       port = port ?? 443
@@ -663,6 +697,7 @@ export async function interactiveFinalize(params: {
           port: port!,
           existingCaPath: tc.caPath,
           currentCert: probe.cert,
+          locale,
         })
         caPath = nextCaPath
         caBytes = nextCaBytes
@@ -690,14 +725,20 @@ export async function interactiveFinalize(params: {
     }
 
     if (result.category === 'invalid-credentials' && attempt < 2) {
-      await prompter.note(`Неверный пароль (${attempt + 1}/3)`, 'OAuth')
+      await prompter.note(
+        t('oauth.invalidPassword', locale, { attempt: attempt + 1 }),
+        t('oauth.title', locale),
+      )
       currentPassword = String(await prompter.text({
-        message: 'Введите пароль ещё раз',
+        message: t('oauth.passwordRetry', locale),
       }))
       continue
     }
 
-    await prompter.note(`OAuth error: ${result.error}`, 'Ошибка')
+    await prompter.note(
+      t('oauth.error', locale, { error: result.error }),
+      t('oauth.errorTitle', locale),
+    )
     throw new Error(`OAuth failed (user="${username}", server="${serverUrl}"): ${result.category}: ${result.error}`)
   }
 
@@ -709,6 +750,7 @@ export async function interactiveFinalize(params: {
       ...(useTls !== undefined && { useTls }),
       ...(port !== undefined && { port }),
       password: currentPassword,
+      setupLocale: locale,
       // Clear pinned caPath when TLS is explicitly off — a stale path would
       // otherwise be read by loadCaFromAccount at runtime and handed to a
       // ws:// socket that never uses it.
@@ -716,7 +758,10 @@ export async function interactiveFinalize(params: {
     },
   })
 
-  await prompter.note(`Подключено как ${username}`, 'TrueConf ready')
+  await prompter.note(
+    t('connected.body', locale, { username }),
+    t('connected.title', locale),
+  )
   return { cfg: nextCfg }
 }
 
@@ -725,6 +770,14 @@ export async function interactiveFinalize(params: {
 // OAuth once (no retry — fail fast in CI/bootstrap contexts), and returns a
 // patched cfg with channels.trueconf filled in. Exported for integration tests.
 export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClawConfig> {
+  // Resolve locale at top of function. Headless never prompts; if neither env
+  // nor cfg sets it, fall back to DEFAULT_LOCALE ('en'). Invalid env throws.
+  const envLocale = readEnvLocale()
+  const cfgLocale = (cfg as { channels?: { trueconf?: { setupLocale?: Locale } } })
+    .channels?.trueconf?.setupLocale
+  const locale: Locale = envLocale
+    ?? (cfgLocale === 'en' || cfgLocale === 'ru' ? cfgLocale : DEFAULT_LOCALE)
+
   const serverUrl = process.env.TRUECONF_SERVER_URL?.trim()
   const username = process.env.TRUECONF_USERNAME?.trim()
   const password = process.env.TRUECONF_PASSWORD?.trim()
@@ -811,6 +864,7 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
             mode: 'headless-auto',
             expected: probe.cert ?? null,
             acceptRotated: process.env.TRUECONF_ACCEPT_ROTATED_CERT === 'true',
+            locale,
           })
           caPath = dl.nextCaPath
           caBytes = dl.nextCaBytes
@@ -845,6 +899,7 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
       serverUrl,
       username,
       password,
+      setupLocale: locale,
       ...(resolvedUseTls !== undefined && { useTls: resolvedUseTls }),
       ...(resolvedPort !== undefined && { port: resolvedPort }),
       caPath: resolvedUseTls === false ? undefined : caPath,

@@ -308,35 +308,36 @@ async function loadAndValidateEnvCa(args: {
   envPath: string
   host: string
   port: number
+  locale: Locale
 }): Promise<{ abs: string; caBytes: ValidatedCaBytes }> {
+  const { locale } = args
   const abs = resolveAbsPath(args.envPath)
   let bytes: Buffer
   try {
     bytes = readFileSync(abs)
   } catch (err) {
-    throw new Error(`TRUECONF_CA_PATH=${abs}: не могу прочитать (${(err as Error).message})`)
+    throw new Error(t('tls.cafile.envUnreadable', locale, { path: abs, reason: (err as Error).message }))
   }
   const cert = parseCertFromPem(bytes)
   if (!cert) {
-    throw new Error(
-      `TRUECONF_CA_PATH=${abs}: не PEM. DER/P7B не поддерживаются — ` +
-      `конвертируй: openssl x509 -in file -inform DER -out file.pem`,
-    )
+    throw new Error(t('tls.cafile.envNotPem', locale, { path: abs }))
   }
   const v = await validateCaAgainstServer({ caBytes: bytes, host: args.host, port: args.port })
   if (!v.ok) {
     if (v.kind === 'unreachable') {
-      throw new Error(
-        `TRUECONF_CA_PATH=${abs}: не могу подключиться к ${args.host}:${args.port} — ${v.error}. ` +
-        `CA не проверить пока сервер недоступен.`,
-      )
+      throw new Error(t('tls.cafile.envUnreachable', locale, {
+        path: abs,
+        host: args.host,
+        port: args.port,
+        error: v.error,
+      }))
     }
-    throw new Error(
-      `TRUECONF_CA_PATH=${abs}: файл не валидирует этот сервер. ` +
-      `Trust anchor в файле: ${cert.issuerCN ?? cert.subject ?? '?'}; ` +
-      `сервер отдаёт cert с издателем ${v.serverCert?.issuerCN ?? '?'}. ` +
-      `TLS error: ${v.error}`,
-    )
+    throw new Error(t('tls.cafile.envWrongCa', locale, {
+      path: abs,
+      fileIssuer: cert.issuerCN ?? cert.subject ?? '?',
+      serverIssuer: v.serverCert?.issuerCN ?? '?',
+      error: v.error,
+    }))
   }
   return { abs, caBytes: v.caBytes }
 }
@@ -687,7 +688,7 @@ export async function interactiveFinalize(params: {
   // that wins over whatever is currently on disk.
   const envPath = process.env.TRUECONF_CA_PATH?.trim()
   if (envPath) {
-    const loaded = await loadAndValidateEnvCa({ envPath, host: serverUrl, port: port ?? 443 })
+    const loaded = await loadAndValidateEnvCa({ envPath, host: serverUrl, port: port ?? 443, locale })
     useTls = true
     port = port ?? 443
     caPath = loaded.abs
@@ -870,6 +871,7 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
       envPath: envCaPath,
       host: serverUrl,
       port: resolvedPort ?? 443,
+      locale,
     })
     resolvedUseTls = true
     resolvedPort = resolvedPort ?? 443

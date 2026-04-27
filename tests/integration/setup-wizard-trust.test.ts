@@ -479,6 +479,15 @@ describe('runHeadlessFinalize — trust paths', () => {
     await expect(runHeadlessFinalize({} as never)).rejects.toThrow(/TRUECONF_USE_TLS.*TRUECONF_TLS_VERIFY/)
   })
 
+  it('env CA-file throws honor TRUECONF_SETUP_LOCALE=en (wrong CA path)', async () => {
+    process.env.TRUECONF_SETUP_LOCALE = 'en'
+    baseEnv()
+    process.env.TRUECONF_CA_PATH = join(FIXTURES, 'ca-other.pem')
+    await expect(runHeadlessFinalize({} as never)).rejects.toThrow(
+      /TRUECONF_CA_PATH=.*does not validate this server/,
+    )
+  })
+
   it('TRUECONF_TLS_VERIFY=garbage → fail-fast with both supported values listed', async () => {
     baseEnv()
     process.env.TRUECONF_TLS_VERIFY = 'true' // anything other than 'false' or unset is invalid

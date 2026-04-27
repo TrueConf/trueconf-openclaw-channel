@@ -7,7 +7,7 @@ describe('i18n', () => {
   })
 
   it('returns Russian when locale=ru', () => {
-    expect(t('tls.cafile.hint', 'ru')).toMatch(/[А-Яа-я]/)
+    expect(t('tls.cafile.hint.intro', 'ru')).toMatch(/[А-Яа-я]/)
   })
 
   it('throws on unknown key', () => {

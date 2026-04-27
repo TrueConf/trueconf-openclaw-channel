@@ -276,20 +276,70 @@ describe('interactiveFinalize — mismatch vs silent happy', () => {
   })
 })
 
-describe('interactiveFinalize — fresh TOFU', () => {
+describe('interactiveFinalize — fresh untrusted cert', () => {
   let server: Awaited<ReturnType<typeof startTlsFixtureServer>>
   beforeEach(async () => { server = await startTlsFixtureServer('ca-valid') })
   afterEach(async () => { await server.close() })
 
-  it('no existing caPath, untrusted cert → accept → chain downloaded and saved', async () => {
+  it('no existing caPath, untrusted cert → use-file → user-supplied PEM saved', async () => {
     const cfg = makeCfg({ port: server.port, useTls: true })
-    const prompter = makeFakePrompter({ selectResponses: ['accept'] })
+    const prompter = makeFakePrompter({
+      selectResponses: ['use-file'],
+      textResponses: [join(FIXTURES, 'ca-valid.pem')],
+    })
     const result = await interactiveFinalize({
       cfg, prompter, credentialValues: { password: 'x' },
       accountId: 'default', forceAllowFrom: false,
     })
-    expect((result.cfg as any).channels.trueconf.caPath).toContain('trueconf-ca.pem')
-    expect(download()).toHaveBeenCalledTimes(1)
+    expect((result.cfg as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
+    expect(download()).not.toHaveBeenCalled()
+  })
+
+  it('fresh untrusted cert -> insecure choice saves tlsVerify=false and no caPath', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true })
+    const prompter = makeFakePrompter({ selectResponses: ['insecure'], confirmResponses: [true] })
+    const result = await interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })
+    expect((result.cfg as any).channels.trueconf.tlsVerify).toBe(false)
+    expect((result.cfg as any).channels.trueconf.caPath).toBeUndefined()
+    const args = oauth().mock.calls[0][0]
+    expect((args as any).tlsVerify).toBe(false)
+    expect(args.ca).toBeUndefined()
+  })
+
+  it('use-file clears stale tlsVerify=false', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true, tlsVerify: false })
+    process.env.TRUECONF_CA_PATH = join(FIXTURES, 'ca-valid.pem')
+    const result = await interactiveFinalize({
+      cfg, prompter: makeFakePrompter({}), credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })
+    expect((result.cfg as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
+    expect((result.cfg as any).channels.trueconf.tlsVerify).toBeUndefined()
+  })
+
+  it('self-signed CA path prompt explains TrueConf crt/pem location', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true })
+    const notes: Array<{ body: string; title?: string }> = []
+    const prompter = makeFakePrompter({
+      selectResponses: ['use-file'],
+      textResponses: [join(FIXTURES, 'ca-valid.pem')],
+    }) as any
+    const originalNote = prompter.note
+    prompter.note = async (body: string, title?: string) => {
+      notes.push({ body, title })
+      return originalNote(body, title)
+    }
+    await interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })
+    const text = notes.map((n) => n.body).join('\n')
+    expect(text).toMatch(/\*\.crt/)
+    expect(text).toMatch(/\*\.pem/)
+    expect(text).toMatch(/HTTPS/)
   })
 })
 

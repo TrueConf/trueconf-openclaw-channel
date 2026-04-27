@@ -15,7 +15,11 @@ const TRANSLATIONS = {
 
   // TLS untrusted cert flow titles + hints (seeded for Tasks 5/6)
   'tls.untrusted.title':               { en: 'Untrusted TLS certificate', ru: 'Недоверенный TLS-сертификат' },
-  'tls.cafile.hint':                   { en: 'Specify the path to a root CA certificate in PEM format.', ru: 'Укажите путь к корневому сертификату CA в PEM-формате.' },
+  'tls.untrusted.choice.use-file':     { en: 'Specify path to a root CA certificate', ru: 'Указать путь к корневому сертификату (CA)' },
+  'tls.untrusted.choice.insecure':     { en: 'Disable TLS certificate verification for this TrueConf Server', ru: 'Отключить проверку TLS-сертификата для этого TrueConf Server' },
+  'tls.cafile.hint.intro':             { en: 'Specify the path to a root CA certificate in PEM format.', ru: 'Укажите путь к корневому сертификату CA в PEM-формате.' },
+  'tls.cafile.hint.format':            { en: 'On TrueConf Server the certificate is usually stored as *.crt. If the file is in PEM format you can rename it to *.pem.', ru: 'На TrueConf Server сертификат обычно лежит как *.crt. Если файл в формате PEM, его можно переименовать в *.pem.' },
+  'tls.cafile.hint.location':          { en: 'If you own the server, find the certificate in the TrueConf Server control panel under HTTPS.', ru: 'Если вы владелец сервера, ищите сертификат в панели управления TrueConf Server в разделе HTTPS.' },
   'tls.cafile.unreadable':             { en: 'Cannot read CA file at {{path}}: {{reason}}', ru: 'Не могу прочитать файл CA по пути {{path}}: {{reason}}' },
   'tls.insecure.warning':              { en: 'The connection to TrueConf will be established without TLS certificate verification. This may enable a MITM attack. Use this mode only in a safe or restricted environment; verification stays on for the rest of Node.js.', ru: 'Соединение с TrueConf будет установлено без проверки TLS-сертификата. Это может позволить MITM-атаку. Используйте этот режим только в безопасной или ограниченной среде; для остального Node.js проверка остаётся включённой.' },
   'tls.insecure.confirm':              { en: 'Disable TLS certificate verification?', ru: 'Отключить проверку TLS-сертификата?' },
@@ -41,8 +45,6 @@ const TRANSLATIONS = {
   'select.option.useFile':             { en: 'Specify a new path to the CA file', ru: 'Указать новый путь к файлу' },
   'select.option.acceptNew':           { en: 'Accept the new cert and overwrite the chain', ru: 'Принять новый сертификат и перезаписать цепочку' },
   'select.option.useFileFromAdmin':    { en: 'Use a file from the admin — I will provide the path', ru: 'Использовать файл от админа — укажу путь' },
-  'select.option.accept':              { en: 'Accept and save the chain to ~/.openclaw/trueconf-ca.pem', ru: 'Принять и сохранить цепочку в ~/.openclaw/trueconf-ca.pem' },
-  'select.option.useFileFreshTofu':    { en: 'I have a cert file from the admin — I will provide the path', ru: 'У меня есть файл сертификата от админа — укажу путь' },
   'select.option.abortSetup':          { en: 'Cancel setup', ru: 'Отменить настройку' },
 
   // Probe prompts

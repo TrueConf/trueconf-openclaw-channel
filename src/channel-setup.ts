@@ -356,6 +356,17 @@ async function readCaFileInteractive(args: {
 }): Promise<{ nextCaPath: string; nextCaBytes: ValidatedCaBytes }> {
   const { prompter, host, port, locale } = args
   const reasons: string[] = []
+  // Render the CA-path hint banner once before entering the retry loop. The
+  // hint explains where TrueConf admins typically find the cert (*.crt under
+  // HTTPS panel) and that it can be renamed to *.pem if already in PEM. Lives
+  // here so all callers (fresh-untrusted, missing-file, mismatch) see the
+  // same guidance the moment they pick "use a file".
+  const hint = [
+    t('tls.cafile.hint.intro', locale),
+    t('tls.cafile.hint.format', locale),
+    t('tls.cafile.hint.location', locale),
+  ].join('\n\n')
+  await prompter.note(hint, t('cafile.title', locale))
   for (let attempt = 0; attempt < MAX_CA_FILE_ATTEMPTS; attempt++) {
     const rawPath = String(await prompter.text({
       message: t('cafile.prompt', locale),
@@ -490,7 +501,7 @@ async function handleUntrustedCert(args: {
   existingCaPath: string | undefined
   currentCert: CertSummary | undefined
   locale: Locale
-}): Promise<{ nextCaPath: string; nextCaBytes: ValidatedCaBytes }> {
+}): Promise<{ nextCaPath?: string; nextCaBytes?: ValidatedCaBytes; tlsVerify?: boolean }> {
   const { prompter, host, port, existingCaPath, currentCert, locale } = args
 
   if (existingCaPath) {
@@ -575,32 +586,37 @@ async function handleUntrustedCert(args: {
     return await readCaFileInteractive({ prompter, host, port, locale })
   }
 
-  // Fresh TOFU
+  // Fresh untrusted cert (no prior caPath). Two safe paths only: pin a CA file
+  // the admin provided, or explicitly disable TLS verification for this
+  // TrueConf account. The legacy auto-download path is intentionally absent
+  // from this menu — it is reachable only as recovery for an existing caPath
+  // (re-tofu / accept-new branches above).
   if (!currentCert) {
-    throw new Error(`Untrusted TLS on ${host} but server returned no certificate — cannot prompt for TOFU`)
+    throw new Error(`Untrusted TLS on ${host} but server returned no certificate — cannot prompt for untrusted-cert flow`)
   }
   const banner = buildFreshTofuBanner(currentCert)
   await prompter.note(banner.body, banner.title)
   const choice = await prompter.select<string>({
     message: t('select.whatToDo', locale),
     options: [
-      { value: 'accept',   label: t('select.option.accept', locale) },
-      { value: 'use-file', label: t('select.option.useFileFreshTofu', locale) },
+      { value: 'use-file', label: t('tls.untrusted.choice.use-file', locale) },
+      { value: 'insecure', label: t('tls.untrusted.choice.insecure', locale) },
       { value: 'abort',    label: t('select.option.abortSetup', locale) },
     ],
   })
   if (choice === 'abort') {
     throw new Error(`User aborted: untrusted cert on ${host}`)
   }
-  if (choice === 'accept') {
-    return await downloadAndAudit({
-      host,
-      port,
-      mode: 'fresh-tofu',
-      expected: currentCert,
-      prompter,
-      locale,
+  if (choice === 'insecure') {
+    await prompter.note(t('tls.insecure.warning', locale), t('tls.untrusted.title', locale))
+    const confirmed = await prompter.confirm({
+      message: t('tls.insecure.confirm', locale),
+      initialValue: false,
     })
+    if (!confirmed) {
+      throw new Error(`User declined to disable TLS verification on ${host}`)
+    }
+    return { tlsVerify: false }
   }
   return await readCaFileInteractive({ prompter, host, port, locale })
 }
@@ -623,6 +639,7 @@ export async function interactiveFinalize(params: {
       useTls?: boolean
       port?: number
       caPath?: string
+      tlsVerify?: boolean
       setupLocale?: Locale
     } } }).channels?.trueconf ?? {}
 
@@ -658,6 +675,11 @@ export async function interactiveFinalize(params: {
   let port: number | undefined = tc.port
   let caPath: string | undefined
   let caBytes: ValidatedCaBytes | undefined
+  // tlsVerify is undefined unless the user explicitly picks insecure mode
+  // below. Default-undefined means "verify via system trust or pinned CA";
+  // only literal `false` opts out, matching the runtime resolver in
+  // src/config.ts that requires `tlsVerify === false` to disable verification.
+  let tlsVerify: boolean | undefined
 
   // STEP 1 — explicit env override takes precedence over probe + stored CA.
   // Rationale: operators bootstrapping via CI / Ansible / Kubernetes need a
@@ -688,10 +710,12 @@ export async function interactiveFinalize(params: {
       useTls = probe.useTls
       port = port ?? probe.port
       if (probe.caUntrusted && useTls) {
-        // STEP 3 — branch into the TOFU UX only when the probe actually saw
-        // an untrusted cert. A trusted cert means system-CAs already cover it,
-        // so we skip pinning entirely and fall through to OAuth.
-        const { nextCaPath, nextCaBytes } = await handleUntrustedCert({
+        // STEP 3 — branch into the untrusted-cert UX only when the probe
+        // actually saw an untrusted cert. A trusted cert means system-CAs
+        // already cover it, so we skip pinning entirely and fall through to
+        // OAuth. The handler may return a CA file (legacy/use-file paths) or
+        // a tlsVerify:false opt-out (new fresh-untrusted insecure choice).
+        const decision = await handleUntrustedCert({
           prompter,
           host: serverUrl,
           port: port!,
@@ -699,8 +723,9 @@ export async function interactiveFinalize(params: {
           currentCert: probe.cert,
           locale,
         })
-        caPath = nextCaPath
-        caBytes = nextCaBytes
+        caPath = decision.nextCaPath
+        caBytes = decision.nextCaBytes
+        tlsVerify = decision.tlsVerify
       }
     }
   }
@@ -711,13 +736,18 @@ export async function interactiveFinalize(params: {
   let currentPassword = password
   let validated = false
   for (let attempt = 0; attempt < 3 && !validated; attempt++) {
+    // tlsVerify:false means the user opted out of cert verification entirely
+    // for this account, so do NOT pass `ca` even if some prior step left bytes
+    // around — the dispatcher would just ignore them, and shipping both is a
+    // contradictory signal to readers.
     const result = await validateOAuthCredentials({
       serverUrl,
       username,
       password: currentPassword,
       useTls,
       port,
-      ca: caBytes,
+      ca: tlsVerify === false ? undefined : caBytes,
+      tlsVerify,
     })
     if (result.ok) {
       validated = true
@@ -742,19 +772,31 @@ export async function interactiveFinalize(params: {
     throw new Error(`OAuth failed (user="${username}", server="${serverUrl}"): ${result.category}: ${result.error}`)
   }
 
+  // Clear stale trust-mode fields based on the path we took. Mutually
+  // exclusive: useTls:false drops both caPath+tlsVerify (no TLS = no trust
+  // anchor); strict CA / system trust drops tlsVerify (we are verifying);
+  // insecure (tlsVerify:false) drops caPath (we are not pinning).
+  const clearFields: string[] = []
+  if (useTls === false) {
+    clearFields.push('caPath', 'tlsVerify')
+  } else if (tlsVerify === false) {
+    clearFields.push('caPath')
+  } else {
+    clearFields.push('tlsVerify')
+  }
+
   const nextCfg = patchTopLevelChannelConfigSection({
     cfg,
     channel,
     enabled: true,
+    clearFields,
     patch: {
       ...(useTls !== undefined && { useTls }),
       ...(port !== undefined && { port }),
+      ...(useTls !== false && caPath !== undefined && { caPath }),
+      ...(tlsVerify === false && { tlsVerify: false }),
       password: currentPassword,
       setupLocale: locale,
-      // Clear pinned caPath when TLS is explicitly off — a stale path would
-      // otherwise be read by loadCaFromAccount at runtime and handed to a
-      // ws:// socket that never uses it.
-      caPath: useTls === false ? undefined : caPath,
     },
   })
 

@@ -850,7 +850,11 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
     if (envCaPath) {
       throw new Error(t('tls.insecure.conflict', locale))
     }
-    if (useTlsHint === false) {
+    // Catch both env-supplied (TRUECONF_USE_TLS=false) and cfg-supplied
+    // (channels.trueconf.useTls=false) opt-outs of TLS — disabling cert
+    // verification while TLS itself is off is contradictory operator intent
+    // either way.
+    if (useTlsHint === false || readTrueConfSection(cfg).useTls === false) {
       throw new Error(t('tls.insecure.useTlsConflict', locale))
     }
     tlsVerify = false

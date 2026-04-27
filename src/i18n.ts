@@ -68,6 +68,41 @@ const TRANSLATIONS = {
   // Connected
   'connected.body':                    { en: 'Connected as {{username}}', ru: 'Подключено как {{username}}' },
   'connected.title':                   { en: 'TrueConf ready', ru: 'TrueConf ready' },
+
+  // Cert-block lines (used inside trust-flow banners)
+  'tls.banner.cert.subjectLine':       { en: '  Subject:      {{value}}', ru: '  Владелец:     {{value}}' },
+  'tls.banner.cert.issuerLine':        { en: '  Issuer:       {{value}}', ru: '  Издатель:     {{value}}' },
+  'tls.banner.cert.validityLine':      { en: '  Valid:        from {{from}} to {{to}}', ru: '  Действителен: с {{from}} до {{to}}' },
+  'tls.banner.cert.fingerprintLine':   { en: '  Fingerprint:  SHA-256 {{fp}}', ru: '  Отпечаток:    SHA-256 {{fp}}' },
+  'tls.banner.cert.expired':           { en: 'EXPIRED', ru: 'ПРОСРОЧЕН' },
+  'tls.banner.cert.noServerCert':      { en: '  (server returned no cert)', ru: '  (сервер не отдал cert)' },
+
+  // Untrusted-cert banner (fresh TOFU)
+  'tls.banner.untrusted.title':        { en: 'Confirm TrueConf cert', ru: 'Подтверждение cert TrueConf' },
+  'tls.banner.untrusted.body':         { en: '⚠ TLS certificate not in the system trust store', ru: '⚠ Сертификат TLS не в системном хранилище доверенных' },
+  'tls.banner.untrusted.selfSigned':   { en: '  (self-signed — typical for dev / test servers)', ru: '  (самоподписан — типично для dev/тестовых серверов)' },
+  'tls.banner.untrusted.verifyAdmin':  { en: '  Verify the fingerprint with the server admin out of band\n  (messenger, phone), then choose an action.', ru: '  Сверьте отпечаток с админом сервера по отдельному каналу\n  (мессенджер, телефон), затем выберите действие.' },
+
+  // Mismatch banner (stored anchor no longer validates the server)
+  'tls.banner.mismatch.title':         { en: 'Trust anchor mismatch', ru: 'Trust anchor mismatch' },
+  'tls.banner.mismatch.body':          { en: '⚠⚠ WARNING: stored trust anchor no longer validates the server', ru: '⚠⚠ ВНИМАНИЕ: сохранённый trust anchor больше не валидирует сервер' },
+  'tls.banner.mismatch.storedAnchor':  { en: 'Stored trust anchor (file: {{caPath}}):', ru: 'Сохранённый trust anchor (файл: {{caPath}}):' },
+  'tls.banner.mismatch.storedParseFail': { en: '  (could not parse stored chain)', ru: '  (не удалось распарсить сохранённую цепочку)' },
+  'tls.banner.mismatch.serverNow':     { en: 'Server signed now (leaf):', ru: 'Сервер, подписанный сейчас (leaf):' },
+  'tls.banner.mismatch.tlsStack':      { en: 'TLS stack: {{error}}', ru: 'TLS-стек: {{error}}' },
+  'tls.banner.mismatch.chainBroken':   { en: "(trust chain from current cert to the stored anchor does not build)", ru: "(цепочка доверия от текущего cert'а к сохранённому anchor'у не собирается)" },
+  'tls.banner.mismatch.causes':        { en: 'Possible causes:\n  • internal server CA rotated — ask the admin;\n  • man-in-the-middle attack — verify the new fingerprint\n    with the admin out of band before accepting.', ru: 'Возможные причины:\n  • смена internal CA сервера — уточни у админа;\n  • атака «человек посередине» — сверь новый отпечаток\n    с админом по отдельному каналу перед принятием.' },
+
+  // Missing-file banner (cfg.caPath set, file not readable)
+  'tls.banner.missing.title':          { en: 'Missing trust anchor', ru: 'Missing trust anchor' },
+  'tls.banner.missing.body':           { en: "⚠ Stored trust-anchor file not found / not readable", ru: "⚠ Файл сохранённого trust anchor'а не найден/не читается" },
+  'tls.banner.missing.expected':       { en: 'Expected: {{caPath}}', ru: 'Ожидалось:  {{caPath}}' },
+  'tls.banner.missing.status':         { en: 'Status:   {{reason}}', ru: 'Статус:     {{reason}}' },
+  'tls.banner.missing.serverNow':      { en: 'Server is currently presenting an untrusted certificate:', ru: 'Сервер сейчас отдаёт untrusted сертификат:' },
+  'tls.banner.missing.causes':         { en: 'Possible causes:\n  • file deleted by you or the admin (planned cleanup);\n  • file deleted by an attacker to force re-TOFU\n    onto a (possibly) substituted cert;\n  • permission errors after cleanup / upgrade.', ru: 'Возможные причины:\n  • файл удалён вами или админом (плановая очистка);\n  • файл удалён злоумышленником чтобы форсировать re-TOFU\n    на (возможно) подменённый cert;\n  • permission errors после cleanup / upgrade.' },
+  'tls.banner.missing.verifyAdmin':    { en: 'Verify the fingerprint with the admin BEFORE re-TOFU.', ru: 'Сверьте отпечаток сервера с админом ДО re-TOFU.' },
+  'tls.banner.missing.reasonAbsent':   { en: 'file is missing', ru: 'файл отсутствует' },
+  'tls.banner.missing.reasonReadErr':  { en: 'read error: {{message}}', ru: 'ошибка чтения: {{message}}' },
 } as const
 
 export type TranslationKey = keyof typeof TRANSLATIONS

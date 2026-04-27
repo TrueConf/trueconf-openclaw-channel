@@ -39,7 +39,7 @@ export interface Banner {
   body: string
 }
 
-function formatCertBlock(cert: CertSummary): string {
+function formatCertBlock(cert: CertSummary, locale: Locale): string {
   const issuerLine = cert.issuerOrg
     ? `${cert.issuerCN ?? '?'} (${cert.issuerOrg})`
     : (cert.issuerCN ?? '?')
@@ -49,31 +49,33 @@ function formatCertBlock(cert: CertSummary): string {
   const validToRaw = cert.validTo ?? '?'
   const parsed = cert.validTo ? Date.parse(cert.validTo) : NaN
   const expired = Number.isFinite(parsed) && parsed < Date.now()
-  const validToLine = expired ? `${validToRaw}  ⚠ ПРОСРОЧЕН` : validToRaw
+  const validToLine = expired
+    ? `${validToRaw}  ⚠ ${t('tls.banner.cert.expired', locale)}`
+    : validToRaw
   return [
-    `  Владелец:     ${cert.subject ?? '?'}`,
-    `  Издатель:     ${issuerLine}`,
-    `  Действителен: с ${cert.validFrom ?? '?'} до ${validToLine}`,
-    `  Отпечаток:    SHA-256 ${cert.fingerprint ?? '?'}`,
+    t('tls.banner.cert.subjectLine', locale, { value: cert.subject ?? '?' }),
+    t('tls.banner.cert.issuerLine', locale, { value: issuerLine }),
+    t('tls.banner.cert.validityLine', locale, {
+      from: cert.validFrom ?? '?',
+      to: validToLine,
+    }),
+    t('tls.banner.cert.fingerprintLine', locale, { fp: cert.fingerprint ?? '?' }),
   ].join('\n')
 }
 
-export function buildFreshTofuBanner(cert: CertSummary): Banner {
-  const hint = cert.selfSigned
-    ? '  (самоподписан — типично для dev/тестовых серверов)\n'
-    : ''
+export function buildFreshTofuBanner(cert: CertSummary, locale: Locale): Banner {
+  const hint = cert.selfSigned ? t('tls.banner.untrusted.selfSigned', locale) : ''
   const body = [
-    '⚠ Сертификат TLS не в системном хранилище доверенных',
-    hint.trimEnd(),
+    t('tls.banner.untrusted.body', locale),
+    hint,
     '',
-    formatCertBlock(cert),
+    formatCertBlock(cert, locale),
     '',
-    '  Сверьте отпечаток с админом сервера по отдельному каналу',
-    '  (мессенджер, телефон), затем выберите действие.',
+    t('tls.banner.untrusted.verifyAdmin', locale),
   ]
-    .filter((line) => line !== undefined)
+    .filter((line) => line !== '')
     .join('\n')
-  return { title: 'Подтверждение cert TrueConf', body }
+  return { title: t('tls.banner.untrusted.title', locale), body }
 }
 
 export function buildMismatchBanner(
@@ -81,53 +83,54 @@ export function buildMismatchBanner(
   current: CertSummary | null | undefined,
   caPath: string,
   tlsError: string,
+  locale: Locale,
 ): Banner {
-  const storedBlock = stored ? formatCertBlock(stored) : '  (не удалось распарсить сохранённую цепочку)'
-  const currentBlock = current ? formatCertBlock(current) : '  (сервер не отдал cert)'
+  const storedBlock = stored
+    ? formatCertBlock(stored, locale)
+    : t('tls.banner.mismatch.storedParseFail', locale)
+  const currentBlock = current
+    ? formatCertBlock(current, locale)
+    : t('tls.banner.cert.noServerCert', locale)
   const body = [
-    '⚠⚠ ВНИМАНИЕ: сохранённый trust anchor больше не валидирует сервер',
+    t('tls.banner.mismatch.body', locale),
     '',
-    `Сохранённый trust anchor (файл: ${caPath}):`,
+    t('tls.banner.mismatch.storedAnchor', locale, { caPath }),
     storedBlock,
     '',
-    'Сервер, подписанный сейчас (leaf):',
+    t('tls.banner.mismatch.serverNow', locale),
     currentBlock,
     '',
-    `TLS-стек: ${tlsError}`,
-    '(цепочка доверия от текущего cert\'а к сохранённому anchor\'у не собирается)',
+    t('tls.banner.mismatch.tlsStack', locale, { error: tlsError }),
+    t('tls.banner.mismatch.chainBroken', locale),
     '',
-    'Возможные причины:',
-    '  • смена internal CA сервера — уточни у админа;',
-    '  • атака «человек посередине» — сверь новый отпечаток',
-    '    с админом по отдельному каналу перед принятием.',
+    t('tls.banner.mismatch.causes', locale),
   ].join('\n')
-  return { title: 'Trust anchor mismatch', body }
+  return { title: t('tls.banner.mismatch.title', locale), body }
 }
 
 export function buildConfigMissingBanner(
   caPath: string,
   reason: string,
   currentCert: CertSummary | null | undefined,
+  locale: Locale,
 ): Banner {
-  const certBlock = currentCert ? formatCertBlock(currentCert) : '  (сервер не отдал cert)'
+  const certBlock = currentCert
+    ? formatCertBlock(currentCert, locale)
+    : t('tls.banner.cert.noServerCert', locale)
   const body = [
-    '⚠ Файл сохранённого trust anchor\'а не найден/не читается',
+    t('tls.banner.missing.body', locale),
     '',
-    `Ожидалось:  ${caPath}`,
-    `Статус:     ${reason}`,
+    t('tls.banner.missing.expected', locale, { caPath }),
+    t('tls.banner.missing.status', locale, { reason }),
     '',
-    'Сервер сейчас отдаёт untrusted сертификат:',
+    t('tls.banner.missing.serverNow', locale),
     certBlock,
     '',
-    'Возможные причины:',
-    '  • файл удалён вами или админом (плановая очистка);',
-    '  • файл удалён злоумышленником чтобы форсировать re-TOFU',
-    '    на (возможно) подменённый cert;',
-    '  • permission errors после cleanup / upgrade.',
+    t('tls.banner.missing.causes', locale),
     '',
-    'Сверьте отпечаток сервера с админом ДО re-TOFU.',
+    t('tls.banner.missing.verifyAdmin', locale),
   ].join('\n')
-  return { title: 'Missing trust anchor', body }
+  return { title: t('tls.banner.missing.title', locale), body }
 }
 
 export const trueconfSetupWizard: ChannelSetupWizard = {
@@ -513,10 +516,14 @@ async function handleUntrustedCert(args: {
     }
 
     if (!storedBytes) {
+      const reason = readErr?.code === 'ENOENT'
+        ? t('tls.banner.missing.reasonAbsent', locale)
+        : t('tls.banner.missing.reasonReadErr', locale, { message: readErr?.message ?? 'unknown' })
       const banner = buildConfigMissingBanner(
         resolved,
-        readErr?.code === 'ENOENT' ? 'файл отсутствует' : `ошибка чтения: ${readErr?.message ?? 'unknown'}`,
+        reason,
         currentCert ?? null,
+        locale,
       )
       await prompter.note(banner.body, banner.title)
       const choice = await prompter.select<string>({
@@ -558,7 +565,7 @@ async function handleUntrustedCert(args: {
     }
 
     const storedCert = parseCertFromPem(storedBytes)
-    const banner = buildMismatchBanner(storedCert, currentCert ?? null, resolved, v.error)
+    const banner = buildMismatchBanner(storedCert, currentCert ?? null, resolved, v.error, locale)
     await prompter.note(banner.body, banner.title)
     const choice = await prompter.select<string>({
       message: t('select.whatToDo', locale),
@@ -592,7 +599,7 @@ async function handleUntrustedCert(args: {
   if (!currentCert) {
     throw new Error(`Untrusted TLS on ${host} but server returned no certificate — cannot prompt for untrusted-cert flow`)
   }
-  const banner = buildFreshTofuBanner(currentCert)
+  const banner = buildFreshTofuBanner(currentCert, locale)
   await prompter.note(banner.body, banner.title)
   const choice = await prompter.select<string>({
     message: t('select.whatToDo', locale),

@@ -756,6 +756,51 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
     }
   })
 
+  it('skip-probe path preserves existing cfg.caPath into OAuth + saved cfg', async () => {
+    const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
+      { oauthResponse: { status: 200, body: { access_token: 'ok' } } },
+    )
+    const validCa = join(process.cwd(), 'tests', '__fixtures__', 'ca-valid.pem')
+    // Pre-existing strict-mode cfg: useTls + port pinned (triggers short-circuit)
+    // AND a caPath operator set by hand previously. Re-running setup must not
+    // silently drop that pin.
+    writeFileSync(configPath, JSON.stringify({
+      channels: { trueconf: { useTls: true, port: fake.port, caPath: validCa } },
+    }, null, 2))
+
+    let lastOAuthCall: { ca?: unknown; tlsVerify?: unknown } | null = null
+    const probeStub = {
+      probeTls: async () => { throw new Error('probe should not be called when useTls+port pinned') },
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
+      validateOAuthCredentials: async (opts: { ca?: unknown; tlsVerify?: unknown }) => {
+        lastOAuthCall = opts
+        return { ok: true }
+      },
+    }
+    const prompter = makeFakePrompter({
+      textResponses: [fake.host, 'bot@localhost'],
+      passwordResponses: ['secret'],
+      confirmResponses: [true, true],
+    })
+
+    try {
+      const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+        runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<{ mode: string }>
+      }
+      await runSetup({ configPath, prompter, probeModule: probeStub })
+      const written = JSON.parse(readFileSync(configPath, 'utf8')) as {
+        channels?: { trueconf?: { caPath?: string } }
+      }
+      expect(written.channels?.trueconf?.caPath).toBe(validCa)
+      const expected = readFileSync(validCa)
+      expect(Buffer.from(lastOAuthCall!.ca as Uint8Array).equals(expected)).toBe(true)
+    } finally {
+      await (stopFakeServer as (f: unknown) => Promise<void>)(fake)
+    }
+  })
+
   it('use-file happy: valid CA path saved into channels.trueconf.caPath', async () => {
     const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
     const { makeFakePrompter } = await import('../smoke/fake-prompter')

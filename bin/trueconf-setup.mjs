@@ -248,10 +248,19 @@ async function promptPassword(prompter, wizard, cfg) {
   return { cfg: nextCfg, credentialValues: { [credential.inputKey]: pwd } }
 }
 
-async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTls, currentPort, t, locale) {
-  // If user has pinned useTls or port in cfg, skip probe and respect choice.
+async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTls, currentPort, currentCaPath, t, locale) {
+  // If user has pinned useTls + port in cfg, skip probe and respect choice.
+  // Preserve any existing cfg.caPath through the short-circuit so the pin
+  // is not silently dropped on re-run; useTls=false renders caPath moot
+  // (mutually exclusive trust modes), so clear it in that case.
   if (currentUseTls !== undefined && currentPort !== undefined) {
-    return { useTls: currentUseTls, port: currentPort, caPath: undefined, caBytes: undefined, tlsVerify: undefined }
+    return {
+      useTls: currentUseTls,
+      port: currentPort,
+      caPath: currentUseTls === false ? undefined : currentCaPath,
+      caBytes: undefined,
+      tlsVerify: undefined,
+    }
   }
 
   await prompter.note(t('probe.detecting', locale), t('probe.title', locale))
@@ -501,6 +510,7 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
     serverUrl,
     tcFields.useTls,
     tcFields.port,
+    tcFields.caPath,
     t,
     locale,
   )

@@ -487,6 +487,16 @@ describe('runHeadlessFinalize — trust paths', () => {
     await expect(runHeadlessFinalize(cfg as never)).rejects.toThrow(/TRUECONF_USE_TLS.*TRUECONF_TLS_VERIFY/)
   })
 
+  it('TRUECONF_USE_TLS=true overrides cfg.useTls=false even when TLS_VERIFY=false', async () => {
+    baseEnv()
+    process.env.TRUECONF_USE_TLS = 'true'
+    process.env.TRUECONF_TLS_VERIFY = 'false'
+    const cfg = { channels: { trueconf: { useTls: false } } }
+    const next = await runHeadlessFinalize(cfg as never)
+    expect((next as any).channels.trueconf.useTls).toBe(true)
+    expect((next as any).channels.trueconf.tlsVerify).toBe(false)
+  })
+
   it('env CA-file throws honor TRUECONF_SETUP_LOCALE=en (wrong CA path)', async () => {
     process.env.TRUECONF_SETUP_LOCALE = 'en'
     baseEnv()

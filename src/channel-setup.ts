@@ -851,7 +851,7 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
     if (envCaPath) {
       throw new Error(t('tls.insecure.conflict', locale))
     }
-    if (useTlsHint === false || cfgTc.useTls === false) {
+    if (useTlsHint === false || (useTlsHint !== true && cfgTc.useTls === false)) {
       throw new Error(t('tls.insecure.useTlsConflict', locale))
     }
     tlsVerify = false

@@ -8,9 +8,9 @@ export const DEFAULT_LOCALE: Locale = 'en'
 
 const TRANSLATIONS = {
   // Language selection
-  'language.prompt':                   { en: 'Language / Язык:', ru: 'Язык / Language:' },
-  'language.option.en':                { en: 'English (default)', ru: 'Английский (по умолчанию)' },
-  'language.option.ru':                { en: 'Russian', ru: 'Русский' },
+  'language.prompt':                   { en: 'Language:', ru: 'Language:' },
+  'language.option.en':                { en: 'English', ru: 'English' },
+  'language.option.ru':                { en: 'Russian', ru: 'Russian' },
   'locale.invalidEnv':                 { en: "TRUECONF_SETUP_LOCALE must be 'en' or 'ru', got: {{value}}", ru: "TRUECONF_SETUP_LOCALE должно быть 'en' или 'ru', получено: {{value}}" },
 
   // TLS untrusted cert flow titles + hints (seeded for Tasks 5/6)

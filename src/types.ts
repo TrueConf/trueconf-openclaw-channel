@@ -12,6 +12,7 @@ export interface TrueConfAccountConfig {
   clientSecret?: string
   enabled?: boolean
   caPath?: string
+  tlsVerify?: boolean
   setupLocale?: SetupLocale
 }
 
@@ -177,6 +178,7 @@ export interface ResolvedAccount {
   useTls?: boolean
   port?: number
   caPath?: string
+  tlsVerify?: boolean
   setupLocale?: SetupLocale
 }
 

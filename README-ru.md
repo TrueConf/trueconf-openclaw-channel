@@ -7,11 +7,12 @@
 <p align="center">Подключите <a href="https://openclaw.ai/">OpenClaw</a> к корпоративному <a href="https://trueconf.ru/products/tcsf/besplatniy-server-videoconferenciy.html">мессенджеру Труконф</a>. </p>
 
 <p align="center">
+    <a href="https://www.npmjs.com/package/@trueconf-community/trueconf-openclaw-channel" target="_blank">
+      <img alt="NPM Version" src="https://img.shields.io/npm/v/%40trueconf-community%2Ftrueconf-openclaw-channel">
+    </a>
+    <img alt="NPM Downloads" src="https://img.shields.io/npm/d18m/%40trueconf-community%2Ftrueconf-openclaw-channel?label=Downloads">
     <a href="https://t.me/trueconf_talks" target="_blank">
         <img src="https://img.shields.io/badge/Telegram-2CA5E0?logo=telegram&logoColor=white" />
-    </a>
-    <a href="https://discord.gg/2gJ4VUqATZ">
-        <img src="https://img.shields.io/badge/Discord-%235865F2.svg?&logo=discord&logoColor=white" />
     </a>
     <a href="#">
         <img src="https://img.shields.io/github/stars/trueconf/trueconf-openclaw-channel?style=social" />

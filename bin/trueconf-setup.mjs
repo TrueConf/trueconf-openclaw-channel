@@ -39,6 +39,11 @@ async function loadFinalizers() {
   }
 }
 
+async function loadI18n() {
+  const mod = await jiti.import(join(REPO_ROOT, 'src/i18n.ts'))
+  return { t: mod.t }
+}
+
 // Resolve setup locale for bin's standalone path. Mirrors precedence used by
 // src/channel-setup.ts: env > cfg.channels.trueconf.setupLocale > 'en'.
 // Throws on an invalid env value to fail loud in CI/Ansible bootstrap.
@@ -116,12 +121,19 @@ function readJsonConfig(configPath) {
 
 // Reads the CA bundle into memory so probe.mjs can receive it as bytes.
 // Keeps probe.mjs free of filesystem reads for the security scanner.
+//
+// Throws loud on read failure: silently swallowing ENOENT here would
+// downgrade the operator's pinned-CA trust mode to system trust without
+// any indication, violating the "no silent fallbacks on readFileSync(caPath)"
+// invariant in AGENTS.md. Caller is responsible for handing tlsVerify=false
+// paths a `caPath` of undefined so this never fires for insecure mode.
 function readCaBuffer(caPath) {
   if (!caPath) return undefined
   try {
     return readFileSync(caPath)
-  } catch {
-    return undefined
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    throw new Error(`CA file unreadable: ${caPath} (${reason})`)
   }
 }
 
@@ -234,16 +246,16 @@ async function promptPassword(prompter, wizard, cfg) {
   return { cfg: nextCfg, credentialValues: { [credential.inputKey]: pwd } }
 }
 
-async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTls, currentPort) {
+async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTls, currentPort, t, locale) {
   // If user has pinned useTls or port in cfg, skip probe and respect choice.
   if (currentUseTls !== undefined && currentPort !== undefined) {
-    return { useTls: currentUseTls, port: currentPort, caPath: undefined }
+    return { useTls: currentUseTls, port: currentPort, caPath: undefined, tlsVerify: undefined }
   }
 
   await prompter.note('Определяю TLS/порт...', 'Проверка сервера')
   const probe = await probeModule.probeTls({ host: serverUrl, port: currentPort })
 
-  let useTls, port, caPath, reason
+  let useTls, port, caPath, tlsVerify, reason
   if (probe.reachable) {
     useTls = currentUseTls ?? probe.useTls
     port = currentPort ?? probe.port
@@ -252,10 +264,23 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
         message: 'Сертификат самоподписанный или от корпоративного CA. Скачать цепочку в ~/.openclaw/trueconf-ca.pem?',
         initialValue: true,
       })
-      if (!confirmCa) throw new Error(`User aborted: untrusted cert on ${serverUrl}`)
-      caPath = (await probeModule.downloadCAChain({ host: serverUrl, port })).path
+      if (confirmCa) {
+        caPath = (await probeModule.downloadCAChain({ host: serverUrl, port })).path
+      } else {
+        // Escape hatch: declining download routes to the per-TrueConf insecure
+        // mode. Show the spec-mandated MITM warning and require an explicit
+        // second confirm, defaulting to false so a thoughtless Enter doesn't
+        // disable verification. Reused i18n keys keep copy in lockstep with
+        // the SDK wizard's insecure path.
+        const goInsecure = await prompter.confirm({
+          message: `${t('tls.insecure.warning', locale)}\n\n${t('tls.insecure.confirm', locale)}`,
+          initialValue: false,
+        })
+        if (!goInsecure) throw new Error(`User aborted: untrusted cert on ${serverUrl}`)
+        tlsVerify = false
+      }
     }
-    reason = probe.caUntrusted ? 'tls-untrusted' : (useTls ? 'tls-valid' : 'bridge-open')
+    reason = probe.caUntrusted ? (tlsVerify === false ? 'tls-insecure' : 'tls-untrusted') : (useTls ? 'tls-valid' : 'bridge-open')
   } else {
     // Probe failure is a hint, not a gate: OAuth over a corporate proxy can
     // still succeed even when a raw TLS probe is firewalled.
@@ -275,6 +300,7 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
   const reasonLabels = {
     'tls-valid': `TLS на ${port}, валидный сертификат`,
     'tls-untrusted': `TLS на ${port}, корпоративный/самоподписанный CA${caPath ? ` (скачан в ${caPath})` : ''}`,
+    'tls-insecure': `TLS на ${port}, проверка сертификата отключена (только для TrueConf)`,
     'bridge-open': `без TLS, Bridge на ${port}`,
     'fallback': `probe не ответил, пробую HTTPS:${port}`,
   }
@@ -287,7 +313,7 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
     message: 'Принять?',
     initialValue: true,
   })
-  if (accept) return { useTls, port, caPath }
+  if (accept) return { useTls, port, caPath, tlsVerify }
 
   // Manual override branch.
   const manualTls = await prompter.confirm({ message: 'TLS (https/wss)?', initialValue: useTls })
@@ -300,28 +326,38 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
   if (!Number.isFinite(manualPort) || manualPort < 1 || manualPort > 65535) {
     throw new Error(`Невалидный порт: ${manualPortRaw}`)
   }
-  return { useTls: manualTls, port: manualPort, caPath }
+  return { useTls: manualTls, port: manualPort, caPath, tlsVerify }
 }
 
-function patchChannelWithFinalValues(cfg, { serverUrl, username, password, useTls, port, caPath, setupLocale }) {
+function patchChannelWithFinalValues(cfg, { serverUrl, username, password, useTls, port, caPath, tlsVerify, setupLocale }) {
   // Shallow-patch channels.trueconf preserving any existing side-fields
   // (dmPolicy, allowFrom, maxFileSize, etc.) that the user configured manually.
+  // Mutually exclusive trust modes: when tlsVerify === false the saved cfg
+  // must NOT carry a stale caPath — runtime would otherwise see two
+  // contradictory trust signals. We rebuild the spread without caPath in
+  // that case rather than relying on the consumer to ignore it.
   const existing = cfg.channels?.trueconf ?? {}
+  const { caPath: _existingCaPath, tlsVerify: _existingTlsVerify, ...existingRest } = existing
+  const trueconf = {
+    ...existingRest,
+    enabled: true,
+    serverUrl,
+    username,
+    password,
+    useTls,
+    port,
+    ...(setupLocale && { setupLocale }),
+  }
+  if (tlsVerify === false) {
+    trueconf.tlsVerify = false
+  } else if (caPath) {
+    trueconf.caPath = caPath
+  }
   return {
     ...cfg,
     channels: {
       ...cfg.channels,
-      trueconf: {
-        ...existing,
-        enabled: true,
-        serverUrl,
-        username,
-        password,
-        useTls,
-        port,
-        ...(caPath && { caPath }),
-        ...(setupLocale && { setupLocale }),
-      },
+      trueconf,
     },
   }
 }
@@ -409,12 +445,15 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
   }
 
   const probeModule = injectedProbe ?? (await loadProbe())
-  const { useTls, port, caPath } = await promptProbePreview(
+  const { t } = await loadI18n()
+  const { useTls, port, caPath, tlsVerify } = await promptProbePreview(
     prompter,
     probeModule,
     serverUrl,
     tcFields.useTls,
     tcFields.port,
+    t,
+    locale,
   )
 
   const { validateOAuthCredentials } = injectedProbe ?? (await import(join(REPO_ROOT, 'src/probe.mjs')))
@@ -423,8 +462,13 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
   let currentPassword = password
 
   for (let attempt = 0; attempt < 3 && !oauthOk; attempt++) {
+    // tlsVerify:false drops the CA bytes — passing both is a contradictory
+    // signal to validateOAuthCredentials and the operator already opted out
+    // of pinning when they picked insecure mode.
     const result = await validateOAuthCredentials({
-      serverUrl, username, password: currentPassword, useTls, port, ca: readCaBuffer(caPath),
+      serverUrl, username, password: currentPassword, useTls, port,
+      ca: tlsVerify === false ? undefined : readCaBuffer(caPath),
+      tlsVerify,
     })
     if (result.ok) { oauthOk = true; break }
     oauthError = result
@@ -444,7 +488,7 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
 
   if (oauthOk) {
     finalCfg = patchChannelWithFinalValues(cfgWithPassword, {
-      serverUrl, username, password: currentPassword, useTls, port, caPath, setupLocale: locale,
+      serverUrl, username, password: currentPassword, useTls, port, caPath, tlsVerify, setupLocale: locale,
     })
   } else {
     // Save-without-validation fallback — only for categories other than
@@ -469,7 +513,7 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
       throw new Error(`OAuth failed (user="${username}", server="${serverUrl}"): ${errMsg}`)
     }
     finalCfg = patchChannelWithFinalValues(cfgWithPassword, {
-      serverUrl, username, password: currentPassword, useTls, port, caPath, setupLocale: locale,
+      serverUrl, username, password: currentPassword, useTls, port, caPath, tlsVerify, setupLocale: locale,
     })
     savedWithoutValidation = true
   }

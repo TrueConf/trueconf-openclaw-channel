@@ -603,4 +603,196 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
       await (stopFakeServer as (f: unknown) => Promise<void>)(fake)
     }
   })
+
+  // --- TLS trust flow (tlsVerify=false) coverage ------------------------
+
+  it('untrusted cert → decline download → accept insecure → saves tlsVerify=false without caPath', async () => {
+    // Stub probe to report caUntrusted=true on the fake-server's port. Stub
+    // validateOAuthCredentials so it succeeds without actually connecting
+    // (the fake-server is HTTP-only so a real https handshake would fail).
+    const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
+      { oauthResponse: { status: 200, body: { access_token: 'ok' } } },
+    )
+    writeFileSync(configPath, JSON.stringify({}, null, 2))
+
+    let lastOAuthCall: { ca?: unknown; tlsVerify?: unknown } | null = null
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: fake.port, caUntrusted: true }),
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
+      validateOAuthCredentials: async (opts: { ca?: unknown; tlsVerify?: unknown }) => {
+        lastOAuthCall = opts
+        return { ok: true }
+      },
+    }
+
+    // Confirm order: download=false, insecure=true, probe-accept=true
+    const prompter = makeFakePrompter({
+      textResponses: [fake.host, 'bot@localhost'],
+      passwordResponses: ['secret'],
+      confirmResponses: [false, true, true],
+    })
+
+    try {
+      const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+        runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<{ mode: string }>
+      }
+      const result = await runSetup({ configPath, prompter, probeModule: probeStub })
+
+      expect(result.mode).toBe('saved')
+      const written = JSON.parse(readFileSync(configPath, 'utf8')) as {
+        channels?: { trueconf?: { tlsVerify?: boolean; caPath?: string } }
+      }
+      expect(written.channels?.trueconf?.tlsVerify).toBe(false)
+      expect(written.channels?.trueconf?.caPath).toBeUndefined()
+      // OAuth saw tlsVerify=false and no ca
+      expect(lastOAuthCall?.tlsVerify).toBe(false)
+      expect(lastOAuthCall?.ca).toBeUndefined()
+    } finally {
+      await (stopFakeServer as (f: unknown) => Promise<void>)(fake)
+    }
+  })
+
+  it('insecure mode: clears stale caPath from existing cfg', async () => {
+    // Existing cfg has a caPath; user re-runs setup, declines download,
+    // chooses insecure. Stale caPath must be removed from saved cfg.
+    const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
+      { oauthResponse: { status: 200, body: { access_token: 'ok' } } },
+    )
+    writeFileSync(configPath, JSON.stringify({
+      channels: { trueconf: { caPath: '/etc/old-ca.pem' } },
+    }, null, 2))
+
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: fake.port, caUntrusted: true }),
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
+      validateOAuthCredentials: async () => ({ ok: true }),
+    }
+
+    // Confirm order: overwrite=true, download=false, insecure=true, probe-accept=true
+    const prompter = makeFakePrompter({
+      textResponses: [fake.host, 'bot@localhost'],
+      passwordResponses: ['secret'],
+      confirmResponses: [true, false, true, true],
+    })
+
+    try {
+      const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+        runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<{ mode: string }>
+      }
+      await runSetup({ configPath, prompter, probeModule: probeStub })
+
+      const written = JSON.parse(readFileSync(configPath, 'utf8')) as {
+        channels?: { trueconf?: { tlsVerify?: boolean; caPath?: string } }
+      }
+      expect(written.channels?.trueconf?.tlsVerify).toBe(false)
+      expect(written.channels?.trueconf?.caPath).toBeUndefined()
+    } finally {
+      await (stopFakeServer as (f: unknown) => Promise<void>)(fake)
+    }
+  })
+
+  it('untrusted cert → decline download → decline insecure → throws', async () => {
+    const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
+      { oauthResponse: { status: 200, body: { access_token: 'ok' } } },
+    )
+    writeFileSync(configPath, JSON.stringify({}, null, 2))
+
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: fake.port, caUntrusted: true }),
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
+      validateOAuthCredentials: async () => ({ ok: true }),
+    }
+
+    const prompter = makeFakePrompter({
+      textResponses: [fake.host, 'bot@localhost'],
+      passwordResponses: ['secret'],
+      confirmResponses: [false, false],  // download=false, insecure=false
+    })
+
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<unknown>
+    }
+    try {
+      await expect(runSetup({ configPath, prompter, probeModule: probeStub })).rejects.toThrow(/User aborted: untrusted cert/)
+    } finally {
+      await (stopFakeServer as (f: unknown) => Promise<void>)(fake)
+    }
+  })
+
+  it('readCaBuffer no longer silently swallows unreadable CA: bin throws when downloaded path is missing', async () => {
+    // Probe says caUntrusted=true; user accepts download; downloadCAChain
+    // stub returns a path that does NOT exist on disk. The old silent-undef
+    // behavior would forward `ca: undefined` to OAuth (downgrading the
+    // operator's pin to system trust). Bin now throws loud.
+    const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
+      { oauthResponse: { status: 200, body: { access_token: 'ok' } } },
+    )
+    writeFileSync(configPath, JSON.stringify({}, null, 2))
+
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: fake.port, caUntrusted: true }),
+      // Returns a path that does not exist anywhere — readCaBuffer would
+      // silently swallow ENOENT in the old code; now must throw loud.
+      downloadCAChain: async () => ({ path: '/tmp/does-not-exist-ca-bin-test.pem', bytes: Buffer.from('') }),
+      validateOAuthCredentials: async () => ({ ok: true }),
+    }
+
+    const prompter = makeFakePrompter({
+      textResponses: [fake.host, 'bot@localhost'],
+      passwordResponses: ['secret'],
+      confirmResponses: [true, true],  // accept download + accept preview
+    })
+
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<unknown>
+    }
+    try {
+      await expect(runSetup({ configPath, prompter, probeModule: probeStub })).rejects.toThrow(/CA file unreadable/)
+    } finally {
+      await (stopFakeServer as (f: unknown) => Promise<void>)(fake)
+    }
+  })
+
+  it('headless: bin saves setupLocale into channels.trueconf when TRUECONF_SETUP_LOCALE=ru', async () => {
+    const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
+    const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
+      { oauthResponse: { status: 200, body: { access_token: 'ok' } } },
+    )
+    writeFileSync(configPath, JSON.stringify({}, null, 2))
+
+    process.env.TRUECONF_SERVER_URL = fake.host
+    process.env.TRUECONF_USERNAME = 'bot@localhost'
+    process.env.TRUECONF_PASSWORD = 'secret'
+    process.env.TRUECONF_USE_TLS = 'false'
+    process.env.TRUECONF_PORT = String(fake.port)
+    process.env.TRUECONF_SETUP_LOCALE = 'ru'
+
+    try {
+      const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+        runSetup: (opts: { configPath: string }) => Promise<unknown>
+      }
+      await runSetup({ configPath })
+
+      const written = JSON.parse(readFileSync(configPath, 'utf8')) as {
+        channels?: { trueconf?: { setupLocale?: string } }
+      }
+      expect(written.channels?.trueconf?.setupLocale).toBe('ru')
+    } finally {
+      delete process.env.TRUECONF_SERVER_URL
+      delete process.env.TRUECONF_USERNAME
+      delete process.env.TRUECONF_PASSWORD
+      delete process.env.TRUECONF_USE_TLS
+      delete process.env.TRUECONF_PORT
+      delete process.env.TRUECONF_SETUP_LOCALE
+      await (stopFakeServer as (f: unknown) => Promise<void>)(fake)
+    }
+  })
 })

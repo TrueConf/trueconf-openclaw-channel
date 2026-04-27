@@ -4,7 +4,9 @@ import type {
   TrueConfAccountConfig,
   ResolvedAccount,
   AccountDescription,
+  Logger,
 } from './types'
+import { normalizeTitle } from './always-respond'
 
 interface NormalizedConfig {
   accounts: Record<string, TrueConfAccountConfig & { enabled?: boolean }>
@@ -126,4 +128,56 @@ export function resolveSecret(value: string | SecretRef | undefined): string | u
     return resolved === undefined ? undefined : resolved.trim() || undefined
   }
   return undefined
+}
+
+export interface ParsedAlwaysRespondConfig {
+  readonly configuredChatIds: ReadonlySet<string>
+  readonly configuredTitles: ReadonlySet<string>
+}
+
+export function parseAlwaysRespondConfig(
+  raw: unknown,
+  logger: Pick<Logger, 'warn'>,
+): ParsedAlwaysRespondConfig {
+  const configuredChatIds = new Set<string>()
+  const configuredTitles = new Set<string>()
+  if (raw === undefined || raw === null) return { configuredChatIds, configuredTitles }
+  if (!Array.isArray(raw)) {
+    logger.warn('[trueconf] always-respond: groupAlwaysRespondIn must be an array of strings; ignoring')
+    return { configuredChatIds, configuredTitles }
+  }
+
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || entry.length === 0 || entry.includes('\0')) {
+      logger.warn(`[trueconf] always-respond: entry ${JSON.stringify(entry)} is not a non-empty NUL-free string, skipping`)
+      continue
+    }
+
+    let kind: 'chatId' | 'title'
+    let suffix: string
+    if (entry.startsWith('chatId:')) {
+      kind = 'chatId'
+      suffix = entry.slice('chatId:'.length).trim()
+    } else if (entry.startsWith('title:')) {
+      kind = 'title'
+      suffix = normalizeTitle(entry.slice('title:'.length))
+    } else {
+      kind = 'title'
+      suffix = normalizeTitle(entry)
+    }
+
+    if (suffix.length === 0) {
+      logger.warn(`[trueconf] always-respond: entry "${entry}" has empty suffix, skipping`)
+      continue
+    }
+
+    const target = kind === 'chatId' ? configuredChatIds : configuredTitles
+    if (target.has(suffix)) {
+      logger.warn(`[trueconf] always-respond: duplicate ${kind} entry "${suffix}", deduplicating`)
+      continue
+    }
+    target.add(suffix)
+  }
+
+  return { configuredChatIds, configuredTitles }
 }

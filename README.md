@@ -184,6 +184,7 @@ Open the TrueConf client, find the bot in your contacts, and send it a message.
 | `dmPolicy` | string | `"open"` | Direct-message access policy: `"open"` (everyone), `"allowlist"` (only users in `allowFrom`), `"closed"` / `"disabled"` (nobody). `"pairing"` is reserved for future functionality and currently behaves like `"open"` |
 | `allowFrom` | string[] | — | List of TrueConf IDs (`user@server`) allowed to DM the bot when `dmPolicy: "allowlist"` |
 | `maxFileSize` | number (bytes) | `52428800` (50 MB) | Maximum size of a single file. Applies equally to incoming and outgoing files. Range: 1 byte to 2 GB; on out-of-range values the channel logs `[trueconf] Invalid maxFileSize: ...` and falls back to the default |
+| `groupAlwaysRespondIn` | string[] | `[]` | List of titles and/or chatIds whose group messages bypass the mention/reply gate. Formats: `<name>`, `title:<name>`, `chatId:<id>`. See ["Always-respond chats"](#always-respond-chats) above |
 
 ### TLS mode
 
@@ -288,6 +289,45 @@ Messages without a reply or mention are visible to the bot but get no response. 
 - `dmPolicy` applies only to direct messages. In groups, filtering is based solely on mention/reply.
 - TrueConf channels (`chatType=6`) are ignored — the bot does not respond in them. Log: `[trueconf] dropping channel message chatId=<id>`.
 
+### Always-respond chats
+
+By default the bot only replies in groups when @-mentioned or replied to. To make the bot respond to every message in a specific group, list it in `groupAlwaysRespondIn`:
+
+```json
+{
+  "channels": {
+    "trueconf": {
+      "groupAlwaysRespondIn": [
+        "HR-questions",
+        "title:#devops",
+        "chatId:51ffe1b1-1515-498e-8501-233116adf9da"
+      ]
+    }
+  }
+}
+```
+
+**Entry formats:**
+
+- `<name>` — the chat title (default). Leading/trailing whitespace and case are normalized; internal whitespace is preserved.
+- `title:<name>` — explicitly the title (useful when the title would otherwise look like a chatId).
+- `chatId:<id>` — explicitly a chatId. The prefix is required — without it the string is treated as a title.
+
+**Where to find a chatId:** the plugin logs `[trueconf] group <chatId> ...` on the first message from a chat — copy the `<chatId>` value.
+
+**Startup behavior:** the plugin queries the bot's full chat list and matches titles. Titles that don't currently match any group are not an error — the bot may not have been added yet, and the bypass activates automatically when it joins.
+
+**Renames:** if a group's title changes, the plugin re-evaluates. A group whose new title is in `groupAlwaysRespondIn` becomes always-respond; one whose new title isn't is removed. The diff is logged.
+
+**Duplicate titles:** if one configured title matches multiple groups, the bypass applies to all of them and the plugin warns. For pinpoint targeting, use `chatId:`.
+
+**Multi-account:** the list is shared across all accounts in the channel. A title `"HR"` matches the same-named group in every account that has one. `chatId` is globally unique on a TrueConf server — if two accounts are members of the same group, the chatId is identical for both.
+
+**Limitations:**
+
+- Only group chats (`chatType=2`) are activated. Channels (`chatType=6`) are not.
+- If `getChats` fails on startup, title-based entries stay inactive until the next successful reconnect — `chatId:` entries always work.
+- The list is not hot-reloaded; restart the gateway after changes.
 
 ## Cross-Server Federation
 

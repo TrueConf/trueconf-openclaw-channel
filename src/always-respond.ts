@@ -1,0 +1,304 @@
+import type { ParsedAlwaysRespondConfig } from './config'
+import { TrueConfChatType } from './types'
+import type { Logger } from './types'
+
+export interface WireAdapter {
+  botUserId: string | null
+  getChats: (page: number, pageSize: number) => Promise<Array<{ chatId: string; title: string; chatType: number }>>
+  getChatByID: (chatId: string) => Promise<{ chatType: number; title: string } | null>
+}
+
+export function normalizeTitle(raw: string): string {
+  return raw.trim().toLowerCase()
+}
+
+export type ResolverEvent =
+  | { kind: 'add'; chatId: string; userId: string }
+  | { kind: 'remove'; chatId: string; userId: string }
+  | { kind: 'removeChat'; chatId: string }
+  | { kind: 'rename'; chatId: string; title: string }
+  | { kind: 'createGroup'; chatId: string }
+
+export class AlwaysRespondResolver {
+  private static readonly GET_CHATS_PAGE_SIZE = 100
+  private static readonly GET_CHATS_BACKOFF_MS = [500, 1000, 2000] as const
+
+  private readonly configuredChatIds: ReadonlySet<string>
+  private readonly configuredTitles: ReadonlySet<string>
+  private readonly titleByChatId = new Map<string, string>()
+  private readonly titleResolvedChatIds = new Set<string>()
+
+  private queue: ResolverEvent[] = []
+  private draining = false
+  private buffering = false
+  private rebuildInFlight: Promise<void> | null = null
+
+  constructor(
+    parsed: ParsedAlwaysRespondConfig,
+    private readonly wire: WireAdapter,
+    private readonly logger: Logger,
+  ) {
+    this.configuredChatIds = parsed.configuredChatIds
+    this.configuredTitles = parsed.configuredTitles
+  }
+
+  isAlwaysRespond = (chatId: string): boolean => {
+    return this.configuredChatIds.has(chatId) || this.titleResolvedChatIds.has(chatId)
+  }
+
+  enqueueEvent(ev: ResolverEvent): void {
+    this.queue.push(ev)
+    if (!this.buffering) void this.drainQueue()
+  }
+
+  // Re-auth fires `rebuildFromWire` on every reconnect. If a second auth
+  // races in while pagination is mid-flight, two concurrent rebuilds would
+  // share `clear()` + the title maps and corrupt each other's snapshot.
+  // Coalesce overlapping callers onto the in-flight promise — the snapshot
+  // from the first call is still authoritative; any state change between
+  // the two reconnects will be replayed via push events anyway.
+  async rebuildFromWire(): Promise<void> {
+    if (this.rebuildInFlight) return this.rebuildInFlight
+    this.rebuildInFlight = this.doRebuildFromWire().finally(() => {
+      this.rebuildInFlight = null
+    })
+    return this.rebuildInFlight
+  }
+
+  private async doRebuildFromWire(): Promise<void> {
+    this.logger.info('[trueconf] always-respond: rebuilding from wire')
+    // Flip BEFORE clearing derived state. `enqueueEvent` only invokes
+    // drainQueue when `!buffering`; if a push event arrives between
+    // `clear()` and the snapshot loop below, draining it against an
+    // empty cache would lose the resolution. Synchronous prefix runs
+    // before the first await, so callers that fire-and-forget this via
+    // `void rebuildFromWire()` still see buffering active immediately.
+    this.buffering = true
+    try {
+      this.titleByChatId.clear()
+      this.titleResolvedChatIds.clear()
+
+      const snapshot = await this.fetchAllChats()
+      for (const chat of snapshot) {
+        if (chat.chatType !== TrueConfChatType.GROUP) continue
+        this.setTitleAndActivate(chat.chatId, chat.title)
+      }
+
+      this.emitStartupWarnings()
+    } finally {
+      this.buffering = false
+    }
+    void this.drainQueue()
+  }
+
+  private async drainQueue(): Promise<void> {
+    if (this.draining) return
+    this.draining = true
+    try {
+      while (this.queue.length > 0) {
+        const ev = this.queue.shift()!
+        await this.handleEvent(ev)
+      }
+    } finally {
+      this.draining = false
+    }
+  }
+
+  // 1 retry × 200ms — push handlers run inside the single FIFO drain, so a
+  // long backoff would stall every sibling event. Compare with `getChats`
+  // (3× 500/1000/2000ms): that runs only at startup/re-auth where stalls
+  // are acceptable. Persistent failures fall through to the next-enumerate
+  // reconcile via the warn-and-skip path in handleEvent. Retry only fires
+  // on thrown errors; non-zero `errorCode` from the wire adapter returns
+  // null directly (no retry — explicit "chat not found" is not transient).
+  private async fetchChatByIDWithRetry(chatId: string): Promise<{ chatType: number; title: string } | null> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const result = await this.wire.getChatByID(chatId)
+        if (result) return result
+        return null
+      } catch {
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 200))
+      }
+    }
+    return null
+  }
+
+  private setTitleAndActivate(chatId: string, rawTitle: string): { normTitle: string; activated: boolean } {
+    const normTitle = normalizeTitle(rawTitle)
+    this.titleByChatId.set(chatId, normTitle)
+    const activated = this.configuredTitles.has(normTitle)
+    if (activated) this.titleResolvedChatIds.add(chatId)
+    return { normTitle, activated }
+  }
+
+  private async handleEvent(ev: ResolverEvent): Promise<void> {
+    switch (ev.kind) {
+      case 'add':
+      case 'createGroup': {
+        // 'createGroupChat' is only delivered to the creator (the bot here),
+        // so there is no userId payload to guard on for that kind.
+        if (ev.kind === 'add' && ev.userId !== this.wire.botUserId) return
+        const info = await this.fetchChatByIDWithRetry(ev.chatId)
+        if (!info) {
+          this.logger.warn(
+            `[trueconf] always-respond: getChatByID(${ev.chatId}) failed for ${ev.kind}; skipping bypass update — will reconcile at next enumerate`,
+          )
+          return
+        }
+        if (info.chatType !== TrueConfChatType.GROUP) return
+        const { normTitle, activated } = this.setTitleAndActivate(ev.chatId, info.title)
+        if (activated) {
+          this.logger.info(`[trueconf] chat ${ev.chatId} joined group "${normTitle}" — added to always-respond`)
+          this.warnIfDuplicate(normTitle, ev.chatId)
+        } else {
+          this.logger.info(`[trueconf] chat ${ev.chatId} joined group "${normTitle}"`)
+        }
+        return
+      }
+      case 'rename': {
+        const oldNorm = this.titleByChatId.get(ev.chatId)
+        if (oldNorm === undefined) {
+          const info = await this.fetchChatByIDWithRetry(ev.chatId)
+          if (!info) {
+            this.logger.warn(
+              `[trueconf] always-respond: getChatByID(${ev.chatId}) failed for rename; skipping bypass update — will reconcile at next enumerate`,
+            )
+            return
+          }
+          if (info.chatType !== TrueConfChatType.GROUP) return
+          const { normTitle, activated } = this.setTitleAndActivate(ev.chatId, info.title)
+          if (activated) {
+            this.logger.info(`[trueconf] chat ${ev.chatId} joined group "${normTitle}" — added to always-respond`)
+            this.warnIfDuplicate(normTitle, ev.chatId)
+          }
+          return
+        }
+        const newNorm = normalizeTitle(ev.title)
+        this.titleByChatId.set(ev.chatId, newNorm)
+        const wasMatch = this.configuredTitles.has(oldNorm)
+        const isMatch = this.configuredTitles.has(newNorm)
+        if (wasMatch && !isMatch) {
+          this.titleResolvedChatIds.delete(ev.chatId)
+          if (this.configuredChatIds.has(ev.chatId)) {
+            this.logger.info(
+              `[trueconf] chat ${ev.chatId} renamed "${oldNorm}" → "${newNorm}", removed from title-resolved (still active via configured chatId)`,
+            )
+          } else {
+            this.logger.info(
+              `[trueconf] chat ${ev.chatId} renamed "${oldNorm}" → "${newNorm}", removed from always-respond`,
+            )
+          }
+        } else if (!wasMatch && isMatch) {
+          this.titleResolvedChatIds.add(ev.chatId)
+          this.logger.info(
+            `[trueconf] chat ${ev.chatId} renamed "${oldNorm}" → "${newNorm}", added to always-respond`,
+          )
+          this.warnIfDuplicate(newNorm, ev.chatId)
+        } else {
+          this.logger.info(`[trueconf] chat ${ev.chatId} renamed "${oldNorm}" → "${newNorm}"`)
+        }
+        return
+      }
+      case 'remove':
+      case 'removeChat': {
+        if (ev.kind === 'remove' && ev.userId !== this.wire.botUserId) return
+        this.titleByChatId.delete(ev.chatId)
+        const wasTitleResolved = this.titleResolvedChatIds.delete(ev.chatId)
+        if (wasTitleResolved) {
+          if (this.configuredChatIds.has(ev.chatId)) {
+            this.logger.info(
+              `[trueconf] chat ${ev.chatId} removed — dropped from title-resolved (still active via configured chatId)`,
+            )
+          } else {
+            this.logger.info(`[trueconf] chat ${ev.chatId} removed — dropped from always-respond`)
+          }
+        }
+        return
+      }
+      default: {
+        // Adding a new ResolverEvent kind without a handler will fail to compile here.
+        const _exhaustive: never = ev
+        void _exhaustive
+        return
+      }
+    }
+  }
+
+  private warnIfDuplicate(title: string, newChatId: string): void {
+    const others: string[] = []
+    for (const chatId of this.titleResolvedChatIds) {
+      if (this.titleByChatId.get(chatId) === title && chatId !== newChatId) others.push(chatId)
+    }
+    if (others.length > 0) {
+      this.logger.warn(
+        `[trueconf] always-respond: title "${title}" now matches ${others.length + 1} chats: ${[newChatId, ...others].join(', ')}`,
+      )
+    }
+  }
+
+  private async fetchAllChats(): Promise<Array<{ chatId: string; title: string; chatType: number }>> {
+    const all: Array<{ chatId: string; title: string; chatType: number }> = []
+    let page = 1
+    while (true) {
+      const chunk = await this.fetchChatsPageWithRetry(page)
+      if (chunk === null) {
+        this.logger.warn(
+          '[trueconf] always-respond: getChats failed after 3 attempts; title entries inactive until next enumerate; configured chatIds remain active',
+        )
+        return []
+      }
+      this.logger.info(`[trueconf] always-respond: getChats page ${page} returned ${chunk.length} chats`)
+      all.push(...chunk)
+      if (chunk.length < AlwaysRespondResolver.GET_CHATS_PAGE_SIZE) break
+      page += 1
+    }
+    return all
+  }
+
+  private async fetchChatsPageWithRetry(page: number): Promise<Array<{ chatId: string; title: string; chatType: number }> | null> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await this.wire.getChats(page, AlwaysRespondResolver.GET_CHATS_PAGE_SIZE)
+      } catch {
+        if (attempt < 2) await new Promise((r) => setTimeout(r, AlwaysRespondResolver.GET_CHATS_BACKOFF_MS[attempt]))
+      }
+    }
+    return null
+  }
+
+  private emitStartupWarnings(): void {
+    const titleMatches = new Map<string, string[]>()
+    for (const [chatId, title] of this.titleByChatId) {
+      if (!this.configuredTitles.has(title)) continue
+      const arr = titleMatches.get(title) ?? []
+      arr.push(chatId)
+      titleMatches.set(title, arr)
+    }
+
+    for (const title of this.configuredTitles) {
+      const matches = titleMatches.get(title) ?? []
+      if (matches.length === 0) {
+        this.logger.info(
+          `[trueconf] always-respond: title "${title}" not found now (will resolve when bot joins a matching group)`,
+        )
+      } else if (matches.length > 1) {
+        this.logger.warn(
+          `[trueconf] always-respond: title "${title}" matches ${matches.length} chats, applying to all: ${matches.join(', ')}`,
+        )
+      }
+    }
+
+    for (const chatId of this.configuredChatIds) {
+      if (!this.titleByChatId.has(chatId)) {
+        this.logger.info(
+          `[trueconf] always-respond: configured chatId ${chatId} not a group bot is in; bypass stays armed`,
+        )
+      }
+    }
+
+    this.logger.info(
+      `[trueconf] always-respond: ready — ${this.configuredChatIds.size} direct chatIds, ${this.titleResolvedChatIds.size} title-resolved chatIds (${this.configuredTitles.size - titleMatches.size} titles pending)`,
+    )
+  }
+}

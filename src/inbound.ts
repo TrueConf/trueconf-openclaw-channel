@@ -183,6 +183,7 @@ export interface InboundContext {
   chatTypes: Map<string, ResolvedChatKind>
   inflightChatTypes: Map<string, Promise<ResolvedChatKind>>
   recentBotMsgIds: Map<string, Set<string>>
+  isAlwaysRespond: (chatId: string) => boolean
 }
 
 export async function handleInboundMessage(
@@ -234,10 +235,11 @@ export async function handleInboundMessage(
 
   const key = coalesceKey(ctx.accountId, chatId, stableUserId)
 
-  // Group activation gate: bot must be @-mentioned (html) or the message must
-  // reply to a recent bot message. Attachment-only messages still pass when a
-  // preceding gated text is waiting in the coalescer (text+file as one turn).
-  if (kind === 'group') {
+  // Group activation gate (skipped when isAlwaysRespond(chatId) is true):
+  // bot must be @-mentioned (html) or the message must reply to a recent bot
+  // message. Attachment-only messages still pass when a preceding gated text
+  // is waiting in the coalescer (text+file as one turn).
+  if (kind === 'group' && !ctx.isAlwaysRespond(chatId)) {
     let activated = false
     if (envelope.type === EnvelopeType.PLAIN_MESSAGE) {
       const content = envelope.content as { text: string; parseMode?: string }

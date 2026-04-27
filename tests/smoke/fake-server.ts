@@ -38,6 +38,21 @@ export interface FakeOAuthRequest {
   body: string
 }
 
+export interface FakeChat {
+  chatId: string
+  title: string
+  chatType: 1 | 2 | 3 | 5 | 6
+}
+
+interface ChatRegistry {
+  set(chats: FakeChat[]): void
+  add(chat: FakeChat): void
+  remove(chatId: string): void
+  rename(chatId: string, newTitle: string): void
+  getById(chatId: string): FakeChat | undefined
+  getPage(page: number, count: number): FakeChat[]
+}
+
 export interface FakeServer {
   host: string
   port: number
@@ -54,8 +69,11 @@ export interface FakeServer {
   oauthResponse: FakeOAuthResponse
   clientAcks: number[]
   connections: Set<WebSocket>
+  chats: ChatRegistry
+  configureFailures: (opts: { getChats?: number; getChatByID?: number; getChatByIDOmitErrorCode?: number }) => void
   pushInbound: (envelope: Json) => void
   pushFileProgress: (fileId: string, progress: number) => void
+  pushEvent: (method: string, payload: Json) => void
   dropAll: () => void
   setFile: (fileId: string, file: FakeFile) => void
   setFileInfoSequence: (fileId: string, sequence: FakeFileInfoReply[]) => void
@@ -96,6 +114,29 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
   const subscribeFileProgressRequests: FakeRequest[] = []
   const unsubscribeFileProgressRequests: FakeRequest[] = []
   const chatTypeOverrides = new Map<string, number>()
+
+  let chatList: FakeChat[] = []
+  const chats: ChatRegistry = {
+    set(next) { chatList = [...next] },
+    add(chat) { chatList.push(chat) },
+    remove(chatId) { chatList = chatList.filter((c) => c.chatId !== chatId) },
+    rename(chatId, title) { const c = chatList.find((x) => x.chatId === chatId); if (c) c.title = title },
+    getById(chatId) { return chatList.find((c) => c.chatId === chatId) },
+    getPage(page, count) {
+      const start = (page - 1) * count
+      return chatList.slice(start, start + count)
+    },
+  }
+
+  let getChatsFailures = 0
+  let getChatByIDFailures = 0
+  let getChatByIDOmitErrorCode = 0
+  function configureFailures(opts: { getChats?: number; getChatByID?: number; getChatByIDOmitErrorCode?: number }): void {
+    if (opts.getChats !== undefined) getChatsFailures = opts.getChats
+    if (opts.getChatByID !== undefined) getChatByIDFailures = opts.getChatByID
+    if (opts.getChatByIDOmitErrorCode !== undefined) getChatByIDOmitErrorCode = opts.getChatByIDOmitErrorCode
+  }
+
   const httpUploads: FakeHttpUpload[] = []
   const oauthRequests: FakeOAuthRequest[] = []
   let oauthResponse: FakeOAuthResponse = opts.oauthResponse ?? makeDefaultOAuthResponse()
@@ -250,11 +291,39 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
         send(ws, { type: 2, id, payload: { errorCode: 0, messageId } })
         return
       }
+      if (method === 'getChats') {
+        if (getChatsFailures > 0) {
+          getChatsFailures -= 1
+          send(ws, { type: 2, id, payload: { errorCode: 1, errorDescription: 'forced' } })
+          return
+        }
+        const count = Number(payload.count ?? 100)
+        const page = Number(payload.page ?? 1)
+        const result = chats.getPage(page, count)
+        // Real TrueConf returns the chat list as a bare array in `payload`,
+        // not wrapped in `{ chats: [...] }`. Mirror that here so adapter
+        // tests exercise the production envelope.
+        send(ws, { type: 2, id, payload: result as unknown as Record<string, unknown> })
+        return
+      }
       if (method === 'getChatByID') {
         getChatByIdRequests.push({ id, method, payload })
+        if (getChatByIDFailures > 0) {
+          getChatByIDFailures -= 1
+          send(ws, { type: 2, id, payload: { errorCode: 1, errorDescription: 'forced' } })
+          return
+        }
         const chatId = String(payload.chatId ?? '')
-        const chatType = chatTypeOverrides.get(chatId) ?? 1
-        send(ws, { type: 2, id, payload: { errorCode: 0, chatId, title: chatId, chatType, unreadMessages: 0 } })
+        const reg = chats.getById(chatId)
+        const basePayload: Json = reg
+          ? { chatId, title: reg.title, chatType: reg.chatType, unreadMessages: 0 }
+          : { chatId, title: chatId, chatType: chatTypeOverrides.get(chatId) ?? 1, unreadMessages: 0 }
+        if (getChatByIDOmitErrorCode > 0) {
+          getChatByIDOmitErrorCode -= 1
+          send(ws, { type: 2, id, payload: basePayload })
+          return
+        }
+        send(ws, { type: 2, id, payload: { errorCode: 0, ...basePayload } })
         return
       }
       send(ws, { type: 2, id, payload: { errorCode: 0 } })
@@ -282,11 +351,17 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
     set oauthResponse(value: FakeOAuthResponse) { oauthResponse = value },
     clientAcks,
     connections,
+    chats,
+    configureFailures,
     setOauthResponse(value) { oauthResponse = value },
     setChatType(chatId, chatType) { chatTypeOverrides.set(chatId, chatType) },
     pushInbound(envelope) {
       const id = nextServerRequestId++
       for (const ws of connections) send(ws, { type: 1, id, method: 'sendMessage', payload: envelope })
+    },
+    pushEvent(method, payload) {
+      const id = nextServerRequestId++
+      for (const ws of connections) send(ws, { type: 1, id, method, payload })
     },
     pushFileProgress(fileId, progress) {
       const id = nextServerRequestId++

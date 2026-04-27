@@ -16,6 +16,7 @@ import {
   sanitizeMarkdown,
   handleOutboundAttachment,
   handleOutboundAttachmentToChat,
+  responseErrorCode,
 } from './outbound'
 import { handleInboundMessage, prepareInboundAttachment, unlinkTempFile, normalizeForCompare, rememberBotMessage, __resetCoalesceBufferForTesting } from './inbound'
 import type { InboundContext } from './inbound'
@@ -28,7 +29,9 @@ import {
   isEnabled as isEnabledImpl,
   describeAccount as describeAccountImpl,
   shouldAllowMessage,
+  parseAlwaysRespondConfig,
 } from './config'
+import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './always-respond'
 import { WsClient, ConnectionLifecycle } from './ws-client'
 import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage } from './types'
 
@@ -68,16 +71,70 @@ export function shutdownAccountEntry(entry: {
   lifecycle: ConnectionLifecycle
   wsClient: WsClient
   dispatcher?: Dispatcher
+  unsubscribers?: Array<() => void>
 }): void {
+  for (const u of entry.unsubscribers ?? []) try { u() } catch { /* ignore */ }
   entry.lifecycle.shutdown()
   entry.dispatcher?.close().catch(() => { /* best-effort */ })
+}
+
+function readNonEmptyString(payload: Record<string, unknown>, key: string): string | undefined {
+  const v = payload[key]
+  return typeof v === 'string' && v.length > 0 && !v.includes('\0') ? v : undefined
+}
+
+// Reject malformed payloads at the boundary instead of forwarding empty-string
+// chatIds into the resolver — those waste two getChatByID round-trips per push
+// and emit logs with empty parens that read like a different bug.
+export function mapPushToResolverEvent(
+  method: string,
+  payload: Record<string, unknown>,
+  logger: Logger,
+): ResolverEvent | null {
+  const drop = (reason: string): null => {
+    logger.warn(`[trueconf] always-respond: dropping push ${method}: ${reason}`)
+    return null
+  }
+  const chatId = readNonEmptyString(payload, 'chatId')
+
+  switch (method) {
+    case 'addChatParticipant': {
+      if (!chatId) return drop('missing chatId')
+      const userId = readNonEmptyString(payload, 'userId')
+      if (!userId) return drop('missing userId')
+      return { kind: 'add', chatId, userId }
+    }
+    case 'removeChatParticipant': {
+      if (!chatId) return drop('missing chatId')
+      const userId = readNonEmptyString(payload, 'userId')
+      if (!userId) return drop('missing userId')
+      return { kind: 'remove', chatId, userId }
+    }
+    case 'createGroupChat':
+      if (!chatId) return drop('missing chatId')
+      return { kind: 'createGroup', chatId }
+    case 'createChannel':
+      // Channels never bypass the activation gate; drop without warn.
+      return null
+    case 'editChatTitle': {
+      if (!chatId) return drop('missing chatId')
+      const title = readNonEmptyString(payload, 'title')
+      if (!title) return drop('missing title')
+      return { kind: 'rename', chatId, title }
+    }
+    case 'removeChat':
+      if (!chatId) return drop('missing chatId')
+      return { kind: 'removeChat', chatId }
+    default:
+      return null
+  }
 }
 
 const pluginRuntimeStore = createPluginRuntimeStore<PluginRuntime>("TrueConf runtime not initialized")
 
 export function createRuntimeStore() {
   return {
-    accounts: new Map<string, { lifecycle: ConnectionLifecycle; wsClient: WsClient; dispatcher?: Dispatcher }>(),
+    accounts: new Map<string, { lifecycle: ConnectionLifecycle; wsClient: WsClient; dispatcher?: Dispatcher; unsubscribers?: Array<() => void> }>(),
     logger: null as Logger | null,
     runtime: null as unknown,
     fullConfig: null as unknown,
@@ -382,6 +439,42 @@ export const channelPlugin = {
       const wsClient = new WsClient({ ca })
       wsClient.logger = logger
 
+      const wireAdapter: WireAdapter = {
+        get botUserId() { return wsClient.botUserId },
+        getChats: async (page, pageSize) => {
+          const resp = await wsClient.sendRequest('getChats', { count: pageSize, page })
+          const errorCode = responseErrorCode(resp)
+          if (errorCode !== undefined && errorCode !== 0) {
+            throw new Error(`getChats: unexpected response (errorCode=${errorCode})`)
+          }
+          // TrueConf returns the chat list as a bare array in `payload`
+          // (`{ type: 2, id, payload: [chat0, chat1, ...] }`). The previous
+          // implementation read `payload.chats`, which is the shape used by
+          // some other endpoints — but never by `getChats`. Accept both forms
+          // so older / mocked servers that wrap the list still work.
+          const p = resp.payload as unknown
+          type ChatRow = { chatId: string; title: string; chatType: number }
+          if (Array.isArray(p)) return p as ChatRow[]
+          const wrapped = (p as { chats?: ChatRow[] } | undefined)?.chats
+          return wrapped ?? []
+        },
+        getChatByID: async (chatId) => {
+          const resp = await wsClient.sendRequest('getChatByID', { chatId })
+          // Match resolveChatType (inbound.ts): missing errorCode === success.
+          // Some TrueConf servers omit errorCode on success — treating undefined
+          // as failure made every push lookup silently skip on those servers.
+          const errorCode = responseErrorCode(resp)
+          if (errorCode !== undefined && errorCode !== 0) return null
+          return { chatType: Number(resp.payload?.chatType), title: String(resp.payload?.title ?? '') }
+        },
+      }
+
+      const alwaysRespond = new AlwaysRespondResolver(
+        parseAlwaysRespondConfig(channelConfig.groupAlwaysRespondIn, logger),
+        wireAdapter,
+        logger,
+      )
+
       const lifecycle = new ConnectionLifecycle(
         wsClient,
         {
@@ -564,13 +657,24 @@ export const channelPlugin = {
           chatTypes: store.chatTypeByChatId,
           inflightChatTypes: store.inflightChatTypeLookups,
           recentBotMsgIds: store.recentBotMsgIdsByChat,
+          isAlwaysRespond: alwaysRespond.isAlwaysRespond,
         }
         Promise.resolve(handleInboundMessage(msg, inboundCtx)).catch((err) => {
           logger.error(`[trueconf] handleInboundMessage threw: ${err instanceof Error ? err.message : String(err)}`)
         })
       }
 
-      store.accounts.set(accountId, { lifecycle, wsClient, dispatcher })
+      const unsubscribePush = wsClient.onPush((method, payload) => {
+        const ev = mapPushToResolverEvent(method, payload, logger)
+        if (ev) alwaysRespond.enqueueEvent(ev)
+      })
+      const unsubscribeAuth = wsClient.onAuth(() => {
+        void alwaysRespond.rebuildFromWire().catch((err) => {
+          logger.warn(`[trueconf] always-respond: re-auth rebuild failed: ${err instanceof Error ? err.message : String(err)}`)
+        })
+      })
+
+      store.accounts.set(accountId, { lifecycle, wsClient, dispatcher, unsubscribers: [unsubscribePush, unsubscribeAuth] })
 
       try {
         await lifecycle.start()

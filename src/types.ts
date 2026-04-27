@@ -149,6 +149,7 @@ export interface TrueConfFlatConfig extends TrueConfAccountConfig {
   dmPolicy?: DmPolicy
   allowFrom?: string[]
   maxFileSize?: number
+  groupAlwaysRespondIn?: string[]
 }
 
 export interface TrueConfMultiAccountConfig {
@@ -156,6 +157,7 @@ export interface TrueConfMultiAccountConfig {
   dmPolicy?: DmPolicy
   allowFrom?: string[]
   maxFileSize?: number
+  groupAlwaysRespondIn?: string[]
 }
 
 export type TrueConfChannelConfig = TrueConfFlatConfig | TrueConfMultiAccountConfig

@@ -4,6 +4,8 @@ on:
   release:
     types: [published]
 
+  workflow_dispatch:
+
 permissions:
   contents: read
   id-token: write
@@ -12,29 +14,39 @@ jobs:
   publish:
     runs-on: ubuntu-latest
 
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+
     steps:
-      - name: Checkout release tag
+      - name: Checkout selected ref
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org/
-
-      - name: Update npm
-        run: npm install -g npm@latest
+      
+      - name: Check versions
+        run: |
+          node -v
+          npm -v
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Set package version from release tag
+      - name: Set package version from tag
         run: |
-          TAG="${{ github.event.release.tag_name }}"
-          VERSION="${TAG#v}"
-          npm version "$VERSION" --no-git-tag-version
+          VERSION="${RELEASE_TAG#v}"
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+
+          if [ "$CURRENT_VERSION" = "$VERSION" ]; then
+            echo "package.json already has version $VERSION"
+          else
+            npm version "$VERSION" --no-git-tag-version
+          fi
 
       - name: Test
         run: npm test --if-present
@@ -46,4 +58,4 @@ jobs:
         run: npm pack --dry-run
 
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        run: npm publish --access public

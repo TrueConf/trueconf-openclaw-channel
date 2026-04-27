@@ -11,6 +11,7 @@ import type { CertSummary, ValidatedCaBytes } from './probe.d.mts'
 import { resolveSecret } from './config'
 import type { Locale } from './i18n'
 import { DEFAULT_LOCALE, t } from './i18n'
+import { readTrueConfSection } from './types'
 
 // Read TRUECONF_SETUP_LOCALE env once and validate. Throws if set to anything
 // other than 'en'/'ru' so misconfigured CI fails loud instead of silently
@@ -140,12 +141,11 @@ export const trueconfSetupWizard: ChannelSetupWizard = {
     configuredScore: 2,
     unconfiguredScore: 0,
     resolveConfigured: ({ cfg }) => {
-      const tc = (cfg as { channels?: { trueconf?: { serverUrl?: string; username?: string; password?: unknown } } })
-        .channels?.trueconf
+      const tc = readTrueConfSection(cfg)
       return Boolean(
-        tc?.serverUrl &&
-          tc?.username &&
-          hasConfiguredSecretInput(tc?.password),
+        tc.serverUrl &&
+          tc.username &&
+          hasConfiguredSecretInput(tc.password),
       )
     },
   },
@@ -175,8 +175,7 @@ export const trueconfSetupWizard: ChannelSetupWizard = {
       message: 'URL TrueConf Server',
       placeholder: 'tc.example.com',
       required: true,
-      currentValue: ({ cfg }) =>
-        (cfg as { channels?: { trueconf?: { serverUrl?: string } } }).channels?.trueconf?.serverUrl,
+      currentValue: ({ cfg }) => readTrueConfSection(cfg).serverUrl,
       validate: ({ value }) => {
         if (value.includes('://')) return 'Укажите хост без http(s)://'
         if (/:\d+$/.test(value)) return 'Укажите хост без :порта — порт задаётся отдельным полем'
@@ -195,8 +194,7 @@ export const trueconfSetupWizard: ChannelSetupWizard = {
       message: 'Логин бота (только имя, без @сервер)',
       placeholder: 'bot_user',
       required: true,
-      currentValue: ({ cfg }) =>
-        (cfg as { channels?: { trueconf?: { username?: string } } }).channels?.trueconf?.username,
+      currentValue: ({ cfg }) => readTrueConfSection(cfg).username,
       applySet: ({ cfg, value }) =>
         patchTopLevelChannelConfigSection({
           cfg,
@@ -211,7 +209,7 @@ export const trueconfSetupWizard: ChannelSetupWizard = {
       required: false,
       applyEmptyValue: true,
       currentValue: ({ cfg }) => {
-        const tls = (cfg as { channels?: { trueconf?: { useTls?: boolean } } }).channels?.trueconf?.useTls
+        const tls = readTrueConfSection(cfg).useTls
         return tls === undefined ? '' : String(tls)
       },
       normalizeValue: ({ value }) =>
@@ -230,8 +228,7 @@ export const trueconfSetupWizard: ChannelSetupWizard = {
       message: 'Порт (пусто = scheme default 4309/443)',
       required: false,
       applyEmptyValue: true,
-      currentValue: ({ cfg }) =>
-        (cfg as { channels?: { trueconf?: { port?: number } } }).channels?.trueconf?.port?.toString(),
+      currentValue: ({ cfg }) => readTrueConfSection(cfg).port?.toString(),
       validate: ({ value }) => {
         if (value === '') return
         const n = Number.parseInt(value, 10)
@@ -259,7 +256,7 @@ export const trueconfSetupWizard: ChannelSetupWizard = {
       inputPrompt: 'Введите пароль бота',
       allowEnv: () => Boolean(process.env.TRUECONF_PASSWORD?.trim()),
       inspect: ({ cfg }) => {
-        const pwd = (cfg as { channels?: { trueconf?: { password?: unknown } } }).channels?.trueconf?.password
+        const pwd = readTrueConfSection(cfg).password
         return {
           accountConfigured: hasConfiguredSecretInput(pwd),
           hasConfiguredValue: hasConfiguredSecretInput(pwd),
@@ -632,17 +629,7 @@ export async function interactiveFinalize(params: {
   forceAllowFrom: boolean
 }): Promise<{ cfg: OpenClawConfig }> {
   const { cfg, prompter, credentialValues } = params
-  const tc =
-    (cfg as { channels?: { trueconf?: {
-      serverUrl?: string
-      username?: string
-      password?: string | { useEnv: string }
-      useTls?: boolean
-      port?: number
-      caPath?: string
-      tlsVerify?: boolean
-      setupLocale?: Locale
-    } } }).channels?.trueconf ?? {}
+  const tc = readTrueConfSection(cfg)
 
   // Resolve locale before any prompter call. Precedence: env > cfg > prompt.
   // Env raw-read here (not via resolveAccount) to keep the precedence check
@@ -816,8 +803,7 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
   // Resolve locale at top of function. Headless never prompts; if neither env
   // nor cfg sets it, fall back to DEFAULT_LOCALE ('en'). Invalid env throws.
   const envLocale = readEnvLocale()
-  const cfgLocale = (cfg as { channels?: { trueconf?: { setupLocale?: Locale } } })
-    .channels?.trueconf?.setupLocale
+  const cfgLocale = readTrueConfSection(cfg).setupLocale
   const locale: Locale = envLocale
     ?? (cfgLocale === 'en' || cfgLocale === 'ru' ? cfgLocale : DEFAULT_LOCALE)
 
@@ -879,8 +865,7 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
     caBytes = loaded.caBytes
   } else if (tlsVerify !== false) {
     // 2) Check configured caPath in current cfg (skipped in insecure mode)
-    const tc = (cfg as { channels?: { trueconf?: { caPath?: string } } }).channels?.trueconf
-    const existing = tc?.caPath
+    const existing = readTrueConfSection(cfg).caPath
 
     if (existing) {
       const abs = resolveAbsPath(existing)

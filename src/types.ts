@@ -1,6 +1,23 @@
+import type { OpenClawConfig } from 'openclaw/plugin-sdk/setup'
 import type { Locale } from './i18n'
 
 export type SetupLocale = Locale
+
+export interface TrueConfChannelSection {
+  serverUrl?: string
+  username?: string
+  password?: string | { useEnv: string }
+  useTls?: boolean
+  port?: number
+  caPath?: string
+  tlsVerify?: boolean
+  setupLocale?: SetupLocale
+}
+
+export function readTrueConfSection(cfg: OpenClawConfig): TrueConfChannelSection {
+  return (cfg as { channels?: { trueconf?: TrueConfChannelSection } })
+    .channels?.trueconf ?? {}
+}
 
 export interface TrueConfAccountConfig {
   serverUrl: string

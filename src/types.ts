@@ -1,4 +1,6 @@
-export type SetupLocale = 'en' | 'ru'
+import type { Locale } from './i18n'
+
+export type SetupLocale = Locale
 
 export interface TrueConfAccountConfig {
   serverUrl: string

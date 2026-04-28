@@ -148,10 +148,14 @@ function splitFreeform(text: string, limit: number): string[] {
   // Phase 2a: paragraph split.
   if (text.includes('\n\n')) {
     const paragraphs = text.split('\n\n')
+    // Re-attach each separator to the paragraph that follows it so that chunks remain
+    // self-contained: `chunks.join('') === text` (Option 1 contract). Without this,
+    // the `\n\n` between paragraphs would be silently dropped on flush boundaries.
+    const augmented = paragraphs.map((p, i) => (i === 0 ? p : '\n\n' + p))
     const out: string[] = []
     let buf = ''
-    for (const p of paragraphs) {
-      const candidate = buf ? buf + '\n\n' + p : p
+    for (const p of augmented) {
+      const candidate = buf + p
       if ([...candidate].length <= limit) {
         buf = candidate
       } else {
@@ -246,11 +250,16 @@ function splitHardCut(text: string, limit: number): string[] {
 }
 
 /**
- * Extension extraction: lowercase, strip leading dots, take last dotted segment.
+ * Extracts the lowercased extension from a basename.
+ *
+ * **Pre:** `fileName` MUST be a basename — callers passing a full path must
+ * call `path.basename(...)` (Node `node:path`) first. Slashes are not stripped.
+ *
+ * Examples:
  *   "report.PDF" → "pdf"
  *   "archive.tar.gz" → "gz"
- *   "noext" → ""
  *   ".dotfile" → "dotfile"
+ *   "noext" → ""
  *   "file." → ""
  */
 export function normalizeExtension(fileName: string): string {
@@ -389,8 +398,11 @@ type ValidatedField<T> = { ok: true; value: T } | { ok: false; detail: string }
 
 function validateMaxSize(raw: unknown): ValidatedField<number | null> {
   if (raw === null || raw === undefined) return { ok: true, value: null }
-  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
-    return { ok: false, detail: `maxSize must be int|null, got ${typeof raw}` }
+  // Strict positive: maxSize=0 would block ALL uploads (footgun). Python's contract uses
+  // `null` to mean "disabled" — `0` should be rejected so a misbehaving server can't lock
+  // out file transfer with a single push.
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) {
+    return { ok: false, detail: `maxSize must be positive int|null, got ${typeof raw === 'number' ? raw : typeof raw}` }
   }
   return { ok: true, value: raw }
 }

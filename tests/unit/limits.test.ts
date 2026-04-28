@@ -68,8 +68,9 @@ describe('splitTextForSending', () => {
     const chunks = splitTextForSending(text)
     expect(chunks.length).toBeGreaterThanOrEqual(2)
     for (const c of chunks) expect([...c].length).toBeLessThanOrEqual(4096)
-    // Re-joining recovers the paragraphs.
-    expect(chunks.join('\n\n')).toBe(text)
+    // Chunks are self-contained: re-concatenation recovers the original text including
+    // the paragraph separator (Option 1 contract — separator re-attached to following chunk).
+    expect(chunks.join('')).toBe(text)
   })
 
   it('three paragraphs fitting under limit return single chunk', () => {
@@ -120,6 +121,59 @@ describe('splitTextForSending', () => {
     // The fenced block should appear intact in exactly one chunk.
     const containing = chunks.filter((c) => c.includes(block))
     expect(containing.length).toBe(1)
+  })
+})
+
+describe('splitTextForSending — paragraph round-trip integrity', () => {
+  it('two paragraphs both fit: chunks.join("") === text', () => {
+    const text = 'p1\n\np2'
+    expect(splitTextForSending(text, 100).join('')).toBe(text)
+  })
+
+  it('atomic block + \\n\\n + long content: chunks.join("") === text', () => {
+    const text = 'atomic_block' + '\n\n' + 'b'.repeat(5000)
+    const chunks = splitTextForSending(text, 4096)
+    expect(chunks.join('')).toBe(text)
+    for (const c of chunks) expect([...c].length).toBeLessThanOrEqual(4096)
+  })
+
+  it('three paragraphs with middle one too large: chunks.join("") === text', () => {
+    const text = 'a'.repeat(1000) + '\n\n' + 'b'.repeat(5000) + '\n\n' + 'c'.repeat(1000)
+    const chunks = splitTextForSending(text, 4096)
+    expect(chunks.join('')).toBe(text)
+  })
+
+  it('two long paragraphs both fall through to sentence: chunks.join("") === text', () => {
+    const text = 'a. '.repeat(2000) + '\n\n' + 'b. '.repeat(2000)
+    const chunks = splitTextForSending(text, 4096)
+    expect(chunks.join('')).toBe(text)
+  })
+})
+
+describe('splitTextForSending — markdown blocks (multi-block coverage)', () => {
+  it('two atomic blocks both preserved when each ≤ limit', () => {
+    const block1 = '```\n' + 'a'.repeat(500) + '\n```'
+    const block2 = '```\n' + 'b'.repeat(500) + '\n```'
+    const text = `${block1}\n\n${block2}`
+    const chunks = splitTextForSending(text, 4096)
+    expect(chunks.join('')).toBe(text)
+    // Both blocks should appear intact in some chunk.
+    expect(chunks.some((c) => c.includes(block1))).toBe(true)
+    expect(chunks.some((c) => c.includes(block2))).toBe(true)
+  })
+
+  it('mid-line backticks NOT treated as fence (inline code)', () => {
+    const text = 'before `inline code` after' // single backticks, mid-line
+    const chunks = splitTextForSending(text, 4096)
+    expect(chunks).toEqual([text]) // fits, single chunk, no special handling
+  })
+
+  it('block larger than limit falls through to hard-cut', () => {
+    const block = '```\n' + 'x'.repeat(5000) + '\n```' // > 4096 code-points
+    const chunks = splitTextForSending(block, 4096)
+    expect(chunks.length).toBeGreaterThan(1) // forced to split
+    // Round-trip still holds:
+    expect(chunks.join('')).toBe(block)
   })
 })
 
@@ -197,6 +251,14 @@ describe('FileUploadLimits.updateFromServer corrupt payloads', () => {
     limits.updateFromServer({ maxSize: 100, extensions: { mode: 'allow', list: ['pdf', 42] } })
     expect(logger.warn).toHaveBeenCalled()
     expect(limits.getMaxBytes()).toBe(500)
+  })
+
+  it('rejects maxSize: 0 as invalid', () => {
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const limits = new FileUploadLimits(1_000_000, logger)
+    limits.updateFromServer({ maxSize: 0, extensions: null })
+    expect(logger.warn).toHaveBeenCalled()
+    expect(limits.getMaxBytes()).toBe(1_000_000) // unchanged
   })
 })
 

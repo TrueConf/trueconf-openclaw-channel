@@ -22,7 +22,6 @@ import { handleInboundMessage, prepareInboundAttachment, unlinkTempFile, normali
 import { FileUploadLimits } from './limits'
 import { PerChatSendQueue } from './send-queue'
 import type { InboundContext } from './inbound'
-import { buildAck } from './types'
 import type { ResolvedChatKind } from './types'
 import {
   listAccountIds as listAccountIdsImpl,
@@ -692,7 +691,6 @@ export const channelPlugin = {
           wsClient,
           botIdentityCandidates: [wsClient.botUserId ?? '', resolved.username ?? ''],
           accountId,
-          sendAck: (id) => wsClient.send(buildAck(id)),
           dispatch,
           logger,
           directChats: store.directChatsByStableUserId,

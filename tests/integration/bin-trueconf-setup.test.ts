@@ -168,11 +168,14 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
     }
   })
 
-  it('interactive fresh (no TLS/port pre-set): skips optional prompts', async () => {
+  it('interactive fresh (no TLS/port pre-set): skips optional prompts', { timeout: 35000 }, async () => {
     // Verifies the UX contract: on a truly empty cfg, useTls/port are NOT
     // prompted — finalize owns auto-detect. We can't complete finalize
     // against fake-server here (fake listens on random port), so we stop at
     // counting prompts via a counting prompter.
+    // Wide timeout: finalize hits unreachable srv.example.com and waits for
+    // probe's 30s AbortSignal before returning — prompts run in <1s but the
+    // promise we await on doesn't resolve until the network op gives up.
     const { makeFakePrompter } = await import('../smoke/fake-prompter')
     writeFileSync(configPath, JSON.stringify({}, null, 2))
 

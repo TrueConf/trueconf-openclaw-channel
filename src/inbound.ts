@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { basename, resolve as pathResolve, sep as pathSep, join as pathJoin } from 'node:path'
 import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web'
 import { getMediaDir, kindFromMime, type MediaKind } from 'openclaw/plugin-sdk/media-runtime'
+import { fetch, type Response } from 'undici'
 import { EnvelopeType, FileReadyState, TrueConfChatType } from './types'
 import type {
   TrueConfRequest,

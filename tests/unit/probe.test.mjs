@@ -1,7 +1,14 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal()
+  return { ...actual, fetch: vi.fn(actual.fetch) }
+})
+
+import { fetch as undiciFetch } from 'undici'
 import {
   summarizeCert,
   decide,
@@ -387,64 +394,42 @@ describe('validateOAuthCredentials', () => {
   })
 })
 
-import { vi } from 'vitest'
-
 describe('validateOAuthCredentials — status codes', () => {
   it('returns invalid-credentials on 401', async () => {
-    const origFetch = globalThis.fetch
-    globalThis.fetch = vi.fn(async () => new Response('Unauthorized', { status: 401, statusText: 'Unauthorized' }))
-    try {
-      const result = await validateOAuthCredentials({
-        serverUrl: 'tc.example.com', username: 'bot', password: 'wrong', useTls: true, port: 443,
-      })
-      expect(result.ok).toBe(false)
-      if (!result.ok) expect(result.category).toBe('invalid-credentials')
-    } finally {
-      globalThis.fetch = origFetch
-    }
+    vi.mocked(undiciFetch).mockImplementationOnce(async () => new Response('Unauthorized', { status: 401, statusText: 'Unauthorized' }))
+    const result = await validateOAuthCredentials({
+      serverUrl: 'tc.example.com', username: 'bot', password: 'wrong', useTls: true, port: 443,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.category).toBe('invalid-credentials')
   })
 
   it('returns token-endpoint-missing on 404', async () => {
-    const origFetch = globalThis.fetch
-    globalThis.fetch = vi.fn(async () => new Response('Not Found', { status: 404, statusText: 'Not Found' }))
-    try {
-      const result = await validateOAuthCredentials({
-        serverUrl: 'tc.example.com', username: 'bot', password: 'secret', useTls: true, port: 443,
-      })
-      expect(result.ok).toBe(false)
-      if (!result.ok) expect(result.category).toBe('token-endpoint-missing')
-    } finally {
-      globalThis.fetch = origFetch
-    }
+    vi.mocked(undiciFetch).mockImplementationOnce(async () => new Response('Not Found', { status: 404, statusText: 'Not Found' }))
+    const result = await validateOAuthCredentials({
+      serverUrl: 'tc.example.com', username: 'bot', password: 'secret', useTls: true, port: 443,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.category).toBe('token-endpoint-missing')
   })
 
   it('returns ok on 200', async () => {
-    const origFetch = globalThis.fetch
-    globalThis.fetch = vi.fn(async () => new Response('{"access_token":"xyz"}', { status: 200 }))
-    try {
-      const result = await validateOAuthCredentials({
-        serverUrl: 'tc.example.com', username: 'bot', password: 'ok', useTls: true, port: 443,
-      })
-      expect(result.ok).toBe(true)
-    } finally {
-      globalThis.fetch = origFetch
-    }
+    vi.mocked(undiciFetch).mockImplementationOnce(async () => new Response('{"access_token":"xyz"}', { status: 200 }))
+    const result = await validateOAuthCredentials({
+      serverUrl: 'tc.example.com', username: 'bot', password: 'ok', useTls: true, port: 443,
+    })
+    expect(result.ok).toBe(true)
   })
 
   it('returns server-error on 500', async () => {
-    const origFetch = globalThis.fetch
-    globalThis.fetch = vi.fn(async () => new Response('Internal Server Error', { status: 500, statusText: 'Internal Server Error' }))
-    try {
-      const result = await validateOAuthCredentials({
-        serverUrl: 'tc.example.com', username: 'bot', password: 'ok', useTls: true, port: 443,
-      })
-      expect(result.ok).toBe(false)
-      if (!result.ok) {
-        expect(result.category).toBe('server-error')
-        expect(result.error).toContain('500')
-      }
-    } finally {
-      globalThis.fetch = origFetch
+    vi.mocked(undiciFetch).mockImplementationOnce(async () => new Response('Internal Server Error', { status: 500, statusText: 'Internal Server Error' }))
+    const result = await validateOAuthCredentials({
+      serverUrl: 'tc.example.com', username: 'bot', password: 'ok', useTls: true, port: 443,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.category).toBe('server-error')
+      expect(result.error).toContain('500')
     }
   })
 
@@ -461,23 +446,18 @@ describe('validateOAuthCredentials — status codes', () => {
   })
 
   it('categorizes OpenSSL UNABLE_TO_VERIFY_LEAF_SIGNATURE as tls', async () => {
-    const origFetch = globalThis.fetch
-    globalThis.fetch = vi.fn(async () => {
+    vi.mocked(undiciFetch).mockImplementationOnce(async () => {
       const inner = new Error('unable to verify the first certificate')
       inner.code = 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'
       throw new TypeError('fetch failed', { cause: inner })
     })
-    try {
-      const result = await validateOAuthCredentials({
-        serverUrl: 'tc.example.com', username: 'bot', password: 'x', useTls: true, port: 443,
-      })
-      expect(result.ok).toBe(false)
-      if (!result.ok) {
-        expect(result.category).toBe('tls')
-        expect(result.error).toMatch(/UNABLE_TO_VERIFY/i)
-      }
-    } finally {
-      globalThis.fetch = origFetch
+    const result = await validateOAuthCredentials({
+      serverUrl: 'tc.example.com', username: 'bot', password: 'x', useTls: true, port: 443,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.category).toBe('tls')
+      expect(result.error).toMatch(/UNABLE_TO_VERIFY/i)
     }
   })
 
@@ -486,28 +466,23 @@ describe('validateOAuthCredentials — status codes', () => {
     // undici Agent (real Dispatcher.dispatch). The actual rejectUnauthorized
     // wiring is tested at the WS-level integration (Task 4) — here we only
     // assert that the dispatcher is constructed and passed when tlsVerify=false.
-    const origFetch = globalThis.fetch
     let seenDispatcher
-    globalThis.fetch = vi.fn(async (_url, init) => {
+    vi.mocked(undiciFetch).mockImplementationOnce(async (_url, init) => {
       seenDispatcher = init?.dispatcher
       return new Response('Unauthorized', { status: 401, statusText: 'Unauthorized' })
     })
-    try {
-      const result = await validateOAuthCredentials({
-        serverUrl: 'tc.example.com',
-        username: 'bot',
-        password: 'wrong',
-        useTls: true,
-        port: 443,
-        tlsVerify: false,
-      })
-      expect(result.ok).toBe(false)
-      if (!result.ok) expect(result.category).toBe('invalid-credentials')
-      expect(seenDispatcher).toBeDefined()
-      expect(typeof seenDispatcher.dispatch).toBe('function')
-    } finally {
-      globalThis.fetch = origFetch
-    }
+    const result = await validateOAuthCredentials({
+      serverUrl: 'tc.example.com',
+      username: 'bot',
+      password: 'wrong',
+      useTls: true,
+      port: 443,
+      tlsVerify: false,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.category).toBe('invalid-credentials')
+    expect(seenDispatcher).toBeDefined()
+    expect(typeof seenDispatcher.dispatch).toBe('function')
   })
 
   it('rejects tlsVerify=false without useTls=true', async () => {
@@ -529,30 +504,24 @@ describe('validateOAuthCredentials — status codes', () => {
     // A well-formed (but fake) PEM — undici Agent accepts the bytes at construction,
     // and since fetch is mocked the cert is never actually used.
     const ca = Buffer.from('-----BEGIN CERTIFICATE-----\nMIIBAA==\n-----END CERTIFICATE-----\n', 'utf8')
-
-    const origFetch = globalThis.fetch
     let seenDispatcher
-    globalThis.fetch = vi.fn(async (_url, init) => {
+    vi.mocked(undiciFetch).mockImplementationOnce(async (_url, init) => {
       seenDispatcher = init?.dispatcher
       return new Response('Unauthorized', { status: 401, statusText: 'Unauthorized' })
     })
-    try {
-      const result = await validateOAuthCredentials({
-        serverUrl: 'tc.example.com',
-        username: 'bot',
-        password: 'wrong',
-        useTls: true,
-        port: 443,
-        ca,
-      })
-      expect(result.ok).toBe(false)
-      if (!result.ok) expect(result.category).toBe('invalid-credentials')
-      // Must be a real undici Dispatcher (has .dispatch function), not node:https.Agent.
-      expect(seenDispatcher).toBeDefined()
-      expect(typeof seenDispatcher.dispatch).toBe('function')
-    } finally {
-      globalThis.fetch = origFetch
-    }
+    const result = await validateOAuthCredentials({
+      serverUrl: 'tc.example.com',
+      username: 'bot',
+      password: 'wrong',
+      useTls: true,
+      port: 443,
+      ca,
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.category).toBe('invalid-credentials')
+    // Must be a real undici Dispatcher (has .dispatch function), not node:https.Agent.
+    expect(seenDispatcher).toBeDefined()
+    expect(typeof seenDispatcher.dispatch).toBe('function')
   })
 })
 

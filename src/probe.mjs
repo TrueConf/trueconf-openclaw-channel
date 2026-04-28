@@ -8,7 +8,7 @@ import { X509Certificate } from 'node:crypto'
 import { writeFileSync, mkdirSync, chmodSync, renameSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
-import { Agent as UndiciAgent } from 'undici'
+import { Agent as UndiciAgent, fetch } from 'undici'
 
 const BRIDGE_PORT = 4309
 const BRIDGE_TIMEOUT_MS = 3000

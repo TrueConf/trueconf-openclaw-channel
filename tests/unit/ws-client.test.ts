@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
+import { fetch as undiciFetch } from 'undici'
 import { acquireToken, WsClient } from '../../src/ws-client'
+
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>()
+  return { ...actual, fetch: vi.fn(actual.fetch) }
+})
 
 describe('WsClient TLS options', () => {
   it('defaults tlsVerify to true (system trust)', () => {
@@ -41,22 +47,17 @@ describe('WsClient TLS options', () => {
 
 describe('acquireToken', () => {
   it('includes undici fetch cause in startup OAuth errors', async () => {
-    const origFetch = globalThis.fetch
-    globalThis.fetch = vi.fn(async () => {
+    vi.mocked(undiciFetch).mockImplementationOnce(async () => {
       const cause = new Error('unable to verify the first certificate') as Error & { code: string }
       cause.code = 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'
       throw new TypeError('fetch failed', { cause })
     })
-    try {
-      await expect(acquireToken({
-        serverUrl: 'tc.example.com',
-        username: 'bot',
-        password: 'secret',
-        useTls: true,
-        port: 443,
-      })).rejects.toThrow(/fetch failed.*UNABLE_TO_VERIFY_LEAF_SIGNATURE.*unable to verify the first certificate/)
-    } finally {
-      globalThis.fetch = origFetch
-    }
+    await expect(acquireToken({
+      serverUrl: 'tc.example.com',
+      username: 'bot',
+      password: 'secret',
+      useTls: true,
+      port: 443,
+    })).rejects.toThrow(/fetch failed.*UNABLE_TO_VERIFY_LEAF_SIGNATURE.*unable to verify the first certificate/)
   })
 })

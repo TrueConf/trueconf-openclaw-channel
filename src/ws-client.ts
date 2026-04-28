@@ -1,5 +1,5 @@
 import WebSocket from 'ws'
-import type { Dispatcher } from 'undici'
+import { fetch, type Dispatcher, type RequestInit, type Response } from 'undici'
 import { IdCounter, RequestMatcher, buildAuthRequest } from './types'
 import type {
   TrueConfAccountConfig,

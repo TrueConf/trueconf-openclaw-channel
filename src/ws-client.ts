@@ -363,6 +363,15 @@ export class WsClient {
         )))
       })
       ws.on('close', (code: number, reason: Buffer) => {
+        // Stale close from an old socket (e.g., a delayed close event arriving
+        // after a forced reconnect already swapped this.ws to a new socket).
+        // Ignoring is correct: rejecting matcher pendings or clearing progress
+        // handlers would clobber the new socket's in-flight state, and bubbling
+        // up to lifecycle.handleClose would schedule a redundant reconnect.
+        if (this.ws !== ws) {
+          this.logger?.info(`[trueconf] stale close from old socket (code=${code}); ignoring`)
+          return
+        }
         this.matcher.rejectAll(new Error('WebSocket closed: ' + code + ' ' + (reason?.toString() ?? '')))
         this.progressHandlers.clear()
         this.onClose?.(code, reason?.toString() ?? '')

@@ -355,6 +355,58 @@ describe('WsClient — message handling on captured ws', () => {
     client.close()
   })
 
+  it('stale close from an old socket (after this.ws swap) does NOT reject pendings, clear progress, or fire onClose', async () => {
+    const client = new WsClient()
+    client.logger = silentLogger
+    await client.connect(makeConfig(server!.port), 'fake-token')
+
+    const onCloseSpy = vi.fn()
+    client.onClose = onCloseSpy
+
+    // Track a pending request on the matcher so we can detect a spurious
+    // rejectAll that would otherwise be silent. Use a fresh id from the
+    // counter to mimic a real in-flight sendRequest that hasn't returned yet.
+    const matcher = (client as unknown as { matcher: { track: (id: number) => Promise<unknown> } }).matcher
+    const pending = matcher.track(99999)
+    let pendingRejected: Error | null = null
+    pending.catch((err: Error) => { pendingRejected = err })
+
+    // Register a progress handler so we can detect a spurious clear().
+    client.onFileProgress('file-X', () => {})
+    const progressHandlers = (client as unknown as { progressHandlers: Map<string, unknown> }).progressHandlers
+    expect(progressHandlers.has('file-X')).toBe(true)
+
+    // Simulate the race: forceReconnect already swapped this.ws to a new
+    // socket (decoy stands in for ws_B), but the OLD socket's delayed close
+    // event is about to fire. The captured-ws guard must noop on this path.
+    const wsRef = client as unknown as { ws: unknown }
+    const original = wsRef.ws as { close: (code?: number, reason?: string) => void; emit: (event: string, ...args: unknown[]) => void }
+    const decoy = { readyState: 1 /* WebSocket.OPEN */, send: vi.fn() }
+    wsRef.ws = decoy
+
+    // Fire the old socket's 'close' event directly so the registered listener
+    // runs synchronously. ws's EventEmitter delivers to all listeners — the
+    // one we care about is the connect()-scope handler with the captured ws.
+    original.emit('close', 1006, Buffer.from('test stale'))
+
+    // Yield once so any spurious microtask-scheduled rejection lands.
+    await new Promise<void>((r) => setTimeout(r, 20))
+
+    // Guard's three contracts:
+    //  - matcher.rejectAll NOT called (pending request still alive).
+    //  - progressHandlers NOT cleared.
+    //  - onClose NOT invoked (lifecycle.handleClose would otherwise schedule
+    //    a redundant reconnect that closes ws_B).
+    expect(pendingRejected).toBeNull()
+    expect(progressHandlers.has('file-X')).toBe(true)
+    expect(onCloseSpy).not.toHaveBeenCalled()
+
+    // Restore the real ws so client.close() shuts the original socket and
+    // afterEach can tear the fake server down without hanging.
+    wsRef.ws = original
+    client.close()
+  })
+
   it('sendMessage push (method="sendMessage") does NOT call onPush listeners; only onInboundMessage', async () => {
     const client = new WsClient()
     client.logger = silentLogger

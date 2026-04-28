@@ -383,7 +383,7 @@ export class WsClient {
         `[trueconf] ${method} returned 203 CREDENTIALS_EXPIRED; forcing reconnect with fresh token`,
       )
       if (!this.forceReconnect) {
-        // Fail-soft: surface the 203 instead of hanging forever. ChannelLifecycle
+        // Fail-soft: surface the 203 instead of hanging forever. ConnectionLifecycle
         // is the only entity allowed to drive reconnects; if it never wired the
         // callback there is nothing safe we can do here.
         this.logger?.error(
@@ -504,6 +504,10 @@ export class ConnectionLifecycle {
   shutdown(): void {
     this.logger.info('[trueconf] Shutting down connection')
     this.shuttingDown = true
+    // Reject the auth barrier with an explicit reason so any pending
+    // waitAuthenticated() callers fail fast on shutdown instead of waiting
+    // out their per-call timeout.
+    this.wsClient.markAuthFailed(new Error('lifecycle shutting down'))
     this.stopTimers()
     this.cancelReconnect()
     this.wsClient.close()
@@ -619,6 +623,9 @@ export class ConnectionLifecycle {
               `[trueconf] DNS resolve failed ${this.dnsRetryCount} times; check serverUrl. Giving up.`,
             )
             try { this.options?.onConnectionClosed?.(0, 'dns_unreachable') } catch { /* swallow */ }
+            // Reject the auth barrier so pending senders see the actionable
+            // dns_unreachable reason immediately instead of timing out silently.
+            this.wsClient.markAuthFailed(new Error(`dns_unreachable: gave up after ${this.dnsRetryCount} retries`))
             this.wsClient.close()
             return
           }

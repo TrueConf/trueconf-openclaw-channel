@@ -412,6 +412,42 @@ describe('ConnectionLifecycle DNS retry policy', () => {
     }
   })
 
+  it('DNS-giveup also rejects the auth barrier so pending senders fail fast with dns_unreachable', async () => {
+    vi.useFakeTimers()
+    try {
+      const closedCb = vi.fn()
+      const client = new WsClient()
+      const config = { serverUrl: 'missing.example.com', username: 'bot', password: 'secret', useTls: true } satisfies TrueConfAccountConfig
+      const lifecycle = new ConnectionLifecycle(client, config, silentLogger, { onConnectionClosed: closedCb })
+
+      const startSpy = vi.spyOn(lifecycle, 'start').mockImplementation(async () => {
+        throw new NetworkError('getaddrinfo ENOTFOUND missing.example.com', 'oauth', undefined, 'ENOTFOUND', 'getaddrinfo', 'missing.example.com')
+      })
+      vi.spyOn(client, 'close').mockImplementation(() => {})
+
+      // Pending sender waiting on auth — would otherwise hang for 60s.
+      const waiter = client.waitAuthenticated(60_000)
+      // Pre-attach a swallow so vitest's unhandled-rejection guard doesn't
+      // flag the rejection while the timer chain is still draining.
+      const waiterResult = waiter.then(() => ({ ok: true as const }), (err: Error) => ({ ok: false as const, err }))
+
+      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+
+      for (let i = 0; i < 10; i++) {
+        await vi.advanceTimersByTimeAsync(120_000)
+      }
+
+      expect(startSpy).toHaveBeenCalledTimes(5)
+      expect(closedCb).toHaveBeenCalledWith(0, 'dns_unreachable')
+
+      const result = await waiterResult
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.err.message).toMatch(/dns_unreachable/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('non-DNS NetworkError (ECONNREFUSED) keeps retrying past 5 attempts', async () => {
     vi.useFakeTimers()
     try {
@@ -443,6 +479,26 @@ describe('ConnectionLifecycle DNS retry policy', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('ConnectionLifecycle.shutdown — auth barrier', () => {
+  it('rejects pending waitAuthenticated() callers fast with a shutdown reason (no per-call timeout)', async () => {
+    const client = new WsClient()
+    const config = { serverUrl: '127.0.0.1', username: 'bot', password: 'secret', useTls: false, port: 4309 } satisfies TrueConfAccountConfig
+    const lifecycle = new ConnectionLifecycle(client, config, silentLogger)
+
+    // Pre-arm a long-timeout waiter — without the fix this would hang for 60s.
+    const pending = client.waitAuthenticated(60_000)
+
+    // Stub close so we don't touch a real socket.
+    vi.spyOn(client, 'close').mockImplementation(() => {})
+
+    const t0 = Date.now()
+    lifecycle.shutdown()
+    await expect(pending).rejects.toThrow(/lifecycle shutting down/)
+    // The reject must propagate within a few ms, not the 60s timeout.
+    expect(Date.now() - t0).toBeLessThan(500)
   })
 })
 

@@ -109,3 +109,138 @@ describe('shutdownAccountEntry', () => {
     expect(close).toHaveBeenCalledOnce()
   })
 })
+
+describe('invalidateChatState', () => {
+  it('clears all 5 store maps for the given (accountId, chatId)', async () => {
+    const { createRuntimeStore, invalidateChatState } = await import('../../src/channel')
+    const store = createRuntimeStore()
+
+    const accountId = 'acct-1'
+    const chatId = 'chat-X'
+
+    store.directChatsByStableUserId.set(`${accountId}\u0000user-A`, chatId)
+    store.directChatsByStableUserId.set(`${accountId}\u0000user-B`, chatId)
+    store.lastInboundRouteByAccount.set(accountId, { kind: 'group', chatId })
+    store.chatTypeByChatId.set(chatId, 'group')
+    store.inflightChatTypeLookups.set(chatId, Promise.resolve('group'))
+    store.recentBotMsgIdsByChat.set(chatId, new Set(['m1', 'm2']))
+
+    invalidateChatState(store, accountId, chatId)
+
+    expect(store.directChatsByStableUserId.has(`${accountId}\u0000user-A`)).toBe(false)
+    expect(store.directChatsByStableUserId.has(`${accountId}\u0000user-B`)).toBe(false)
+    expect(store.lastInboundRouteByAccount.has(accountId)).toBe(false)
+    expect(store.chatTypeByChatId.has(chatId)).toBe(false)
+    expect(store.inflightChatTypeLookups.has(chatId)).toBe(false)
+    expect(store.recentBotMsgIdsByChat.has(chatId)).toBe(false)
+  })
+
+  it('does not touch other accounts or chats', async () => {
+    const { createRuntimeStore, invalidateChatState } = await import('../../src/channel')
+    const store = createRuntimeStore()
+
+    const accountA = 'acct-A'
+    const accountB = 'acct-B'
+    const chatX = 'chat-X'
+    const chatY = 'chat-Y'
+
+    // Account A has chatX (target of invalidate). Account B has its own chatY.
+    store.directChatsByStableUserId.set(`${accountA}\u0000user-1`, chatX)
+    store.directChatsByStableUserId.set(`${accountB}\u0000user-1`, chatY)
+    // Same userId across accounts — accountA's mapping points at chatX, accountB's at chatY.
+    store.lastInboundRouteByAccount.set(accountA, { kind: 'group', chatId: chatX })
+    store.lastInboundRouteByAccount.set(accountB, { kind: 'direct', userId: 'user-2' })
+    store.chatTypeByChatId.set(chatX, 'group')
+    store.chatTypeByChatId.set(chatY, 'p2p')
+    store.recentBotMsgIdsByChat.set(chatX, new Set(['m1']))
+    store.recentBotMsgIdsByChat.set(chatY, new Set(['m2']))
+
+    invalidateChatState(store, accountA, chatX)
+
+    // Account A's chatX entries cleared.
+    expect(store.directChatsByStableUserId.has(`${accountA}\u0000user-1`)).toBe(false)
+    expect(store.lastInboundRouteByAccount.has(accountA)).toBe(false)
+    // Account B intact.
+    expect(store.directChatsByStableUserId.get(`${accountB}\u0000user-1`)).toBe(chatY)
+    expect(store.lastInboundRouteByAccount.get(accountB)).toEqual({ kind: 'direct', userId: 'user-2' })
+    // chatY-keyed entries intact.
+    expect(store.chatTypeByChatId.get(chatY)).toBe('p2p')
+    expect(store.recentBotMsgIdsByChat.get(chatY)).toBeDefined()
+  })
+
+  it('keeps lastInboundRouteByAccount when route.chatId differs from the invalidated chatId', async () => {
+    const { createRuntimeStore, invalidateChatState } = await import('../../src/channel')
+    const store = createRuntimeStore()
+
+    const accountId = 'acct-1'
+    const chatToInvalidate = 'chat-removed'
+    const chatActive = 'chat-active'
+
+    store.lastInboundRouteByAccount.set(accountId, { kind: 'group', chatId: chatActive })
+    store.chatTypeByChatId.set(chatToInvalidate, 'group')
+
+    invalidateChatState(store, accountId, chatToInvalidate)
+
+    // Route is keyed by accountId but values reference a different chatId — keep it.
+    expect(store.lastInboundRouteByAccount.get(accountId)).toEqual({ kind: 'group', chatId: chatActive })
+    expect(store.chatTypeByChatId.has(chatToInvalidate)).toBe(false)
+  })
+})
+
+describe('SDK push handler wire-up', () => {
+  it('invokes invalidateChatState when removeChat push event arrives via wsClient.onPush', async () => {
+    const { createRuntimeStore, registerSdkPushHandler } = await import('../../src/channel')
+    const { FileUploadLimits } = await import('../../src/limits')
+
+    const store = createRuntimeStore()
+    const accountId = 'acct-1'
+    const chatId = 'chat-X'
+    store.chatTypeByChatId.set(chatId, 'group')
+    store.recentBotMsgIdsByChat.set(chatId, new Set(['m1']))
+
+    let captured: ((method: string, payload: Record<string, unknown>) => void) | null = null
+    const fakeWsClient = {
+      onPush: (listener: (method: string, payload: Record<string, unknown>) => void) => {
+        captured = listener
+        return () => { captured = null }
+      },
+    }
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const limits = new FileUploadLimits(50_000_000, logger as never)
+
+    const unsubscribe = registerSdkPushHandler({
+      wsClient: fakeWsClient as never,
+      store,
+      accountId,
+      limits,
+      logger: logger as never,
+    })
+    expect(captured).not.toBeNull()
+
+    captured!('removeChat', { chatId })
+
+    expect(store.chatTypeByChatId.has(chatId)).toBe(false)
+    expect(store.recentBotMsgIdsByChat.has(chatId)).toBe(false)
+
+    unsubscribe()
+  })
+})
+
+describe('forceReconnect injection', () => {
+  it('wsClient closure forwards forceReconnect to the lifecycle bound after construction', async () => {
+    const { makeForceReconnectAdapter } = await import('../../src/channel')
+    const ref: { lifecycle: { forceReconnect: ReturnType<typeof vi.fn> } | null } = { lifecycle: null }
+    const closure = makeForceReconnectAdapter(() => ref.lifecycle)
+
+    // Closure used before lifecycle is attached: must not throw, but the call
+    // is dropped (lifecycle hasn't been built yet — there is no reconnect path
+    // to invoke). Logger-side branch is verified separately by call count.
+    await closure('203_credentials_expired_pre_lifecycle')
+
+    const fr = vi.fn(async (_reason: string) => {})
+    ref.lifecycle = { forceReconnect: fr }
+    await closure('203_credentials_expired')
+    expect(fr).toHaveBeenCalledTimes(1)
+    expect(fr).toHaveBeenCalledWith('203_credentials_expired')
+  })
+})

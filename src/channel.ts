@@ -21,6 +21,7 @@ import {
 import { handleInboundMessage, prepareInboundAttachment, unlinkTempFile, normalizeForCompare, rememberBotMessage, getMaxFileSize, __resetCoalesceBufferForTesting } from './inbound'
 import { FileUploadLimits } from './limits'
 import { PerChatSendQueue } from './send-queue'
+import { handleSdkPushEvent } from './push-events'
 import type { InboundContext } from './inbound'
 import type { ResolvedChatKind } from './types'
 import {
@@ -67,6 +68,21 @@ export function loadCaFromAccount(account: ResolvedAccount): Buffer | undefined 
       `Fix permissions / re-run setup to re-TOFU, or remove caPath from config to fall back to system trust.`,
     )
   }
+}
+
+export interface AccountEntry {
+  lifecycle: ConnectionLifecycle
+  wsClient: WsClient
+  dispatcher?: Dispatcher
+  unsubscribers?: Array<() => void>
+  // Per-account state. limits/sendQueue must NOT be channel-wide:
+  //  - FileUploadLimits is mutated by per-account `getFileUploadLimits` server
+  //    pushes, so different accounts can have different runtime caps.
+  //  - PerChatSendQueue serializes outbound per-chatId. ChatIds are unique per
+  //    server, so two accounts on different servers must have independent
+  //    queues — otherwise unrelated outbounds would block each other.
+  limits: FileUploadLimits
+  sendQueue: PerChatSendQueue
 }
 
 // Tears down a single account entry: stops its lifecycle and closes the
@@ -140,7 +156,7 @@ const pluginRuntimeStore = createPluginRuntimeStore<PluginRuntime>("TrueConf run
 
 export function createRuntimeStore() {
   return {
-    accounts: new Map<string, { lifecycle: ConnectionLifecycle; wsClient: WsClient; dispatcher?: Dispatcher; unsubscribers?: Array<() => void> }>(),
+    accounts: new Map<string, AccountEntry>(),
     logger: null as Logger | null,
     runtime: null as unknown,
     fullConfig: null as unknown,
@@ -165,21 +181,75 @@ export function createRuntimeStore() {
   }
 }
 
+export type RuntimeStore = ReturnType<typeof createRuntimeStore>
+
 const store = createRuntimeStore()
 
-// TODO(Task 8): replace these channel-wide stubs with per-account instances.
-// FileUploadLimits needs server pushes (`getFileUploadLimits`) routed per
-// account, and PerChatSendQueue should be per-account so different accounts'
-// sends don't share a serialization queue. Today we use channel-wide stubs so
-// outbound type signatures compile while wire-up is deferred to Task 8.
-let stubLimitsInstance: FileUploadLimits | null = null
-const stubSendQueueInstance = new PerChatSendQueue()
+// Clears all per-(accountId, chatId) cache entries. Called from
+// `handleSdkPushEvent('removeChat', ...)`: once the server announces the chat
+// is gone, every registry that keys off chatId would otherwise leak entries
+// indefinitely (next message in a re-created chat with the same id would
+// reuse stale chatType / lastInboundRoute / direct-chat mapping).
+export function invalidateChatState(
+  store: RuntimeStore,
+  accountId: string,
+  chatId: string,
+): void {
+  const accountPrefix = `${accountId}\u0000`
+  for (const [key, value] of store.directChatsByStableUserId) {
+    if (value === chatId && key.startsWith(accountPrefix)) {
+      store.directChatsByStableUserId.delete(key)
+    }
+  }
+  const lastRoute = store.lastInboundRouteByAccount.get(accountId)
+  if (lastRoute && lastRoute.kind === 'group' && lastRoute.chatId === chatId) {
+    store.lastInboundRouteByAccount.delete(accountId)
+  }
+  store.chatTypeByChatId.delete(chatId)
+  store.inflightChatTypeLookups.delete(chatId)
+  store.recentBotMsgIdsByChat.delete(chatId)
+}
 
-function getStubLimits(): FileUploadLimits {
-  if (stubLimitsInstance) return stubLimitsInstance
-  const maxBytes = store.channelConfig ? getMaxFileSize(store.channelConfig) : 100_000_000
-  stubLimitsInstance = new FileUploadLimits(maxBytes, store.logger ?? undefined)
-  return stubLimitsInstance
+// Lazy-closure adapter for the WsClient `forceReconnect` option. WsClient is
+// constructed BEFORE `lifecycle` exists (chicken-and-egg: lifecycle holds
+// wsClient). The closure resolves `lifecycle` at call time via the supplied
+// getter, so the binding becomes valid before any 203 response can arrive.
+//
+// If the closure fires before `lifecycle` is set (truly impossible in practice
+// because requests gate on the auth barrier, but defensive), the call is
+// dropped — surfacing the original error is preferable to throwing in a code
+// path WsClient cannot recover from.
+export function makeForceReconnectAdapter(
+  getLifecycle: () => { forceReconnect: (reason: string) => Promise<void> } | null,
+): (reason: string) => Promise<void> {
+  return async (reason: string) => {
+    const lifecycle = getLifecycle()
+    if (!lifecycle) return
+    await lifecycle.forceReconnect(reason)
+  }
+}
+
+// Wires the SDK push handler onto WsClient.onPush. Returns the unsubscribe
+// returned by onPush so the account-shutdown path can drop the listener.
+//
+// This handler runs alongside (NOT instead of) the always-respond resolver
+// listener — both subscribe via `wsClient.onPush(...)` and WsClient fans out
+// to every registered listener for each push event.
+export function registerSdkPushHandler(args: {
+  wsClient: WsClient
+  store: RuntimeStore
+  accountId: string
+  limits: FileUploadLimits
+  logger: Logger
+}): () => void {
+  const { wsClient, store, accountId, limits, logger } = args
+  return wsClient.onPush((method, payload) => {
+    handleSdkPushEvent(method, payload, {
+      limits,
+      invalidateChatState: (chatId) => invalidateChatState(store, accountId, chatId),
+      logger,
+    })
+  })
 }
 
 function clearAccountChats(accountId: string): void {
@@ -278,8 +348,7 @@ export const channelPlugin = {
           logger.info(
             `[trueconf] sendText: target=${to} is bot identity; redirecting to last inbound group ${route.chatId}`,
           )
-          // TODO(Task 8): replace stubSendQueueInstance with per-account instance
-          const groupResult = await sendTextToChat(entry.wsClient, route.chatId, cleanText, logger, stubSendQueueInstance)
+          const groupResult = await sendTextToChat(entry.wsClient, route.chatId, cleanText, logger, entry.sendQueue)
           if (groupResult.ok && groupResult.messageId) {
             rememberBotMessage(store.recentBotMsgIdsByChat, groupResult.chatId, groupResult.messageId)
           }
@@ -292,8 +361,7 @@ export const channelPlugin = {
           fallbackUserId: route.userId,
           directChatStore: store,
           accountId,
-          // TODO(Task 8): replace stubSendQueueInstance with per-account instance
-          sendQueue: stubSendQueueInstance,
+          sendQueue: entry.sendQueue,
         })
         if (directResult.ok && directResult.messageId) {
           rememberBotMessage(store.recentBotMsgIdsByChat, directResult.chatId, directResult.messageId)
@@ -305,8 +373,7 @@ export const channelPlugin = {
         fallbackUserId: to,
         directChatStore: store,
         accountId,
-        // TODO(Task 8): replace stubSendQueueInstance with per-account instance
-        sendQueue: stubSendQueueInstance,
+        sendQueue: entry.sendQueue,
       })
       if (result.ok && result.messageId) {
         rememberBotMessage(store.recentBotMsgIdsByChat, result.chatId, result.messageId)
@@ -343,15 +410,14 @@ export const channelPlugin = {
       // fallback either misrouted to a stale DM peer or silently skipped.
       const botUserIdMedia = entry.wsClient.botUserId
       const normalizedTo = (ctx.to ?? '').replace(/\/.*$/, '').trim()
-      // TODO(Task 8): replace getStubLimits()/stubSendQueueInstance with per-account instances
       const commonDeps = {
         wsClient: entry.wsClient,
         resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
         channelConfig: store.channelConfig,
         logger,
         dispatcher: entry.dispatcher,
-        limits: getStubLimits(),
-        sendQueue: stubSendQueueInstance,
+        limits: entry.limits,
+        sendQueue: entry.sendQueue,
       }
       if (botUserIdMedia && normalizeForCompare(botUserIdMedia) === normalizeForCompare(normalizedTo)) {
         const route = store.lastInboundRouteByAccount.get(accountId ?? '')
@@ -413,9 +479,8 @@ export const channelPlugin = {
           channelConfig: store.channelConfig,
           logger,
           dispatcher: entry.dispatcher,
-          // TODO(Task 8): replace getStubLimits()/stubSendQueueInstance with per-account instances
-          limits: getStubLimits(),
-          sendQueue: stubSendQueueInstance,
+          limits: entry.limits,
+          sendQueue: entry.sendQueue,
         },
       )
 
@@ -471,7 +536,21 @@ export const channelPlugin = {
           ? new UndiciAgent({ connect: { ca } })
           : undefined
 
-      const wsClient = new WsClient({ ca, tlsVerify })
+      // Per-account state. Construct BEFORE wsClient/lifecycle so the
+      // forceReconnect closure and the SDK push handler can capture them.
+      const limits = new FileUploadLimits(getMaxFileSize(channelConfig), logger)
+      const sendQueue = new PerChatSendQueue()
+
+      // Lazy-bound lifecycle reference: the wsClient receives `forceReconnect`
+      // as a closure that resolves the lifecycle at call time. WsClient is
+      // constructed first because `lifecycle` needs it; the closure stays safe
+      // because requests gate on the auth barrier that lifecycle.start() flips.
+      let lifecycleRef: ConnectionLifecycle | null = null
+      const wsClient = new WsClient({
+        ca,
+        tlsVerify,
+        forceReconnect: makeForceReconnectAdapter(() => lifecycleRef),
+      })
       wsClient.logger = logger
 
       const wireAdapter: WireAdapter = {
@@ -527,19 +606,19 @@ export const channelPlugin = {
           dispatcher,
         },
       )
+      lifecycleRef = lifecycle
 
       // Hoisted so the dep bag isn't rebuilt per turn. The DM branch layers
       // `store` on top because handleOutboundAttachment needs the direct-chat
       // cache; handleOutboundAttachmentToChat does not.
-      // TODO(Task 8): replace getStubLimits()/stubSendQueueInstance with per-account instances
       const transport = {
         wsClient,
         resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
         channelConfig,
         logger,
         dispatcher,
-        limits: getStubLimits(),
-        sendQueue: stubSendQueueInstance,
+        limits,
+        sendQueue,
       }
 
       // Routes via the SDK's text/media split so a media-only payload reaches
@@ -553,14 +632,12 @@ export const channelPlugin = {
           text: reply.text,
           sendText: async (chunk) => {
             const result = inbound.isGroup
-              // TODO(Task 8): replace stubSendQueueInstance with per-account instance
-              ? await sendTextToChat(wsClient, inbound.chatId, chunk, logger, stubSendQueueInstance)
+              ? await sendTextToChat(wsClient, inbound.chatId, chunk, logger, sendQueue)
               : await sendText(wsClient, inbound.peerId, chunk, logger, {
                   fallbackUserId: inbound.peerId,
                   directChatStore: store,
                   accountId,
-                  // TODO(Task 8): replace stubSendQueueInstance with per-account instance
-                  sendQueue: stubSendQueueInstance,
+                  sendQueue,
                 })
             if (!result.ok) {
               logger.warn(`[trueconf] deliver: text chunk send failed (peer=${inbound.peerId}, isGroup=${inbound.isGroup})`)
@@ -611,7 +688,12 @@ export const channelPlugin = {
         )
 
         let rawBody = inboundMsg.text
-        let extraContext: Record<string, unknown> | undefined
+        // Inbound's per-envelope hints (TrueConfEnvelopeType for FORWARDED /
+        // LOCATION / SURVEY) come in via inboundMsg.extraContext and must
+        // survive the merge below — shadowing them with attachment-only fields
+        // would lose forwarded / location metadata when both shapes co-exist
+        // (e.g., forwarded message with attachment).
+        let mediaExtraContext: Record<string, unknown> | undefined
         let tempPath: string | null = null
 
         if (inboundMsg.attachmentContent) {
@@ -622,6 +704,7 @@ export const channelPlugin = {
             store,
             channelConfig: store.channelConfig!,
             logger,
+            sendQueue,
           })
           if (!prep.ok) return
           // Preserve the real caption when the inbound was coalesced from a
@@ -631,7 +714,7 @@ export const channelPlugin = {
           const looksSynthesized =
             inboundMsg.text.startsWith('[File:') || inboundMsg.text.startsWith('[Image:')
           rawBody = looksSynthesized ? placeholder : inboundMsg.text
-          extraContext = {
+          mediaExtraContext = {
             MediaPath: prep.tempPath,
             MediaType: prep.mimeType,
             MediaPaths: [prep.tempPath],
@@ -640,7 +723,21 @@ export const channelPlugin = {
           tempPath = prep.tempPath
         }
 
-        const isCommand = !extraContext && ((store.runtime as {
+        // Merge inbound-side extraContext (forwarded/location/survey hints)
+        // with the attachment-side extraContext: attachment fields win on
+        // collision (current behavior preserved for media keys), but the
+        // envelope-type hint stays visible in the dispatched extraContext.
+        const baseExtra = inboundMsg.extraContext ?? {}
+        const mediaExtra = mediaExtraContext ?? {}
+        const hasExtra = Object.keys(baseExtra).length > 0 || Object.keys(mediaExtra).length > 0
+        const extraContext = hasExtra ? { ...baseExtra, ...mediaExtra } : undefined
+
+        // Suppress slash-command interpretation for any envelope-flavoured
+        // message: ATTACHMENT replaces the body with `[File: name]`, FORWARDED
+        // synthesises a forward header, LOCATION/SURVEY synthesise a
+        // descriptive placeholder. None of those should be parsed as
+        // gateway-control commands by the runtime.
+        const isCommand = !hasExtra && ((store.runtime as {
           channel?: { commands?: { isControlCommandMessage?: (t: string) => boolean } }
         })?.channel?.commands?.isControlCommandMessage?.(inboundMsg.text) ?? false)
 
@@ -713,8 +810,26 @@ export const channelPlugin = {
           logger.warn(`[trueconf] always-respond: re-auth rebuild failed: ${err instanceof Error ? err.message : String(err)}`)
         })
       })
+      // SDK-push handler runs ALONGSIDE the always-respond push listener:
+      // both subscribe via onPush and WsClient fans out to every listener.
+      // Routes server-side getFileUploadLimits / removeChat / editMessage /
+      // removeMessage / clearHistory pushes to the right handlers.
+      const unsubscribeSdkPush = registerSdkPushHandler({
+        wsClient,
+        store,
+        accountId,
+        limits,
+        logger,
+      })
 
-      store.accounts.set(accountId, { lifecycle, wsClient, dispatcher, unsubscribers: [unsubscribePush, unsubscribeAuth] })
+      store.accounts.set(accountId, {
+        lifecycle,
+        wsClient,
+        dispatcher,
+        unsubscribers: [unsubscribePush, unsubscribeAuth, unsubscribeSdkPush],
+        limits,
+        sendQueue,
+      })
 
       try {
         await lifecycle.start()

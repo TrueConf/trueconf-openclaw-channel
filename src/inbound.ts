@@ -627,8 +627,13 @@ export async function prepareInboundAttachment(params: {
   store: { directChatsByStableUserId: Map<string, string> }
   channelConfig: TrueConfChannelConfig
   logger: Logger
+  // Per-account send queue threaded by channel.ts. Error-reply paths in this
+  // function call sendText/sendTextToChat, which require a queue to serialize
+  // chunks per chatId. Owning the queue at the account level keeps replies
+  // from one account from blocking on another's outbound burst.
+  sendQueue: PerChatSendQueue
 }): Promise<InboundAttachmentReady | { ok: false }> {
-  const { inboundMsg, wsClient, accountId, store, channelConfig, logger } = params
+  const { inboundMsg, wsClient, accountId, store, channelConfig, logger, sendQueue } = params
   const attachment = inboundMsg.attachmentContent
   if (!attachment) {
     logger.error('[trueconf] prepareInboundAttachment called without attachmentContent')
@@ -638,17 +643,15 @@ export async function prepareInboundAttachment(params: {
   // For groups inboundMsg.peerId === chatId; sendText would (mis)treat it as
   // a userId and try to createP2PChat. Route group error replies straight to
   // the chatId so the user actually sees the failure feedback.
-  // TODO(Task 8): replace stubSendQueue with the per-account instance threaded through params.
-  const stubSendQueue = new PerChatSendQueue()
   const replyOn = async (text: string) => {
     try {
       const result = inboundMsg.isGroup
-        ? await sendTextToChat(wsClient, inboundMsg.chatId, text, logger, stubSendQueue)
+        ? await sendTextToChat(wsClient, inboundMsg.chatId, text, logger, sendQueue)
         : await sendText(wsClient, inboundMsg.peerId, text, logger, {
             fallbackUserId: inboundMsg.peerId,
             directChatStore: store,
             accountId,
-            sendQueue: stubSendQueue,
+            sendQueue,
           })
       if (!result.ok) logger.warn('[trueconf] replyErrorText: send returned ok=false')
     } catch (err) {

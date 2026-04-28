@@ -71,7 +71,8 @@ describe('handleSdkPushEvent', () => {
   describe('editMessage (parsed-and-dropped, no callback in v1.2.0)', () => {
     it('valid payload: logger.info summary, no warn', () => {
       const t = makeCtx()
-      const payload = { chatId: 'c1', timestamp: 1234, newContent: { text: 'edited', parseMode: 'markdown' } }
+      // Wire shape matches python-trueconf-bot edited_message.py: `content`, not `newContent`.
+      const payload = { chatId: 'c1', timestamp: 1234, content: { text: 'edited', parseMode: 'markdown' } }
       const handled = handleSdkPushEvent('editMessage', payload, t.ctx)
       expect(handled).toBe(true)
       expect(t.logger.info).toHaveBeenCalled()
@@ -80,7 +81,18 @@ describe('handleSdkPushEvent', () => {
 
     it('invalid payload (missing chatId): warn, no info', () => {
       const t = makeCtx()
-      handleSdkPushEvent('editMessage', { timestamp: 1, newContent: { text: 'x' } }, t.ctx)
+      handleSdkPushEvent('editMessage', { timestamp: 1, content: { text: 'x' } }, t.ctx)
+      expect(t.logger.warn).toHaveBeenCalled()
+      expect(t.logger.info).not.toHaveBeenCalled()
+    })
+
+    it('rejects payload using internal-only field name "newContent" (regression: must use wire name "content")', () => {
+      const t = makeCtx()
+      // The internal ChatMutationEvent uses `newContent` for post-edit semantics,
+      // but that name MUST NOT leak to the wire validator: TrueConf's protocol
+      // sends `content`. A payload carrying only `newContent` is malformed.
+      const payload = { chatId: 'c1', timestamp: 1234, newContent: { text: 'edited', parseMode: 'markdown' } }
+      handleSdkPushEvent('editMessage', payload, t.ctx)
       expect(t.logger.warn).toHaveBeenCalled()
       expect(t.logger.info).not.toHaveBeenCalled()
     })
@@ -159,17 +171,38 @@ describe('handleSdkPushEvent', () => {
 
     it('LRU eviction: 33 unique methods cause oldest to be re-loggable', () => {
       const t = makeCtx()
-      // Push 33 unique methods (capacity is 32). Use a per-test prefix so
-      // entries from previous tests don't sit in front of these in the FIFO.
+      // Pre-wash: dispatch 32 unique throwaway methods to fill the module-scoped
+      // seenUnknownMethods cache to capacity. This flushes any prior pollution
+      // (e.g. dedup-A-* / dedup-B-* / lru-C-* from previously-run tests in this
+      // file or future tests added before this one) so the cache holds ONLY
+      // prewash-* keys when the actual test logic begins. Without this, the
+      // arithmetic below is order-dependent.
+      for (let i = 0; i < 32; i++) {
+        handleSdkPushEvent(`prewash-${i}`, {}, t.ctx)
+      }
+      // Reset mock counters AFTER pre-wash so subsequent expect(...).toHaveBeenCalledTimes(N)
+      // counts only the methods this test explicitly pushes.
+      vi.clearAllMocks()
+
+      // Cache state at this point: [prewash-0..31] (FIFO order).
+      // Push 33 unique lru-C-method-* entries:
+      //   - lru-C-method-0  evicts prewash-0  → cache: [prewash-1..31, lru-C-method-0]
+      //   - lru-C-method-1  evicts prewash-1  → cache: [prewash-2..31, lru-C-method-0..1]
+      //   - ...
+      //   - lru-C-method-31 evicts prewash-31 → cache: [lru-C-method-0..31]
+      //   - lru-C-method-32 evicts lru-C-method-0 → cache: [lru-C-method-1..32]
+      // So lru-C-method-0 is evicted at the end; lru-C-method-32 is most recent.
       for (let i = 0; i < 33; i++) {
         handleSdkPushEvent(`lru-C-method-${i}`, {}, t.ctx)
       }
       expect(t.logger.info).toHaveBeenCalledTimes(33) // each unique = one info
-      // lru-C-method-0 was evicted on the 33rd insert; pushing it again is
-      // treated as new and re-logs.
+
+      // lru-C-method-0 was just evicted; re-pushing it logs again.
       handleSdkPushEvent('lru-C-method-0', {}, t.ctx)
       expect(t.logger.info).toHaveBeenCalledTimes(34)
-      // lru-C-method-32 (most recent) still in cache -> no new log.
+
+      // lru-C-method-32 was the most recent insertion before the re-add of
+      // lru-C-method-0 (which evicted lru-C-method-1). It's still in cache → no new log.
       handleSdkPushEvent('lru-C-method-32', {}, t.ctx)
       expect(t.logger.info).toHaveBeenCalledTimes(34)
     })

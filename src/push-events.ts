@@ -113,13 +113,17 @@ function handleEditMessage(payload: unknown, ctx: PushEventContext): true {
   }
   const chatId = payload['chatId']
   const timestamp = payload['timestamp']
-  const newContent = payload['newContent']
+  // Wire field is `content` (matches python-trueconf-bot
+  // trueconf/types/requests/edited_message.py: `content: TextContent`). The
+  // internal ChatMutationEvent uses `newContent` to convey post-edit semantics —
+  // these are different layers and must not be conflated.
+  const content = payload['content']
   if (
     !isNonEmptyString(chatId)
     || typeof timestamp !== 'number'
     || !Number.isFinite(timestamp)
-    || !isObject(newContent)
-    || typeof newContent['text'] !== 'string'
+    || !isObject(content)
+    || typeof content['text'] !== 'string'
   ) {
     ctx.logger.warn(`[trueconf] editMessage: invalid payload shape, ignoring`)
     return true
@@ -131,8 +135,8 @@ function handleEditMessage(payload: unknown, ctx: PushEventContext): true {
     chatId,
     timestamp,
     newContent: {
-      text: newContent['text'],
-      ...(typeof newContent['parseMode'] === 'string' ? { parseMode: newContent['parseMode'] } : {}),
+      text: content['text'],
+      ...(typeof content['parseMode'] === 'string' ? { parseMode: content['parseMode'] } : {}),
     },
   }
   ctx.logger.info(`[trueconf] ${event.kind} parsed-and-dropped (chatId=${event.chatId}, ts=${event.timestamp})`)

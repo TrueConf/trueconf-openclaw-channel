@@ -323,23 +323,35 @@ describe('WsClient — message handling on captured ws', () => {
     const client = new WsClient()
     client.logger = silentLogger
     await client.connect(makeConfig(server!.port), 'fake-token')
-    // After auth, the ws-client receives auth response (type=2). We now want
-    // the client to auto-ack any *server-pushed* type=1 frame on the captured
-    // ws even if `this.ws` were reassigned mid-flight.
+
+    // Simulate a mid-frame reconnect race: the original socket is still open
+    // and a server-pushed type=1 is about to arrive on it, but `this.ws` has
+    // already been swapped to point at a different (newer) socket. The auto-
+    // ack must close over the captured `ws` and reply on the ORIGINAL socket,
+    // not on `this.ws`. If the implementation regresses to `this.ws.send(...)`,
+    // the ack would land on the decoy and never reach the test server.
+    const wsRef = client as unknown as { ws: unknown }
+    const original = wsRef.ws
+    const decoySend = vi.fn()
+    const decoy = { readyState: 1 /* WebSocket.OPEN */, send: decoySend }
+    wsRef.ws = decoy
+
     const before = server!.acksSeen().length
     server!.pushToActive({ type: 1, id: 4242, method: 'somePushMethod', payload: { foo: 'bar' } })
 
     // Wait briefly for the ack to land.
     await new Promise<void>((r) => setTimeout(r, 50))
+
+    // Ack flowed over the ORIGINAL socket → server saw it.
     const after = server!.acksSeen()
     expect(after.length).toBe(before + 1)
     expect(after[after.length - 1]).toBe(4242)
+    // And it did NOT go through the swapped `this.ws` reference.
+    expect(decoySend).not.toHaveBeenCalled()
 
-    // Now reassign this.ws (simulating a mid-frame reconnect): even if the
-    // closure re-fires, the auto-ack we already sent went to the original ws,
-    // proving the captured-ws closure pattern.
-    // (We assert via the side effect above — the ack made it back to the
-    // server-side count for the original socket.)
+    // Restore the real ws so client.close() shuts the original socket and
+    // afterEach can tear the fake server down without hanging.
+    wsRef.ws = original
     client.close()
   })
 

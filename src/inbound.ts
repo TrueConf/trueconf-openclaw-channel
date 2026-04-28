@@ -21,6 +21,7 @@ import type {
 import { WsClient, hostPort } from './ws-client'
 import { sendText, sendTextToChat, isReconnectableSendError } from './outbound'
 import { resolveAccount } from './config'
+import { PerChatSendQueue } from './send-queue'
 
 const DEFAULT_MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 const COALESCE_WINDOW_MS = 300
@@ -560,14 +561,17 @@ export async function prepareInboundAttachment(params: {
   // For groups inboundMsg.peerId === chatId; sendText would (mis)treat it as
   // a userId and try to createP2PChat. Route group error replies straight to
   // the chatId so the user actually sees the failure feedback.
+  // TODO(Task 8): replace stubSendQueue with the per-account instance threaded through params.
+  const stubSendQueue = new PerChatSendQueue()
   const replyOn = async (text: string) => {
     try {
       const result = inboundMsg.isGroup
-        ? await sendTextToChat(wsClient, inboundMsg.chatId, text, logger)
+        ? await sendTextToChat(wsClient, inboundMsg.chatId, text, logger, stubSendQueue)
         : await sendText(wsClient, inboundMsg.peerId, text, logger, {
             fallbackUserId: inboundMsg.peerId,
             directChatStore: store,
             accountId,
+            sendQueue: stubSendQueue,
           })
       if (!result.ok) logger.warn('[trueconf] replyErrorText: send returned ok=false')
     } catch (err) {

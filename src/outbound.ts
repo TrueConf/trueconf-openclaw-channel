@@ -5,7 +5,14 @@ import type { Dispatcher } from 'undici'
 import { ErrorCode } from './types'
 import type { Logger, TrueConfChannelConfig, TrueConfResponse } from './types'
 import { WsClient, hostPort } from './ws-client'
-import { getMaxFileSize } from './inbound'
+import {
+  CAPTION_LIMIT,
+  bytesToMB,
+  checkTextLength,
+  splitTextForSending,
+  type FileUploadLimits,
+} from './limits'
+import type { PerChatSendQueue } from './send-queue'
 import { basename } from 'node:path'
 
 const PREVIEW_MAX_SIDE = 512
@@ -36,7 +43,6 @@ async function buildImagePreview(
 }
 
 const DISCONNECTED_RETRY_DELAYS_MS = [1_000, 2_000] as const
-const bytesToMB = (n: number): number => (n > 0 ? Math.ceil(n / (1024 * 1024)) : 0)
 
 export interface DirectChatStore {
   directChatsByStableUserId: Map<string, string>
@@ -78,6 +84,11 @@ export function isReconnectableSendError(err: unknown): boolean {
   return message.includes('WebSocket is not connected') || message.startsWith('WebSocket closed:')
 }
 
+/**
+ * @deprecated Use `client.sendRequest(...)` directly. Transport-level recovery
+ * (auth barrier, 203 retry, DNS fail-fast) now lives in `WsClient.sendRequest`
+ * since v1.2.0. This wrapper will be removed in a follow-up cleanup PR.
+ */
 export async function sendRequestWithReconnectRetry(
   client: WsClient,
   method: string,
@@ -136,7 +147,8 @@ async function resolveDirectChat(
 
 // TrueConf markdown is unreliable inside list items and after emoji, so strip
 // emphasis markers and render links as "text (url)" rather than leaking raw
-// syntax to the user.
+// syntax to the user. Used for short captions where paragraph breaks aren't
+// meaningful — collapses `\n{2,}` to a single newline.
 export function sanitizeMarkdown(text: string): string {
   let r = text.replace(/\r\n?/g, '\n')
   r = r.replace(/&lt;\s*\/?\s*br\s*\/?\s*&gt;/gi, '\n')
@@ -157,17 +169,62 @@ export function sanitizeMarkdown(text: string): string {
   return r.trim()
 }
 
+// Same as `sanitizeMarkdown` but preserves single blank lines between
+// paragraphs. Long agent replies often arrive with deliberate paragraph breaks;
+// collapsing them to a single newline (the caption-style behavior) destroys
+// readability when chunks are auto-split by `splitTextForSending`. We only
+// collapse runs of 3+ consecutive newlines down to `\n\n`.
+export function sanitizeMarkdownPreservingParagraphs(text: string): string {
+  let r = text.replace(/\r\n?/g, '\n')
+  r = r.replace(/&lt;\s*\/?\s*br\s*\/?\s*&gt;/gi, '\n')
+  r = r.replace(/<\s*\/?\s*br\s*\/?\s*>/gi, '\n')
+  r = r.replace(/\n{3,}/g, '\n\n')
+  r = r.replace(/<\/?[^>]+(>|$)/g, '')
+  r = r.replace(/^#{1,6}\s+(.+)$/gm, '$1')
+  r = r.replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, '').replace(/```/g, '').trim())
+  r = r.replace(/`([^`]+)`/g, '$1')
+  r = r.replace(/^[\s]*[*+-]\s+/gm, '- ')
+  r = r.replace(/^[\s]*(\d+)\.\s+/gm, '$1. ')
+  r = r.replace(/^>\s?/gm, '')
+  r = r.replace(/^[-*_]{3,}$/gm, '---')
+  r = r.replace(/\*\*([\s\S]+?)\*\*/g, '$1')
+  r = r.replace(/(?<![A-Za-z0-9_*])\*([^\s*][^*\n]*?[^\s*])\*(?![A-Za-z0-9_*])/g, '$1')
+  r = r.replace(/~~([\s\S]+?)~~/g, '$1')
+  r = r.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
+  return r.trim()
+}
+
+// Auto-split + per-chat queue. Each chunk is a separate `sendMessage` request
+// and the loop halts on the first non-zero errorCode, returning the responses
+// gathered so far. The whole chunked send runs inside a single
+// `sendQueue.enqueue` so concurrent replies to the same chatId don't
+// interleave their chunks on the wire.
 async function sendMessageRequest(
   client: WsClient,
   chatId: string,
   text: string,
-  logger: Logger,
-): Promise<TrueConfResponse> {
-  return sendRequestWithReconnectRetry(client, 'sendMessage', {
-    chatId,
-    content: { text, parseMode: 'markdown' },
-  }, logger)
+  _logger: Logger,
+  sendQueue: PerChatSendQueue,
+): Promise<TrueConfResponse[]> {
+  return sendQueue.enqueue(chatId, async () => {
+    const chunks = splitTextForSending(text)
+    const responses: TrueConfResponse[] = []
+    for (const chunk of chunks) {
+      const resp = await client.sendRequest('sendMessage', {
+        chatId,
+        content: { text: chunk, parseMode: 'markdown' },
+      })
+      responses.push(resp)
+      const code = responseErrorCode(resp)
+      if (code !== undefined && code !== 0) break
+    }
+    return responses
+  })
 }
+
+// Test-only re-exports so tests can call internals without exposing them as
+// part of the public surface.
+export const __test__sendMessageRequest = sendMessageRequest
 
 async function recreateChat(
   client: WsClient,
@@ -186,11 +243,20 @@ type SendTextOptions = {
   fallbackUserId: string
   directChatStore: DirectChatStore
   accountId?: string
+  sendQueue: PerChatSendQueue
 }
 
 export type SendTextResult =
   | { ok: false }
   | { ok: true; messageId?: string; chatId: string }
+
+// Picks the last response from a multi-chunk send for caller error-check and
+// messageId extraction. Returns `undefined` if the loop never produced a
+// response (e.g., empty chunk list — `splitTextForSending` always returns at
+// least one element so this is defensive).
+function lastResponse(responses: TrueConfResponse[]): TrueConfResponse | undefined {
+  return responses.length > 0 ? responses[responses.length - 1] : undefined
+}
 
 // Direct chatId send: no P2P resolution, no 304-repair. Used for groups where
 // the chatId is authoritative and we can't recreate the chat.
@@ -199,18 +265,24 @@ export async function sendTextToChat(
   chatId: string,
   text: string,
   logger: Logger,
+  sendQueue: PerChatSendQueue,
 ): Promise<SendTextResult> {
   try {
-    const cleanText = sanitizeMarkdown(text)
+    const cleanText = sanitizeMarkdownPreservingParagraphs(text)
     const safeChatId = normalizeChatId(chatId)
-    const response = await sendMessageRequest(client, safeChatId, cleanText, logger)
-    const errorCode = responseErrorCode(response)
+    const responses = await sendMessageRequest(client, safeChatId, cleanText, logger, sendQueue)
+    const last = lastResponse(responses)
+    if (!last) {
+      logger.error(`[trueconf] sendTextToChat: no responses returned (chatId=${safeChatId})`)
+      return { ok: false }
+    }
+    const errorCode = responseErrorCode(last)
     if (errorCode !== undefined && errorCode !== 0) {
-      const desc = response.payload?.errorDescription ?? ''
+      const desc = last.payload?.errorDescription ?? ''
       logger.error(`[trueconf] sendTextToChat failed: errorCode ${errorCode} ${desc} (chatId=${safeChatId})`)
       return { ok: false }
     }
-    return { ok: true, messageId: (response.payload?.messageId as string) ?? undefined, chatId: safeChatId }
+    return { ok: true, messageId: (last.payload?.messageId as string) ?? undefined, chatId: safeChatId }
   } catch (err) {
     logger.error(`[trueconf] sendTextToChat failed: ${err instanceof Error ? err.message : String(err)}`)
     return { ok: false }
@@ -227,7 +299,7 @@ export async function sendText(
   options: SendTextOptions,
 ): Promise<SendTextResult> {
   try {
-    const cleanText = sanitizeMarkdown(text)
+    const cleanText = sanitizeMarkdownPreservingParagraphs(text)
     const accountId = normalizeAccountId(options.accountId ?? 'default')
     if (!options.accountId) {
       logger.warn('[trueconf] sendText: accountId missing, falling back to "default"')
@@ -237,8 +309,9 @@ export async function sendText(
       accountId,
     })
     let activeChatId = resolved.chatId
-    let response = await sendMessageRequest(client, activeChatId, cleanText, logger)
-    let errorCode = responseErrorCode(response)
+    let responses = await sendMessageRequest(client, activeChatId, cleanText, logger, options.sendQueue)
+    let last = lastResponse(responses)
+    let errorCode = last ? responseErrorCode(last) : undefined
     let repaired = false
 
     if (errorCode === ErrorCode.CHAT_NOT_FOUND) {
@@ -247,12 +320,18 @@ export async function sendText(
       )
       repaired = true
       activeChatId = await recreateChat(client, options.directChatStore, accountId, resolved.stableUserId, logger)
-      response = await sendMessageRequest(client, activeChatId, cleanText, logger)
-      errorCode = responseErrorCode(response)
+      responses = await sendMessageRequest(client, activeChatId, cleanText, logger, options.sendQueue)
+      last = lastResponse(responses)
+      errorCode = last ? responseErrorCode(last) : undefined
+    }
+
+    if (!last) {
+      logger.error(`[trueconf] sendText: no responses returned (account=${accountId} stableUserId=${resolved.stableUserId})`)
+      return { ok: false }
     }
 
     if (errorCode !== undefined && errorCode !== 0) {
-      const desc = response.payload?.errorDescription ?? ''
+      const desc = last.payload?.errorDescription ?? ''
       logger.error(
         repaired
           ? `[trueconf] sendText failed AFTER 304 repair cycle: errorCode ${errorCode} ${desc} (account=${accountId} stableUserId=${resolved.stableUserId} chatId=${activeChatId})`
@@ -260,7 +339,7 @@ export async function sendText(
       )
       return { ok: false }
     }
-    return { ok: true, messageId: (response.payload?.messageId as string) ?? undefined, chatId: activeChatId }
+    return { ok: true, messageId: (last.payload?.messageId as string) ?? undefined, chatId: activeChatId }
   } catch (err) {
     logger.error(`[trueconf] sendText failed: ${err instanceof Error ? err.message : String(err)}`)
     return { ok: false }
@@ -364,6 +443,8 @@ export interface OutboundAttachmentDeps {
   channelConfig: TrueConfChannelConfig
   logger: Logger
   dispatcher?: Dispatcher
+  limits: FileUploadLimits
+  sendQueue: PerChatSendQueue
 }
 
 interface PreparedUpload {
@@ -371,6 +452,7 @@ interface PreparedUpload {
   inlineCaption: string | null
   kind: MediaKind
   bytes: number
+  replyMessageId?: string | null
 }
 
 interface PreparedUploadFailure {
@@ -385,10 +467,10 @@ interface PreparedUploadFailure {
 // reports to the user.
 async function prepareAttachmentUpload(
   ctx: Pick<OutboundAttachmentCtx, 'mediaUrl' | 'mediaLocalRoots' | 'text'>,
-  deps: Pick<OutboundAttachmentDeps, 'wsClient' | 'resolved' | 'channelConfig' | 'logger' | 'dispatcher'>,
+  deps: Pick<OutboundAttachmentDeps, 'wsClient' | 'resolved' | 'channelConfig' | 'logger' | 'dispatcher' | 'limits'>,
 ): Promise<{ ok: true; upload: PreparedUpload } | { ok: false; failure: PreparedUploadFailure }> {
-  const { wsClient, resolved, channelConfig, logger, dispatcher } = deps
-  const maxBytes = getMaxFileSize(channelConfig)
+  const { wsClient, resolved, logger, dispatcher, limits } = deps
+  const maxBytes = limits.getMaxBytes()
 
   if (!ctx.mediaUrl) {
     logger.warn('[trueconf] sendMedia: ctx.mediaUrl missing')
@@ -418,19 +500,38 @@ async function prepareAttachmentUpload(
 
   const buffer = webMedia.buffer
   const fileSize = buffer.byteLength
-  if (fileSize > maxBytes) {
-    logger.info(`[trueconf] sendMedia: buffer ${fileSize} > cap ${maxBytes}`)
+  const fileName = webMedia.fileName ?? basename(ctx.mediaUrl) ?? 'file'
+
+  // Validate size + extension via FileUploadLimits (covers runtime-mutable
+  // server pushes and per-account allow/block lists). Defensive size check
+  // remains useful because `loadOutboundMediaFromUrl` may have raised if the
+  // download exceeded `maxBytes` — but caller-imposed bounds and bot-imposed
+  // policy can diverge (e.g., extension filter).
+  const validation = limits.validateFile(fileName, fileSize)
+  if (!validation.ok) {
+    if (validation.reason === 'too_large') {
+      const limitMB = bytesToMB(limits.getMaxBytes())
+      const actualMB = bytesToMB(fileSize)
+      logger.info(`[trueconf] sendMedia: validateFile too_large (${fileSize} > ${limits.getMaxBytes()})`)
+      return {
+        ok: false,
+        failure: {
+          reason: 'tooLarge',
+          userFacingText: `Файл слишком большой (лимит: ${limitMB} МБ, ваш файл: ${actualMB} МБ).`,
+        },
+      }
+    }
+    logger.info(`[trueconf] sendMedia: validateFile extension_blocked (${validation.detail})`)
     return {
       ok: false,
       failure: {
-        reason: 'tooLarge',
-        userFacingText: `Файл слишком большой (лимит: ${bytesToMB(maxBytes)} МБ, ваш файл: ${bytesToMB(fileSize)} МБ).`,
+        reason: 'genericError',
+        userFacingText: `Расширение файла не разрешено: ${validation.detail}`,
       },
     }
   }
 
   const mimeType = webMedia.contentType ?? 'application/octet-stream'
-  const fileName = webMedia.fileName ?? basename(ctx.mediaUrl) ?? 'file'
 
   let uploadResp: TrueConfResponse
   try {
@@ -487,14 +588,57 @@ async function prepareAttachmentUpload(
 function buildSendFilePayload(chatId: string, upload: PreparedUpload): Record<string, unknown> {
   const content: Record<string, unknown> = { temporalFileId: upload.temporalFileId }
   if (upload.inlineCaption !== null) content.caption = { text: upload.inlineCaption, parseMode: 'markdown' }
-  return { chatId, replyMessageId: null, content }
+  const payload: Record<string, unknown> = { chatId, content }
+  if (upload.replyMessageId != null) payload.replyMessageId = upload.replyMessageId
+  return payload
+}
+
+// Test-only re-export.
+export const __test__buildSendFilePayload = buildSendFilePayload
+
+// If `upload.inlineCaption` exceeds the caption limit, send it first as a
+// separate `sendMessage` and then attach the file without caption (Q1=B
+// product decision: caption-as-message + sendFile without caption). The orphan
+// case (caption sent, sendFile fails) is unavoidable; we log explicitly so ops
+// can detect it. Returns either a mutated `upload` (caption stripped) or a
+// structured failure routed back through the caller's `fail()` helper.
+async function maybeSendCaptionSeparately(
+  client: WsClient,
+  chatId: string,
+  upload: PreparedUpload,
+  logger: Logger,
+  sendQueue: PerChatSendQueue,
+): Promise<{ ok: true; upload: PreparedUpload; captionSentSeparately: boolean } | { ok: false; failure: PreparedUploadFailure }> {
+  const captionText = upload.inlineCaption
+  if (captionText === null) return { ok: true, upload, captionSentSeparately: false }
+
+  const captionCheck = checkTextLength(captionText, CAPTION_LIMIT)
+  if (captionCheck.ok) return { ok: true, upload, captionSentSeparately: false }
+
+  logger.warn(
+    `[trueconf] caption too long: ${captionCheck.codePoints} > ${captionCheck.limit}; sending as separate message`,
+  )
+  const captionResults = await sendMessageRequest(client, chatId, captionText, logger, sendQueue)
+  const lastResult = captionResults[captionResults.length - 1]
+  const captionErr = lastResult ? responseErrorCode(lastResult) : -1
+  if (captionErr !== undefined && captionErr !== 0) {
+    logger.error(
+      `[trueconf] caption send failed (errorCode=${captionErr}); aborting attachment to avoid orphaned message`,
+    )
+    return {
+      ok: false,
+      failure: { reason: 'genericError', userFacingText: 'Не удалось отправить файл — попробуйте ещё раз.' },
+    }
+  }
+  // Strip caption so `sendFile` payload omits it.
+  return { ok: true, upload: { ...upload, inlineCaption: null }, captionSentSeparately: true }
 }
 
 export async function handleOutboundAttachment(
   ctx: OutboundAttachmentCtx,
   deps: OutboundAttachmentDeps,
 ): Promise<{ ok: true; messageId: string; chatId: string } | { ok: false; reason: OutboundAttachmentReason }> {
-  const { wsClient, logger, store } = deps
+  const { wsClient, logger, store, sendQueue } = deps
 
   let stableUserId: string
   try {
@@ -514,6 +658,7 @@ export async function handleOutboundAttachment(
       fallbackUserId: stableUserId,
       directChatStore: store,
       accountId,
+      sendQueue,
     })
     return { ok: false, reason }
   }
@@ -521,7 +666,7 @@ export async function handleOutboundAttachment(
   try {
     const prepared = await prepareAttachmentUpload(ctx, deps)
     if (!prepared.ok) return fail(prepared.failure.reason, prepared.failure.userFacingText)
-    const upload = prepared.upload
+    let upload = prepared.upload
 
     let activeChatId: string
     try {
@@ -537,12 +682,22 @@ export async function handleOutboundAttachment(
       return { ok: false, reason: isReconnect ? 'reconnect' : 'sendFailed' }
     }
 
+    const captionGate = await maybeSendCaptionSeparately(wsClient, activeChatId, upload, logger, sendQueue)
+    if (!captionGate.ok) return fail(captionGate.failure.reason, captionGate.failure.userFacingText)
+    upload = captionGate.upload
+    const captionSentSeparately = captionGate.captionSentSeparately
+
     let sendResp: TrueConfResponse
     try {
       sendResp = await sendRequestWithReconnectRetry(wsClient, 'sendFile', buildSendFilePayload(activeChatId, upload), logger)
     } catch (err) {
       const isReconnect = isReconnectableSendError(err)
       logger.warn(`[trueconf] sendMedia step 3/3 FAIL after retries: ${err instanceof Error ? err.message : String(err)}`)
+      if (captionSentSeparately) {
+        logger.error(
+          `[trueconf] sendFile failed AFTER caption was already delivered as separate message; user sees orphan caption-text without attachment (chatId=${activeChatId})`,
+        )
+      }
       return fail(
         isReconnect ? 'reconnect' : 'sendFailed',
         isReconnect ? 'Соединение прервалось — попробуйте ещё раз.' : 'Не удалось отправить файл — попробуйте ещё раз.',
@@ -559,17 +714,32 @@ export async function handleOutboundAttachment(
       } catch (err) {
         const isReconnect = isReconnectableSendError(err)
         logger.error(`[trueconf] sendMedia 304 repair FAIL: ${err instanceof Error ? err.message : String(err)}`)
+        if (captionSentSeparately) {
+          logger.error(
+            `[trueconf] sendFile failed AFTER caption was already delivered as separate message; user sees orphan caption-text without attachment (chatId=${activeChatId})`,
+          )
+        }
         return { ok: false, reason: isReconnect ? 'reconnect' : 'sendFailed' }
       }
     }
     if (sendErrorCode !== undefined && sendErrorCode !== 0) {
       logger.warn(`[trueconf] sendMedia step 3/3 FAIL: errorCode ${sendErrorCode}`)
+      if (captionSentSeparately) {
+        logger.error(
+          `[trueconf] sendFile failed AFTER caption was already delivered as separate message; user sees orphan caption-text without attachment (chatId=${activeChatId})`,
+        )
+      }
       return fail('sendFailed', 'Не удалось отправить файл — попробуйте ещё раз.')
     }
 
     const messageId = sendResp.payload?.messageId
     if (typeof messageId !== 'string' || !messageId) {
       logger.warn('[trueconf] sendMedia step 3/3 FAIL: response missing messageId')
+      if (captionSentSeparately) {
+        logger.error(
+          `[trueconf] sendFile failed AFTER caption was already delivered as separate message; user sees orphan caption-text without attachment (chatId=${activeChatId})`,
+        )
+      }
       return fail('sendFailed', 'Не удалось отправить файл — попробуйте ещё раз.')
     }
 
@@ -590,7 +760,7 @@ export interface OutboundAttachmentToChatCtx {
 
 export type OutboundAttachmentToChatDeps = Pick<
   OutboundAttachmentDeps,
-  'wsClient' | 'resolved' | 'channelConfig' | 'logger' | 'dispatcher'
+  'wsClient' | 'resolved' | 'channelConfig' | 'logger' | 'dispatcher' | 'limits' | 'sendQueue'
 >
 
 // Parallel to sendTextToChat: attachment send to an authoritative chatId
@@ -602,7 +772,7 @@ export async function handleOutboundAttachmentToChat(
   ctx: OutboundAttachmentToChatCtx,
   deps: OutboundAttachmentToChatDeps,
 ): Promise<{ ok: true; messageId: string; chatId: string } | { ok: false; reason: OutboundAttachmentReason }> {
-  const { wsClient, logger } = deps
+  const { wsClient, logger, sendQueue } = deps
 
   let safeChatId: string
   try {
@@ -615,14 +785,19 @@ export async function handleOutboundAttachmentToChat(
   }
 
   const fail = async (reason: OutboundAttachmentReason, text: string): Promise<{ ok: false; reason: OutboundAttachmentReason }> => {
-    await sendTextToChat(wsClient, safeChatId, text, logger)
+    await sendTextToChat(wsClient, safeChatId, text, logger, sendQueue)
     return { ok: false, reason }
   }
 
   try {
     const prepared = await prepareAttachmentUpload(ctx, deps)
     if (!prepared.ok) return fail(prepared.failure.reason, prepared.failure.userFacingText)
-    const upload = prepared.upload
+    let upload = prepared.upload
+
+    const captionGate = await maybeSendCaptionSeparately(wsClient, safeChatId, upload, logger, sendQueue)
+    if (!captionGate.ok) return fail(captionGate.failure.reason, captionGate.failure.userFacingText)
+    upload = captionGate.upload
+    const captionSentSeparately = captionGate.captionSentSeparately
 
     let sendResp: TrueConfResponse
     try {
@@ -630,6 +805,11 @@ export async function handleOutboundAttachmentToChat(
     } catch (err) {
       const isReconnect = isReconnectableSendError(err)
       logger.warn(`[trueconf] sendMediaToChat step 3/3 FAIL after retries: ${err instanceof Error ? err.message : String(err)}`)
+      if (captionSentSeparately) {
+        logger.error(
+          `[trueconf] sendFile failed AFTER caption was already delivered as separate message; user sees orphan caption-text without attachment (chatId=${safeChatId})`,
+        )
+      }
       return fail(
         isReconnect ? 'reconnect' : 'sendFailed',
         isReconnect ? 'Соединение прервалось — попробуйте ещё раз.' : 'Не удалось отправить файл — попробуйте ещё раз.',
@@ -639,12 +819,22 @@ export async function handleOutboundAttachmentToChat(
     const sendErrorCode = responseErrorCode(sendResp)
     if (sendErrorCode !== undefined && sendErrorCode !== 0) {
       logger.warn(`[trueconf] sendMediaToChat step 3/3 FAIL: errorCode ${sendErrorCode} (chatId=${safeChatId})`)
+      if (captionSentSeparately) {
+        logger.error(
+          `[trueconf] sendFile failed AFTER caption was already delivered as separate message; user sees orphan caption-text without attachment (chatId=${safeChatId})`,
+        )
+      }
       return fail('sendFailed', 'Не удалось отправить файл — попробуйте ещё раз.')
     }
 
     const messageId = sendResp.payload?.messageId
     if (typeof messageId !== 'string' || !messageId) {
       logger.warn('[trueconf] sendMediaToChat step 3/3 FAIL: response missing messageId')
+      if (captionSentSeparately) {
+        logger.error(
+          `[trueconf] sendFile failed AFTER caption was already delivered as separate message; user sees orphan caption-text without attachment (chatId=${safeChatId})`,
+        )
+      }
       return fail('sendFailed', 'Не удалось отправить файл — попробуйте ещё раз.')
     }
 

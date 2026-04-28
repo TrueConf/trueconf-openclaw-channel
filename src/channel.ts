@@ -18,7 +18,9 @@ import {
   handleOutboundAttachmentToChat,
   responseErrorCode,
 } from './outbound'
-import { handleInboundMessage, prepareInboundAttachment, unlinkTempFile, normalizeForCompare, rememberBotMessage, __resetCoalesceBufferForTesting } from './inbound'
+import { handleInboundMessage, prepareInboundAttachment, unlinkTempFile, normalizeForCompare, rememberBotMessage, getMaxFileSize, __resetCoalesceBufferForTesting } from './inbound'
+import { FileUploadLimits } from './limits'
+import { PerChatSendQueue } from './send-queue'
 import type { InboundContext } from './inbound'
 import { buildAck } from './types'
 import type { ResolvedChatKind } from './types'
@@ -166,6 +168,21 @@ export function createRuntimeStore() {
 
 const store = createRuntimeStore()
 
+// TODO(Task 8): replace these channel-wide stubs with per-account instances.
+// FileUploadLimits needs server pushes (`getFileUploadLimits`) routed per
+// account, and PerChatSendQueue should be per-account so different accounts'
+// sends don't share a serialization queue. Today we use channel-wide stubs so
+// outbound type signatures compile while wire-up is deferred to Task 8.
+let stubLimitsInstance: FileUploadLimits | null = null
+const stubSendQueueInstance = new PerChatSendQueue()
+
+function getStubLimits(): FileUploadLimits {
+  if (stubLimitsInstance) return stubLimitsInstance
+  const maxBytes = store.channelConfig ? getMaxFileSize(store.channelConfig) : 100_000_000
+  stubLimitsInstance = new FileUploadLimits(maxBytes, store.logger ?? undefined)
+  return stubLimitsInstance
+}
+
 function clearAccountChats(accountId: string): void {
   const prefix = `${accountId}\u0000`
   for (const key of Array.from(store.directChatsByStableUserId.keys())) {
@@ -262,7 +279,8 @@ export const channelPlugin = {
           logger.info(
             `[trueconf] sendText: target=${to} is bot identity; redirecting to last inbound group ${route.chatId}`,
           )
-          const groupResult = await sendTextToChat(entry.wsClient, route.chatId, cleanText, logger)
+          // TODO(Task 8): replace stubSendQueueInstance with per-account instance
+          const groupResult = await sendTextToChat(entry.wsClient, route.chatId, cleanText, logger, stubSendQueueInstance)
           if (groupResult.ok && groupResult.messageId) {
             rememberBotMessage(store.recentBotMsgIdsByChat, groupResult.chatId, groupResult.messageId)
           }
@@ -275,6 +293,8 @@ export const channelPlugin = {
           fallbackUserId: route.userId,
           directChatStore: store,
           accountId,
+          // TODO(Task 8): replace stubSendQueueInstance with per-account instance
+          sendQueue: stubSendQueueInstance,
         })
         if (directResult.ok && directResult.messageId) {
           rememberBotMessage(store.recentBotMsgIdsByChat, directResult.chatId, directResult.messageId)
@@ -286,6 +306,8 @@ export const channelPlugin = {
         fallbackUserId: to,
         directChatStore: store,
         accountId,
+        // TODO(Task 8): replace stubSendQueueInstance with per-account instance
+        sendQueue: stubSendQueueInstance,
       })
       if (result.ok && result.messageId) {
         rememberBotMessage(store.recentBotMsgIdsByChat, result.chatId, result.messageId)
@@ -322,12 +344,15 @@ export const channelPlugin = {
       // fallback either misrouted to a stale DM peer or silently skipped.
       const botUserIdMedia = entry.wsClient.botUserId
       const normalizedTo = (ctx.to ?? '').replace(/\/.*$/, '').trim()
+      // TODO(Task 8): replace getStubLimits()/stubSendQueueInstance with per-account instances
       const commonDeps = {
         wsClient: entry.wsClient,
         resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
         channelConfig: store.channelConfig,
         logger,
         dispatcher: entry.dispatcher,
+        limits: getStubLimits(),
+        sendQueue: stubSendQueueInstance,
       }
       if (botUserIdMedia && normalizeForCompare(botUserIdMedia) === normalizeForCompare(normalizedTo)) {
         const route = store.lastInboundRouteByAccount.get(accountId ?? '')
@@ -389,6 +414,9 @@ export const channelPlugin = {
           channelConfig: store.channelConfig,
           logger,
           dispatcher: entry.dispatcher,
+          // TODO(Task 8): replace getStubLimits()/stubSendQueueInstance with per-account instances
+          limits: getStubLimits(),
+          sendQueue: stubSendQueueInstance,
         },
       )
 
@@ -504,12 +532,15 @@ export const channelPlugin = {
       // Hoisted so the dep bag isn't rebuilt per turn. The DM branch layers
       // `store` on top because handleOutboundAttachment needs the direct-chat
       // cache; handleOutboundAttachmentToChat does not.
+      // TODO(Task 8): replace getStubLimits()/stubSendQueueInstance with per-account instances
       const transport = {
         wsClient,
         resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
         channelConfig,
         logger,
         dispatcher,
+        limits: getStubLimits(),
+        sendQueue: stubSendQueueInstance,
       }
 
       // Routes via the SDK's text/media split so a media-only payload reaches
@@ -523,11 +554,14 @@ export const channelPlugin = {
           text: reply.text,
           sendText: async (chunk) => {
             const result = inbound.isGroup
-              ? await sendTextToChat(wsClient, inbound.chatId, chunk, logger)
+              // TODO(Task 8): replace stubSendQueueInstance with per-account instance
+              ? await sendTextToChat(wsClient, inbound.chatId, chunk, logger, stubSendQueueInstance)
               : await sendText(wsClient, inbound.peerId, chunk, logger, {
                   fallbackUserId: inbound.peerId,
                   directChatStore: store,
                   accountId,
+                  // TODO(Task 8): replace stubSendQueueInstance with per-account instance
+                  sendQueue: stubSendQueueInstance,
                 })
             if (!result.ok) {
               logger.warn(`[trueconf] deliver: text chunk send failed (peer=${inbound.peerId}, isGroup=${inbound.isGroup})`)

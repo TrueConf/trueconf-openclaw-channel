@@ -355,6 +355,19 @@ If multiple accounts are configured (`accounts.office`, `accounts.support`, ...)
 
 The channel sends and receives files via TrueConf: images, audio, video, and documents. Size is limited by `maxFileSize` (see the channel field reference). Default — 50 MB.
 
+## Differences from python-trueconf-bot
+
+This channel is wire-compatible with [python-trueconf-bot](https://github.com/trueconf/python-trueconf-bot) — both speak the TrueConf Chatbot Connector protocol. A handful of user-visible behaviors are deliberately different:
+
+| Behavior | This channel | python-trueconf-bot | Why |
+|----------|--------------|---------------------|-----|
+| Default text rendering | `parseMode: 'markdown'` | `ParseMode.TEXT` | LLMs emit markdown by default; rendering it in TrueConf gives the user formatted output without extra configuration. |
+| Long text (> 4096 chars) | Auto-split into chunks (paragraph → sentence → hard cut), order preserved by a per-chat queue | Truncated server-side | LLM responses regularly exceed the limit; paragraph-first splitting is gentler on markdown. |
+| Long captions (> 4096 chars) | Sent as a separate message before the file; file is then sent without caption | Same input is truncated server-side | Best-effort: if `sendFile` fails after the caption was delivered, the channel logs the orphan-text condition explicitly. |
+| DNS failures (`ENOTFOUND`, `EAI_AGAIN`, …) | 5 retries (≈ 31 s) then fail-fast | Retried indefinitely | Inside an OpenClaw runtime, an unresolvable hostname is almost always a typo in `serverUrl`; surfacing it loudly is more useful than retrying forever. |
+| Token expiry (`errorCode: 203`) on any RPC | Transport-level reconnect with fresh OAuth + transparent retry of the original request | User-level pattern via `examples/update_token.py` | Plugins should not require example boilerplate to stay connected. |
+
+The `setChatMutationHandler` callback (edit / remove / clearHistory events) is intentionally not exposed in v1.2.0; it is planned for a follow-up release.
 
 ## Troubleshooting
 

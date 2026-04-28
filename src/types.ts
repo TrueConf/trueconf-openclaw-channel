@@ -56,6 +56,7 @@ export const EnvelopeType = {
   PLAIN_MESSAGE: 200,
   FORWARDED_MESSAGE: 201,
   ATTACHMENT: 202,
+  LOCATION: 203,
   SURVEY: 204,
 } as const
 export type EnvelopeType = (typeof EnvelopeType)[keyof typeof EnvelopeType]
@@ -151,6 +152,7 @@ export interface InboundMessage {
   attachmentContent?: AttachmentContent
   replyMessageId?: string
   parseMode?: 'text' | 'markdown' | 'html'
+  extraContext?: Record<string, unknown>
 }
 
 export type InboundDispatchFn = (msg: InboundMessage) => void | Promise<void>
@@ -209,9 +211,46 @@ export interface AccountDescription {
   configured: boolean
 }
 
-export function buildAuthRequest(id: number, token: string, receiveUnread = false): TrueConfRequest {
-  return { type: 1, id, method: 'auth', payload: { token, tokenType: 'JWT', receiveUnread } }
+export interface AuthRequestOptions {
+  receiveUnread?: boolean
+  receiveSystemMessageEnvelopes?: boolean
 }
+
+export function buildAuthRequest(
+  id: number,
+  token: string,
+  options: AuthRequestOptions = {},
+): TrueConfRequest {
+  return {
+    type: 1,
+    id,
+    method: 'auth',
+    payload: {
+      token,
+      tokenType: 'JWT',
+      receiveUnread: options.receiveUnread ?? false,
+      receiveSystemMessageEnvelopes: options.receiveSystemMessageEnvelopes ?? false,
+    },
+  }
+}
+
+export type NetworkErrorPhase = 'oauth' | 'websocket' | 'ws-handshake' | 'ws-message' | 'unknown'
+
+export class NetworkError extends Error {
+  constructor(
+    message: string,
+    readonly phase: NetworkErrorPhase = 'unknown',
+    readonly cause?: Error,
+    readonly code?: string,
+    readonly syscall?: string,
+    readonly hostname?: string,
+  ) {
+    super(message)
+    this.name = 'NetworkError'
+  }
+}
+
+export const DNS_ERROR_CODES: ReadonlySet<string> = new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_NODATA', 'EAI_NONAME'])
 
 export function buildAck(serverRequestId: number): TrueConfResponse {
   return { type: 2, id: serverRequestId }

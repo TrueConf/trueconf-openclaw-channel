@@ -142,6 +142,28 @@ const TRANSLATIONS = {
   'bin.cleanup.removed':               { en: 'Removed stale plugins.entries.trueconf from the config', ru: 'Удалил устаревший plugins.entries.trueconf из конфига' },
   'bin.savedNoOauth.title':            { en: 'Important', ru: 'Важно' },
   'bin.savedNoOauth.body':             { en: 'Config written without OAuth validation. If you see connection errors at `openclaw gateway` — run `npm run setup` again.', ru: 'Конфиг записан без OAuth-валидации. Если при `openclaw gateway` будут ошибки подключения — запусти `npm run setup` ещё раз.' },
+
+  // Setup wizard descriptor — operator-facing copy in trueconfSetupWizard.
+  // Resolved lazily by buildSetupWizardDescriptor(t, locale) so the bin can
+  // localize after the language prompt; the SDK consumer gets DEFAULT_LOCALE.
+  'wizard.status.configuredLabel':     { en: 'TrueConf: connected', ru: 'TrueConf: подключён' },
+  'wizard.status.unconfiguredLabel':   { en: 'TrueConf: needs credentials', ru: 'TrueConf: нужны креды' },
+  'wizard.intro.title':                { en: 'Connect to TrueConf', ru: 'Подключение к TrueConf' },
+  'wizard.intro.line1':                { en: 'You will need the server URL, login and bot password.', ru: 'Вам потребуется адрес сервера, логин и пароль бота.' },
+  'wizard.envShortcut.prompt':         { en: 'TRUECONF_SERVER_URL/USERNAME/PASSWORD detected — apply automatically?', ru: 'TRUECONF_SERVER_URL/USERNAME/PASSWORD обнаружены — настроить автоматически?' },
+  'wizard.input.serverUrl.invalidScheme': { en: 'Provide host without http(s)://', ru: 'Укажите хост без http(s)://' },
+  'wizard.input.serverUrl.invalidPort':   { en: 'Provide host without :port — port goes in a separate field', ru: 'Укажите хост без :порта — порт задаётся отдельным полем' },
+  'wizard.input.username.message':     { en: 'Bot login (name only, no @server)', ru: 'Логин бота (только имя, без @сервер)' },
+  'wizard.input.useTls.message':       { en: 'TLS? (empty = auto-detect)', ru: 'TLS? (пусто = авто-детект)' },
+  'wizard.input.port.message':         { en: 'Port (empty = scheme default 4309/443)', ru: 'Порт (пусто = scheme default 4309/443)' },
+  'wizard.input.port.invalid':         { en: 'Invalid port', ru: 'Невалидный порт' },
+  'wizard.credential.password.label':       { en: 'Bot password', ru: 'Пароль бота' },
+  'wizard.credential.password.envPrompt':   { en: 'Use TRUECONF_PASSWORD from the environment?', ru: 'Использовать TRUECONF_PASSWORD из окружения?' },
+  'wizard.credential.password.keepPrompt':  { en: 'TrueConf password is already set. Keep it?', ru: 'Пароль TrueConf уже задан. Оставить?' },
+  'wizard.credential.password.inputPrompt': { en: 'Enter bot password', ru: 'Введите пароль бота' },
+  'wizard.completion.title':           { en: 'Done', ru: 'Готово' },
+  'wizard.completion.line1':           { en: 'TrueConf channel is configured.', ru: 'Канал TrueConf настроен.' },
+  'wizard.completion.line2':           { en: 'Start: openclaw gateway', ru: 'Запустить: openclaw gateway' },
 } as const
 
 export type TranslationKey = keyof typeof TRANSLATIONS

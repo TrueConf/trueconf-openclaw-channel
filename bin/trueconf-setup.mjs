@@ -33,7 +33,7 @@ function checkNodeVersion() {
 async function loadFinalizers() {
   const mod = await jiti.import(join(REPO_ROOT, 'src/channel-setup.ts'))
   return {
-    trueconfSetupWizard: mod.trueconfSetupWizard,
+    buildSetupWizardDescriptor: mod.buildSetupWizardDescriptor,
     interactiveFinalize: mod.interactiveFinalize,
     runHeadlessFinalize: mod.runHeadlessFinalize,
   }
@@ -44,18 +44,37 @@ async function loadI18n() {
   return { t: mod.t }
 }
 
-// Resolve setup locale for bin's standalone path. Mirrors precedence used by
-// src/channel-setup.ts: env > cfg.channels.trueconf.setupLocale > 'en'.
-// Throws on an invalid env value to fail loud in CI/Ansible bootstrap.
-function resolveBinLocale(cfg) {
+// Read TRUECONF_SETUP_LOCALE env. Returns null when unset, throws on invalid
+// values so misconfigured CI/Ansible bootstrap fails loud instead of silently
+// falling back to a default. Split from cfg-read so the bin can decide
+// whether to surface a language prompt before trusting cfg state.
+function readEnvLocale() {
   const raw = process.env.TRUECONF_SETUP_LOCALE
   if (raw === 'en' || raw === 'ru') return raw
   if (raw !== undefined) {
     throw new Error(`TRUECONF_SETUP_LOCALE must be 'en' or 'ru', got: ${raw}`)
   }
-  const cfgLocale = cfg?.channels?.trueconf?.setupLocale
-  if (cfgLocale === 'en' || cfgLocale === 'ru') return cfgLocale
-  return 'en'
+  return null
+}
+
+function readCfgLocale(cfg) {
+  const v = cfg?.channels?.trueconf?.setupLocale
+  return v === 'en' || v === 'ru' ? v : null
+}
+
+// Interactive language picker. Called only when neither env nor cfg pinned a
+// locale — gives the operator the choice that the wizard otherwise locks
+// silently to en. Labels stay locale-neutral ('English' / 'Russian') so the
+// picker reads the same in both languages (see i18n.ts language.option.*).
+async function promptLanguage(prompter, t) {
+  const picked = await prompter.select({
+    message: t('language.prompt', 'en'),
+    options: [
+      { value: 'en', label: t('language.option.en', 'en') },
+      { value: 'ru', label: t('language.option.ru', 'en') },
+    ],
+  })
+  return picked === 'ru' ? 'ru' : 'en'
 }
 
 async function loadProbe() {
@@ -445,15 +464,18 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
 
   const configPath = configPathArg ?? join(homedir(), '.openclaw', 'openclaw.json')
   const cfg = readJsonConfig(configPath)
-  const { trueconfSetupWizard, runHeadlessFinalize } = await loadFinalizers()
+  const { buildSetupWizardDescriptor, runHeadlessFinalize } = await loadFinalizers()
 
-  // Resolve once so an invalid TRUECONF_SETUP_LOCALE fails fast — before any
-  // backup/probe/OAuth work — and so the interactive bin path persists the
-  // resolved value into cfg the same way runHeadlessFinalize does.
-  const locale = resolveBinLocale(cfg)
+  // Fail-fast on invalid TRUECONF_SETUP_LOCALE before any backup/probe/OAuth
+  // work. cfg-read is separate so we can decide between honoring stored locale
+  // and surfacing a language prompt for fresh installs.
+  const envLocale = readEnvLocale()
+  const cfgLocale = readCfgLocale(cfg)
   const { t } = await loadI18n()
 
   if (hasEnvShortcut()) {
+    // Headless path bypasses the wizard entirely. Locale only matters for
+    // any error throwsa runHeadlessFinalize emits; default 'en' is fine.
     const nextCfg = await runHeadlessFinalize(cfg)
     const { cfg: cleaned } = cleanupStaleEntries(nextCfg)
     // Backup only after finalize succeeds — otherwise repeated CI failures
@@ -466,7 +488,24 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
     return { backupPath, mode: 'headless' }
   }
 
-  const prompter = injectedPrompter ?? (await loadClackPrompter(t, locale))
+  // Prompter must exist before the language prompt; it's also the cancel-msg
+  // owner, so the locale passed here only colors that one banner. Subsequent
+  // prompts honor the resolved `locale` below.
+  const initialLocale = envLocale ?? cfgLocale ?? 'en'
+  const prompter = injectedPrompter ?? (await loadClackPrompter(t, initialLocale))
+
+  // Show language prompt only when neither env nor cfg pinned a locale.
+  // UAT scenarios E2/E3 (env or cfg locale set) → no prompt; A1/E1 (fresh
+  // install, nothing set) → prompt.
+  let locale
+  if (envLocale) locale = envLocale
+  else if (cfgLocale) locale = cfgLocale
+  else locale = await promptLanguage(prompter, t)
+
+  // Build the wizard descriptor with the now-final locale so all operator-
+  // facing strings (intro, validate messages, credential prompts, completion)
+  // render in the user's chosen language.
+  const wizard = buildSetupWizardDescriptor(t, locale)
 
   if (hasExistingTrueconfChannel(cfg)) {
     const overwrite = await prompter.confirm({
@@ -482,17 +521,17 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
     }
   }
 
-  if (trueconfSetupWizard.introNote) {
+  if (wizard.introNote) {
     await prompter.note(
-      trueconfSetupWizard.introNote.lines.join('\n'),
-      trueconfSetupWizard.introNote.title,
+      wizard.introNote.lines.join('\n'),
+      wizard.introNote.title,
     )
   }
 
-  const cfgWithInputs = await promptInteractiveInputs(prompter, trueconfSetupWizard, cfg, t, locale)
+  const cfgWithInputs = await promptInteractiveInputs(prompter, wizard, cfg, t, locale)
   const { cfg: cfgWithPassword, credentialValues } = await promptPassword(
     prompter,
-    trueconfSetupWizard,
+    wizard,
     cfgWithInputs,
     t,
     locale,
@@ -602,7 +641,7 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
     await prompter.note(t('connected.body', locale, { username }), t('connected.title', locale))
   }
 
-  await showFinalBanner(prompter, { backupPath, caPath, wizard: trueconfSetupWizard, t, locale })
+  await showFinalBanner(prompter, { backupPath, caPath, wizard, t, locale })
 
   return { backupPath, caPath, mode: savedWithoutValidation ? 'saved-without-validation' : 'saved' }
 }

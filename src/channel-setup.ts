@@ -133,165 +133,180 @@ export function buildConfigMissingBanner(
   return { title: t('tls.banner.missing.title', locale), body }
 }
 
-export const trueconfSetupWizard: ChannelSetupWizard = {
-  channel,
+// Wizard descriptor factory. Resolved lazily so the bin can localize after
+// the language prompt; the SDK consumer (openclaw plugins install) gets the
+// DEFAULT_LOCALE-rendered instance via the legacy `trueconfSetupWizard`
+// export below. All operator-facing strings come from i18n keys; structural
+// fields (resolveConfigured, applySet, validate predicates) are unchanged.
+export function buildSetupWizardDescriptor(
+  translate: typeof t,
+  locale: Locale,
+): ChannelSetupWizard {
+  return {
+    channel,
 
-  status: {
-    configuredLabel: 'TrueConf: подключён',
-    unconfiguredLabel: 'TrueConf: нужны креды',
-    configuredHint: 'configured',
-    unconfiguredHint: 'needs bot credentials',
-    configuredScore: 2,
-    unconfiguredScore: 0,
-    resolveConfigured: ({ cfg }) => {
-      const tc = readTrueConfSection(cfg)
-      return Boolean(
-        tc.serverUrl &&
-          tc.username &&
-          hasConfiguredSecretInput(tc.password),
-      )
-    },
-  },
-
-  introNote: {
-    title: 'Подключение к TrueConf',
-    lines: [
-      'Вам потребуется адрес сервера, логин и пароль бота.',
-    ],
-  },
-
-  envShortcut: {
-    prompt: 'TRUECONF_SERVER_URL/USERNAME/PASSWORD обнаружены — настроить автоматически?',
-    preferredEnvVar: 'TRUECONF_PASSWORD',
-    isAvailable: () =>
-      Boolean(
-        process.env.TRUECONF_SERVER_URL?.trim() &&
-          process.env.TRUECONF_USERNAME?.trim() &&
-          process.env.TRUECONF_PASSWORD?.trim(),
-      ),
-    apply: async ({ cfg }) => runHeadlessFinalize(cfg),
-  },
-
-  textInputs: [
-    {
-      inputKey: 'serverUrl' as never,
-      message: 'URL TrueConf Server',
-      placeholder: 'tc.example.com',
-      required: true,
-      currentValue: ({ cfg }) => readTrueConfSection(cfg).serverUrl,
-      validate: ({ value }) => {
-        if (value.includes('://')) return 'Укажите хост без http(s)://'
-        if (/:\d+$/.test(value)) return 'Укажите хост без :порта — порт задаётся отдельным полем'
-        return undefined
-      },
-      applySet: ({ cfg, value }) =>
-        patchTopLevelChannelConfigSection({
-          cfg,
-          channel,
-          enabled: true,
-          patch: { serverUrl: value.trim() },
-        }),
-    },
-    {
-      inputKey: 'username' as never,
-      message: 'Логин бота (только имя, без @сервер)',
-      placeholder: 'bot_user',
-      required: true,
-      currentValue: ({ cfg }) => readTrueConfSection(cfg).username,
-      applySet: ({ cfg, value }) =>
-        patchTopLevelChannelConfigSection({
-          cfg,
-          channel,
-          enabled: true,
-          patch: { username: value.trim() },
-        }),
-    },
-    {
-      inputKey: 'useTls' as never,
-      message: 'TLS? (пусто = авто-детект)',
-      required: false,
-      applyEmptyValue: true,
-      currentValue: ({ cfg }) => {
-        const tls = readTrueConfSection(cfg).useTls
-        return tls === undefined ? '' : String(tls)
-      },
-      normalizeValue: ({ value }) =>
-        value === '' ? '' : value === 'true' ? 'true' : 'false',
-      applySet: ({ cfg, value }) => {
-        if (value === '') return cfg
-        return patchTopLevelChannelConfigSection({
-          cfg,
-          channel,
-          patch: { useTls: value === 'true' },
-        })
+    status: {
+      configuredLabel: translate('wizard.status.configuredLabel', locale),
+      unconfiguredLabel: translate('wizard.status.unconfiguredLabel', locale),
+      configuredHint: 'configured',
+      unconfiguredHint: 'needs bot credentials',
+      configuredScore: 2,
+      unconfiguredScore: 0,
+      resolveConfigured: ({ cfg }) => {
+        const tc = readTrueConfSection(cfg)
+        return Boolean(
+          tc.serverUrl &&
+            tc.username &&
+            hasConfiguredSecretInput(tc.password),
+        )
       },
     },
-    {
-      inputKey: 'port' as never,
-      message: 'Порт (пусто = scheme default 4309/443)',
-      required: false,
-      applyEmptyValue: true,
-      currentValue: ({ cfg }) => readTrueConfSection(cfg).port?.toString(),
-      validate: ({ value }) => {
-        if (value === '') return
-        const n = Number.parseInt(value, 10)
-        return Number.isFinite(n) && n > 0 && n < 65536 ? undefined : 'Невалидный порт'
-      },
-      applySet: ({ cfg, value }) => {
-        if (value === '') return cfg
-        return patchTopLevelChannelConfigSection({
-          cfg,
-          channel,
-          patch: { port: Number.parseInt(value, 10) },
-        })
-      },
-    },
-  ],
 
-  credentials: [
-    {
-      inputKey: 'password' as never,
-      providerHint: 'trueconf',
-      credentialLabel: 'Пароль бота',
+    introNote: {
+      title: translate('wizard.intro.title', locale),
+      lines: [translate('wizard.intro.line1', locale)],
+    },
+
+    envShortcut: {
+      prompt: translate('wizard.envShortcut.prompt', locale),
       preferredEnvVar: 'TRUECONF_PASSWORD',
-      envPrompt: 'Использовать TRUECONF_PASSWORD из окружения?',
-      keepPrompt: 'Пароль TrueConf уже задан. Оставить?',
-      inputPrompt: 'Введите пароль бота',
-      allowEnv: () => Boolean(process.env.TRUECONF_PASSWORD?.trim()),
-      inspect: ({ cfg }) => {
-        const pwd = readTrueConfSection(cfg).password
-        return {
-          accountConfigured: hasConfiguredSecretInput(pwd),
-          hasConfiguredValue: hasConfiguredSecretInput(pwd),
-          envValue: process.env.TRUECONF_PASSWORD,
-        }
-      },
-      applyUseEnv: ({ cfg }) =>
-        patchTopLevelChannelConfigSection({
-          cfg,
-          channel,
-          patch: { password: { useEnv: 'TRUECONF_PASSWORD' } },
-        }),
-      applySet: ({ cfg, value }) =>
-        patchTopLevelChannelConfigSection({
-          cfg,
-          channel,
-          patch: { password: String(value) },
-        }),
+      isAvailable: () =>
+        Boolean(
+          process.env.TRUECONF_SERVER_URL?.trim() &&
+            process.env.TRUECONF_USERNAME?.trim() &&
+            process.env.TRUECONF_PASSWORD?.trim(),
+        ),
+      apply: async ({ cfg }) => runHeadlessFinalize(cfg),
     },
-  ],
-  stepOrder: 'text-first',
 
-  finalize: (params) => interactiveFinalize(params),
-
-  completionNote: {
-    title: 'Готово',
-    lines: [
-      'Канал TrueConf настроен.',
-      'Запустить: openclaw gateway',
+    textInputs: [
+      {
+        inputKey: 'serverUrl' as never,
+        message: 'URL TrueConf Server',
+        placeholder: 'tc.example.com',
+        required: true,
+        currentValue: ({ cfg }) => readTrueConfSection(cfg).serverUrl,
+        validate: ({ value }) => {
+          if (value.includes('://')) return translate('wizard.input.serverUrl.invalidScheme', locale)
+          if (/:\d+$/.test(value)) return translate('wizard.input.serverUrl.invalidPort', locale)
+          return undefined
+        },
+        applySet: ({ cfg, value }) =>
+          patchTopLevelChannelConfigSection({
+            cfg,
+            channel,
+            enabled: true,
+            patch: { serverUrl: value.trim() },
+          }),
+      },
+      {
+        inputKey: 'username' as never,
+        message: translate('wizard.input.username.message', locale),
+        placeholder: 'bot_user',
+        required: true,
+        currentValue: ({ cfg }) => readTrueConfSection(cfg).username,
+        applySet: ({ cfg, value }) =>
+          patchTopLevelChannelConfigSection({
+            cfg,
+            channel,
+            enabled: true,
+            patch: { username: value.trim() },
+          }),
+      },
+      {
+        inputKey: 'useTls' as never,
+        message: translate('wizard.input.useTls.message', locale),
+        required: false,
+        applyEmptyValue: true,
+        currentValue: ({ cfg }) => {
+          const tls = readTrueConfSection(cfg).useTls
+          return tls === undefined ? '' : String(tls)
+        },
+        normalizeValue: ({ value }) =>
+          value === '' ? '' : value === 'true' ? 'true' : 'false',
+        applySet: ({ cfg, value }) => {
+          if (value === '') return cfg
+          return patchTopLevelChannelConfigSection({
+            cfg,
+            channel,
+            patch: { useTls: value === 'true' },
+          })
+        },
+      },
+      {
+        inputKey: 'port' as never,
+        message: translate('wizard.input.port.message', locale),
+        required: false,
+        applyEmptyValue: true,
+        currentValue: ({ cfg }) => readTrueConfSection(cfg).port?.toString(),
+        validate: ({ value }) => {
+          if (value === '') return
+          const n = Number.parseInt(value, 10)
+          return Number.isFinite(n) && n > 0 && n < 65536
+            ? undefined
+            : translate('wizard.input.port.invalid', locale)
+        },
+        applySet: ({ cfg, value }) => {
+          if (value === '') return cfg
+          return patchTopLevelChannelConfigSection({
+            cfg,
+            channel,
+            patch: { port: Number.parseInt(value, 10) },
+          })
+        },
+      },
     ],
-  },
+
+    credentials: [
+      {
+        inputKey: 'password' as never,
+        providerHint: 'trueconf',
+        credentialLabel: translate('wizard.credential.password.label', locale),
+        preferredEnvVar: 'TRUECONF_PASSWORD',
+        envPrompt: translate('wizard.credential.password.envPrompt', locale),
+        keepPrompt: translate('wizard.credential.password.keepPrompt', locale),
+        inputPrompt: translate('wizard.credential.password.inputPrompt', locale),
+        allowEnv: () => Boolean(process.env.TRUECONF_PASSWORD?.trim()),
+        inspect: ({ cfg }) => {
+          const pwd = readTrueConfSection(cfg).password
+          return {
+            accountConfigured: hasConfiguredSecretInput(pwd),
+            hasConfiguredValue: hasConfiguredSecretInput(pwd),
+            envValue: process.env.TRUECONF_PASSWORD,
+          }
+        },
+        applyUseEnv: ({ cfg }) =>
+          patchTopLevelChannelConfigSection({
+            cfg,
+            channel,
+            patch: { password: { useEnv: 'TRUECONF_PASSWORD' } },
+          }),
+        applySet: ({ cfg, value }) =>
+          patchTopLevelChannelConfigSection({
+            cfg,
+            channel,
+            patch: { password: String(value) },
+          }),
+      },
+    ],
+    stepOrder: 'text-first',
+
+    finalize: (params) => interactiveFinalize(params),
+
+    completionNote: {
+      title: translate('wizard.completion.title', locale),
+      lines: [
+        translate('wizard.completion.line1', locale),
+        translate('wizard.completion.line2', locale),
+      ],
+    },
+  }
 }
+
+// Backward-compat: the openclaw SDK consumer (plugins install) imports this
+// at module load and renders strings before any locale resolution. Default
+// locale is 'en' per i18n.ts.
+export const trueconfSetupWizard: ChannelSetupWizard = buildSetupWizardDescriptor(t, DEFAULT_LOCALE)
 
 function resolveAbsPath(raw: string): string {
   const expanded = raw.startsWith('~/') || raw === '~'

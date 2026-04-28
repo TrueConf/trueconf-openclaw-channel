@@ -1,3 +1,8 @@
+import type { OpenClawConfig } from 'openclaw/plugin-sdk/setup'
+import type { Locale } from './i18n'
+
+export type SetupLocale = Locale
+
 export interface TrueConfAccountConfig {
   serverUrl: string
   username: string
@@ -8,6 +13,27 @@ export interface TrueConfAccountConfig {
   clientSecret?: string
   enabled?: boolean
   caPath?: string
+  tlsVerify?: boolean
+  setupLocale?: SetupLocale
+}
+
+// Pick over free-standing interface so renames in TrueConfAccountConfig
+// break this type at compile time instead of drifting silently.
+export type TrueConfChannelSection = Partial<Pick<TrueConfAccountConfig,
+  | 'serverUrl'
+  | 'username'
+  | 'password'
+  | 'useTls'
+  | 'port'
+  | 'caPath'
+  | 'tlsVerify'
+  | 'setupLocale'
+>>
+
+export function readTrueConfSection(cfg: OpenClawConfig): TrueConfChannelSection {
+  const raw = (cfg as { channels?: { trueconf?: unknown } }).channels?.trueconf
+  if (raw === null || typeof raw !== 'object') return {}
+  return raw as TrueConfChannelSection
 }
 
 export interface TrueConfRequest {
@@ -172,6 +198,8 @@ export interface ResolvedAccount {
   useTls?: boolean
   port?: number
   caPath?: string
+  tlsVerify?: boolean
+  setupLocale?: SetupLocale
 }
 
 export interface AccountDescription {

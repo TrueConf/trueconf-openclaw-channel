@@ -9,6 +9,19 @@ import {
 import { parseCertFromPem, probeTls, downloadCAChain, validateOAuthCredentials, validateCaAgainstServer } from './probe.mjs'
 import type { CertSummary, ValidatedCaBytes } from './probe.d.mts'
 import { resolveSecret } from './config'
+import type { Locale } from './i18n'
+import { DEFAULT_LOCALE, t } from './i18n'
+import { readTrueConfSection } from './types'
+
+// Read TRUECONF_SETUP_LOCALE env once and validate. Throws if set to anything
+// other than 'en'/'ru' so misconfigured CI fails loud instead of silently
+// falling back to a default the operator did not pick.
+function readEnvLocale(): Locale | undefined {
+  const raw = process.env.TRUECONF_SETUP_LOCALE
+  if (raw === undefined) return undefined
+  if (raw === 'en' || raw === 'ru') return raw
+  throw new Error(t('locale.invalidEnv', DEFAULT_LOCALE, { value: raw }))
+}
 
 // Brand-mint for CA bytes produced by the TOFU path. The wizard just
 // downloaded these from the server and wrote them to disk atomically, so
@@ -26,7 +39,7 @@ export interface Banner {
   body: string
 }
 
-function formatCertBlock(cert: CertSummary): string {
+function formatCertBlock(cert: CertSummary, locale: Locale): string {
   const issuerLine = cert.issuerOrg
     ? `${cert.issuerCN ?? '?'} (${cert.issuerOrg})`
     : (cert.issuerCN ?? '?')
@@ -36,31 +49,33 @@ function formatCertBlock(cert: CertSummary): string {
   const validToRaw = cert.validTo ?? '?'
   const parsed = cert.validTo ? Date.parse(cert.validTo) : NaN
   const expired = Number.isFinite(parsed) && parsed < Date.now()
-  const validToLine = expired ? `${validToRaw}  ⚠ ПРОСРОЧЕН` : validToRaw
+  const validToLine = expired
+    ? `${validToRaw}  ⚠ ${t('tls.banner.cert.expired', locale)}`
+    : validToRaw
   return [
-    `  Владелец:     ${cert.subject ?? '?'}`,
-    `  Издатель:     ${issuerLine}`,
-    `  Действителен: с ${cert.validFrom ?? '?'} до ${validToLine}`,
-    `  Отпечаток:    SHA-256 ${cert.fingerprint ?? '?'}`,
+    t('tls.banner.cert.subjectLine', locale, { value: cert.subject ?? '?' }),
+    t('tls.banner.cert.issuerLine', locale, { value: issuerLine }),
+    t('tls.banner.cert.validityLine', locale, {
+      from: cert.validFrom ?? '?',
+      to: validToLine,
+    }),
+    t('tls.banner.cert.fingerprintLine', locale, { fp: cert.fingerprint ?? '?' }),
   ].join('\n')
 }
 
-export function buildFreshTofuBanner(cert: CertSummary): Banner {
-  const hint = cert.selfSigned
-    ? '  (самоподписан — типично для dev/тестовых серверов)\n'
-    : ''
+export function buildFreshTofuBanner(cert: CertSummary, locale: Locale): Banner {
+  const hint = cert.selfSigned ? t('tls.banner.untrusted.selfSigned', locale) : ''
   const body = [
-    '⚠ Сертификат TLS не в системном хранилище доверенных',
-    hint.trimEnd(),
+    t('tls.banner.untrusted.body', locale),
+    hint,
     '',
-    formatCertBlock(cert),
+    formatCertBlock(cert, locale),
     '',
-    '  Сверьте отпечаток с админом сервера по отдельному каналу',
-    '  (мессенджер, телефон), затем выберите действие.',
+    t('tls.banner.untrusted.verifyAdmin', locale),
   ]
-    .filter((line) => line !== undefined)
+    .filter((line) => line !== '')
     .join('\n')
-  return { title: 'Подтверждение cert TrueConf', body }
+  return { title: t('tls.banner.untrusted.title', locale), body }
 }
 
 export function buildMismatchBanner(
@@ -68,218 +83,230 @@ export function buildMismatchBanner(
   current: CertSummary | null | undefined,
   caPath: string,
   tlsError: string,
+  locale: Locale,
 ): Banner {
-  const storedBlock = stored ? formatCertBlock(stored) : '  (не удалось распарсить сохранённую цепочку)'
-  const currentBlock = current ? formatCertBlock(current) : '  (сервер не отдал cert)'
+  const storedBlock = stored
+    ? formatCertBlock(stored, locale)
+    : t('tls.banner.mismatch.storedParseFail', locale)
+  const currentBlock = current
+    ? formatCertBlock(current, locale)
+    : t('tls.banner.cert.noServerCert', locale)
   const body = [
-    '⚠⚠ ВНИМАНИЕ: сохранённый trust anchor больше не валидирует сервер',
+    t('tls.banner.mismatch.body', locale),
     '',
-    `Сохранённый trust anchor (файл: ${caPath}):`,
+    t('tls.banner.mismatch.storedAnchor', locale, { caPath }),
     storedBlock,
     '',
-    'Сервер, подписанный сейчас (leaf):',
+    t('tls.banner.mismatch.serverNow', locale),
     currentBlock,
     '',
-    `TLS-стек: ${tlsError}`,
-    '(цепочка доверия от текущего cert\'а к сохранённому anchor\'у не собирается)',
+    t('tls.banner.mismatch.tlsStack', locale, { error: tlsError }),
+    t('tls.banner.mismatch.chainBroken', locale),
     '',
-    'Возможные причины:',
-    '  • смена internal CA сервера — уточни у админа;',
-    '  • атака «человек посередине» — сверь новый отпечаток',
-    '    с админом по отдельному каналу перед принятием.',
+    t('tls.banner.mismatch.causes', locale),
   ].join('\n')
-  return { title: 'Trust anchor mismatch', body }
+  return { title: t('tls.banner.mismatch.title', locale), body }
 }
 
 export function buildConfigMissingBanner(
   caPath: string,
   reason: string,
   currentCert: CertSummary | null | undefined,
+  locale: Locale,
 ): Banner {
-  const certBlock = currentCert ? formatCertBlock(currentCert) : '  (сервер не отдал cert)'
+  const certBlock = currentCert
+    ? formatCertBlock(currentCert, locale)
+    : t('tls.banner.cert.noServerCert', locale)
   const body = [
-    '⚠ Файл сохранённого trust anchor\'а не найден/не читается',
+    t('tls.banner.missing.body', locale),
     '',
-    `Ожидалось:  ${caPath}`,
-    `Статус:     ${reason}`,
+    t('tls.banner.missing.expected', locale, { caPath }),
+    t('tls.banner.missing.status', locale, { reason }),
     '',
-    'Сервер сейчас отдаёт untrusted сертификат:',
+    t('tls.banner.missing.serverNow', locale),
     certBlock,
     '',
-    'Возможные причины:',
-    '  • файл удалён вами или админом (плановая очистка);',
-    '  • файл удалён злоумышленником чтобы форсировать re-TOFU',
-    '    на (возможно) подменённый cert;',
-    '  • permission errors после cleanup / upgrade.',
+    t('tls.banner.missing.causes', locale),
     '',
-    'Сверьте отпечаток сервера с админом ДО re-TOFU.',
+    t('tls.banner.missing.verifyAdmin', locale),
   ].join('\n')
-  return { title: 'Missing trust anchor', body }
+  return { title: t('tls.banner.missing.title', locale), body }
 }
 
-export const trueconfSetupWizard: ChannelSetupWizard = {
-  channel,
+// Wizard descriptor factory. Resolved lazily so the bin can localize after
+// the language prompt; the SDK consumer (openclaw plugins install) gets the
+// DEFAULT_LOCALE-rendered instance via the legacy `trueconfSetupWizard`
+// export below. All operator-facing strings come from i18n keys; structural
+// fields (resolveConfigured, applySet, validate predicates) are unchanged.
+export function buildSetupWizardDescriptor(
+  translate: typeof t,
+  locale: Locale,
+): ChannelSetupWizard {
+  return {
+    channel,
 
-  status: {
-    configuredLabel: 'TrueConf: подключён',
-    unconfiguredLabel: 'TrueConf: нужны креды',
-    configuredHint: 'configured',
-    unconfiguredHint: 'needs bot credentials',
-    configuredScore: 2,
-    unconfiguredScore: 0,
-    resolveConfigured: ({ cfg }) => {
-      const tc = (cfg as { channels?: { trueconf?: { serverUrl?: string; username?: string; password?: unknown } } })
-        .channels?.trueconf
-      return Boolean(
-        tc?.serverUrl &&
-          tc?.username &&
-          hasConfiguredSecretInput(tc?.password),
-      )
-    },
-  },
-
-  introNote: {
-    title: 'Подключение к TrueConf',
-    lines: [
-      'Вам потребуется адрес сервера, логин и пароль бота.',
-    ],
-  },
-
-  envShortcut: {
-    prompt: 'TRUECONF_SERVER_URL/USERNAME/PASSWORD обнаружены — настроить автоматически?',
-    preferredEnvVar: 'TRUECONF_PASSWORD',
-    isAvailable: () =>
-      Boolean(
-        process.env.TRUECONF_SERVER_URL?.trim() &&
-          process.env.TRUECONF_USERNAME?.trim() &&
-          process.env.TRUECONF_PASSWORD?.trim(),
-      ),
-    apply: async ({ cfg }) => runHeadlessFinalize(cfg),
-  },
-
-  textInputs: [
-    {
-      inputKey: 'serverUrl' as never,
-      message: 'URL TrueConf Server',
-      placeholder: 'tc.example.com',
-      required: true,
-      currentValue: ({ cfg }) =>
-        (cfg as { channels?: { trueconf?: { serverUrl?: string } } }).channels?.trueconf?.serverUrl,
-      validate: ({ value }) => {
-        if (value.includes('://')) return 'Укажите хост без http(s)://'
-        if (/:\d+$/.test(value)) return 'Укажите хост без :порта — порт задаётся отдельным полем'
-        return undefined
-      },
-      applySet: ({ cfg, value }) =>
-        patchTopLevelChannelConfigSection({
-          cfg,
-          channel,
-          enabled: true,
-          patch: { serverUrl: value.trim() },
-        }),
-    },
-    {
-      inputKey: 'username' as never,
-      message: 'Логин бота (только имя, без @сервер)',
-      placeholder: 'bot_user',
-      required: true,
-      currentValue: ({ cfg }) =>
-        (cfg as { channels?: { trueconf?: { username?: string } } }).channels?.trueconf?.username,
-      applySet: ({ cfg, value }) =>
-        patchTopLevelChannelConfigSection({
-          cfg,
-          channel,
-          enabled: true,
-          patch: { username: value.trim() },
-        }),
-    },
-    {
-      inputKey: 'useTls' as never,
-      message: 'TLS? (пусто = авто-детект)',
-      required: false,
-      applyEmptyValue: true,
-      currentValue: ({ cfg }) => {
-        const tls = (cfg as { channels?: { trueconf?: { useTls?: boolean } } }).channels?.trueconf?.useTls
-        return tls === undefined ? '' : String(tls)
-      },
-      normalizeValue: ({ value }) =>
-        value === '' ? '' : value === 'true' ? 'true' : 'false',
-      applySet: ({ cfg, value }) => {
-        if (value === '') return cfg
-        return patchTopLevelChannelConfigSection({
-          cfg,
-          channel,
-          patch: { useTls: value === 'true' },
-        })
+    status: {
+      configuredLabel: translate('wizard.status.configuredLabel', locale),
+      unconfiguredLabel: translate('wizard.status.unconfiguredLabel', locale),
+      configuredHint: 'configured',
+      unconfiguredHint: 'needs bot credentials',
+      configuredScore: 2,
+      unconfiguredScore: 0,
+      resolveConfigured: ({ cfg }) => {
+        const tc = readTrueConfSection(cfg)
+        return Boolean(
+          tc.serverUrl &&
+            tc.username &&
+            hasConfiguredSecretInput(tc.password),
+        )
       },
     },
-    {
-      inputKey: 'port' as never,
-      message: 'Порт (пусто = scheme default 4309/443)',
-      required: false,
-      applyEmptyValue: true,
-      currentValue: ({ cfg }) =>
-        (cfg as { channels?: { trueconf?: { port?: number } } }).channels?.trueconf?.port?.toString(),
-      validate: ({ value }) => {
-        if (value === '') return
-        const n = Number.parseInt(value, 10)
-        return Number.isFinite(n) && n > 0 && n < 65536 ? undefined : 'Невалидный порт'
-      },
-      applySet: ({ cfg, value }) => {
-        if (value === '') return cfg
-        return patchTopLevelChannelConfigSection({
-          cfg,
-          channel,
-          patch: { port: Number.parseInt(value, 10) },
-        })
-      },
-    },
-  ],
 
-  credentials: [
-    {
-      inputKey: 'password' as never,
-      providerHint: 'trueconf',
-      credentialLabel: 'Пароль бота',
+    introNote: {
+      title: translate('wizard.intro.title', locale),
+      lines: [translate('wizard.intro.line1', locale)],
+    },
+
+    envShortcut: {
+      prompt: translate('wizard.envShortcut.prompt', locale),
       preferredEnvVar: 'TRUECONF_PASSWORD',
-      envPrompt: 'Использовать TRUECONF_PASSWORD из окружения?',
-      keepPrompt: 'Пароль TrueConf уже задан. Оставить?',
-      inputPrompt: 'Введите пароль бота',
-      allowEnv: () => Boolean(process.env.TRUECONF_PASSWORD?.trim()),
-      inspect: ({ cfg }) => {
-        const pwd = (cfg as { channels?: { trueconf?: { password?: unknown } } }).channels?.trueconf?.password
-        return {
-          accountConfigured: hasConfiguredSecretInput(pwd),
-          hasConfiguredValue: hasConfiguredSecretInput(pwd),
-          envValue: process.env.TRUECONF_PASSWORD,
-        }
-      },
-      applyUseEnv: ({ cfg }) =>
-        patchTopLevelChannelConfigSection({
-          cfg,
-          channel,
-          patch: { password: { useEnv: 'TRUECONF_PASSWORD' } },
-        }),
-      applySet: ({ cfg, value }) =>
-        patchTopLevelChannelConfigSection({
-          cfg,
-          channel,
-          patch: { password: String(value) },
-        }),
+      isAvailable: () =>
+        Boolean(
+          process.env.TRUECONF_SERVER_URL?.trim() &&
+            process.env.TRUECONF_USERNAME?.trim() &&
+            process.env.TRUECONF_PASSWORD?.trim(),
+        ),
+      apply: async ({ cfg }) => runHeadlessFinalize(cfg),
     },
-  ],
-  stepOrder: 'text-first',
 
-  finalize: (params) => interactiveFinalize(params),
-
-  completionNote: {
-    title: 'Готово',
-    lines: [
-      'Канал TrueConf настроен.',
-      'Запустить: openclaw gateway',
+    textInputs: [
+      {
+        inputKey: 'serverUrl' as never,
+        message: 'URL TrueConf Server',
+        placeholder: 'tc.example.com',
+        required: true,
+        currentValue: ({ cfg }) => readTrueConfSection(cfg).serverUrl,
+        validate: ({ value }) => {
+          if (value.includes('://')) return translate('wizard.input.serverUrl.invalidScheme', locale)
+          if (/:\d+$/.test(value)) return translate('wizard.input.serverUrl.invalidPort', locale)
+          return undefined
+        },
+        applySet: ({ cfg, value }) =>
+          patchTopLevelChannelConfigSection({
+            cfg,
+            channel,
+            enabled: true,
+            patch: { serverUrl: value.trim() },
+          }),
+      },
+      {
+        inputKey: 'username' as never,
+        message: translate('wizard.input.username.message', locale),
+        placeholder: 'bot_user',
+        required: true,
+        currentValue: ({ cfg }) => readTrueConfSection(cfg).username,
+        applySet: ({ cfg, value }) =>
+          patchTopLevelChannelConfigSection({
+            cfg,
+            channel,
+            enabled: true,
+            patch: { username: value.trim() },
+          }),
+      },
+      {
+        inputKey: 'useTls' as never,
+        message: translate('wizard.input.useTls.message', locale),
+        required: false,
+        applyEmptyValue: true,
+        currentValue: ({ cfg }) => {
+          const tls = readTrueConfSection(cfg).useTls
+          return tls === undefined ? '' : String(tls)
+        },
+        normalizeValue: ({ value }) =>
+          value === '' ? '' : value === 'true' ? 'true' : 'false',
+        applySet: ({ cfg, value }) => {
+          if (value === '') return cfg
+          return patchTopLevelChannelConfigSection({
+            cfg,
+            channel,
+            patch: { useTls: value === 'true' },
+          })
+        },
+      },
+      {
+        inputKey: 'port' as never,
+        message: translate('wizard.input.port.message', locale),
+        required: false,
+        applyEmptyValue: true,
+        currentValue: ({ cfg }) => readTrueConfSection(cfg).port?.toString(),
+        validate: ({ value }) => {
+          if (value === '') return
+          const n = Number.parseInt(value, 10)
+          return Number.isFinite(n) && n > 0 && n < 65536
+            ? undefined
+            : translate('wizard.input.port.invalid', locale)
+        },
+        applySet: ({ cfg, value }) => {
+          if (value === '') return cfg
+          return patchTopLevelChannelConfigSection({
+            cfg,
+            channel,
+            patch: { port: Number.parseInt(value, 10) },
+          })
+        },
+      },
     ],
-  },
+
+    credentials: [
+      {
+        inputKey: 'password' as never,
+        providerHint: 'trueconf',
+        credentialLabel: translate('wizard.credential.password.label', locale),
+        preferredEnvVar: 'TRUECONF_PASSWORD',
+        envPrompt: translate('wizard.credential.password.envPrompt', locale),
+        keepPrompt: translate('wizard.credential.password.keepPrompt', locale),
+        inputPrompt: translate('wizard.credential.password.inputPrompt', locale),
+        allowEnv: () => Boolean(process.env.TRUECONF_PASSWORD?.trim()),
+        inspect: ({ cfg }) => {
+          const pwd = readTrueConfSection(cfg).password
+          return {
+            accountConfigured: hasConfiguredSecretInput(pwd),
+            hasConfiguredValue: hasConfiguredSecretInput(pwd),
+            envValue: process.env.TRUECONF_PASSWORD,
+          }
+        },
+        applyUseEnv: ({ cfg }) =>
+          patchTopLevelChannelConfigSection({
+            cfg,
+            channel,
+            patch: { password: { useEnv: 'TRUECONF_PASSWORD' } },
+          }),
+        applySet: ({ cfg, value }) =>
+          patchTopLevelChannelConfigSection({
+            cfg,
+            channel,
+            patch: { password: String(value) },
+          }),
+      },
+    ],
+    stepOrder: 'text-first',
+
+    finalize: (params) => interactiveFinalize(params),
+
+    completionNote: {
+      title: translate('wizard.completion.title', locale),
+      lines: [
+        translate('wizard.completion.line1', locale),
+        translate('wizard.completion.line2', locale),
+      ],
+    },
+  }
 }
+
+// Backward-compat: the openclaw SDK consumer (plugins install) imports this
+// at module load and renders strings before any locale resolution. Default
+// locale is 'en' per i18n.ts.
+export const trueconfSetupWizard: ChannelSetupWizard = buildSetupWizardDescriptor(t, DEFAULT_LOCALE)
 
 function resolveAbsPath(raw: string): string {
   const expanded = raw.startsWith('~/') || raw === '~'
@@ -296,35 +323,36 @@ async function loadAndValidateEnvCa(args: {
   envPath: string
   host: string
   port: number
+  locale: Locale
 }): Promise<{ abs: string; caBytes: ValidatedCaBytes }> {
+  const { locale } = args
   const abs = resolveAbsPath(args.envPath)
   let bytes: Buffer
   try {
     bytes = readFileSync(abs)
   } catch (err) {
-    throw new Error(`TRUECONF_CA_PATH=${abs}: не могу прочитать (${(err as Error).message})`)
+    throw new Error(t('tls.cafile.envUnreadable', locale, { path: abs, reason: (err as Error).message }))
   }
   const cert = parseCertFromPem(bytes)
   if (!cert) {
-    throw new Error(
-      `TRUECONF_CA_PATH=${abs}: не PEM. DER/P7B не поддерживаются — ` +
-      `конвертируй: openssl x509 -in file -inform DER -out file.pem`,
-    )
+    throw new Error(t('tls.cafile.envNotPem', locale, { path: abs }))
   }
   const v = await validateCaAgainstServer({ caBytes: bytes, host: args.host, port: args.port })
   if (!v.ok) {
     if (v.kind === 'unreachable') {
-      throw new Error(
-        `TRUECONF_CA_PATH=${abs}: не могу подключиться к ${args.host}:${args.port} — ${v.error}. ` +
-        `CA не проверить пока сервер недоступен.`,
-      )
+      throw new Error(t('tls.cafile.envUnreachable', locale, {
+        path: abs,
+        host: args.host,
+        port: args.port,
+        error: v.error,
+      }))
     }
-    throw new Error(
-      `TRUECONF_CA_PATH=${abs}: файл не валидирует этот сервер. ` +
-      `Trust anchor в файле: ${cert.issuerCN ?? cert.subject ?? '?'}; ` +
-      `сервер отдаёт cert с издателем ${v.serverCert?.issuerCN ?? '?'}. ` +
-      `TLS error: ${v.error}`,
-    )
+    throw new Error(t('tls.cafile.envWrongCa', locale, {
+      path: abs,
+      fileIssuer: cert.issuerCN ?? cert.subject ?? '?',
+      serverIssuer: v.serverCert?.issuerCN ?? '?',
+      error: v.error,
+    }))
   }
   return { abs, caBytes: v.caBytes }
 }
@@ -340,12 +368,24 @@ async function readCaFileInteractive(args: {
   prompter: WizardPrompter
   host: string
   port: number
+  locale: Locale
 }): Promise<{ nextCaPath: string; nextCaBytes: ValidatedCaBytes }> {
-  const { prompter, host, port } = args
+  const { prompter, host, port, locale } = args
   const reasons: string[] = []
+  // Render the CA-path hint banner once before entering the retry loop. The
+  // hint explains where TrueConf admins typically find the cert (*.crt under
+  // HTTPS panel) and that it can be renamed to *.pem if already in PEM. Lives
+  // here so all callers (fresh-untrusted, missing-file, mismatch) see the
+  // same guidance the moment they pick "use a file".
+  const hint = [
+    t('tls.cafile.hint.intro', locale),
+    t('tls.cafile.hint.format', locale),
+    t('tls.cafile.hint.location', locale),
+  ].join('\n\n')
+  await prompter.note(hint, t('cafile.title', locale))
   for (let attempt = 0; attempt < MAX_CA_FILE_ATTEMPTS; attempt++) {
     const rawPath = String(await prompter.text({
-      message: 'Путь к файлу сертификата (PEM):',
+      message: t('cafile.prompt', locale),
     }))
     // Empty input = the user cancelled the prompt (Ctrl+C in real prompters,
     // drained script queue in test prompters). Bail out fast with an
@@ -358,9 +398,9 @@ async function readCaFileInteractive(args: {
     try {
       bytes = readFileSync(abs)
     } catch (err) {
-      const reason = `${abs}: не могу прочитать (${(err as Error).message})`
+      const reason = t('tls.cafile.unreadable', locale, { path: abs, reason: (err as Error).message })
       reasons.push(reason)
-      await prompter.note(reason, 'CA file input')
+      await prompter.note(reason, t('cafile.title', locale))
       continue
     }
     const cert = parseCertFromPem(bytes)
@@ -368,8 +408,8 @@ async function readCaFileInteractive(args: {
       const reason = `${abs}: не PEM`
       reasons.push(reason)
       await prompter.note(
-        'Файл не PEM. DER/P7B не поддерживаются — конвертируй: openssl x509 -in cert.der -inform DER -out cert.pem',
-        'CA file input',
+        t('cafile.notPem', locale),
+        t('cafile.title', locale),
       )
       continue
     }
@@ -378,20 +418,20 @@ async function readCaFileInteractive(args: {
       if (v.kind === 'unreachable') {
         reasons.push(`${abs}: server unreachable (${v.error})`)
         await prompter.note(
-          `Не могу подключиться к ${host}:${port} — ${v.error}.\nCA-файл не проверить пока сервер недоступен. Проверь сеть/DNS/firewall и повтори.`,
-          'CA file input',
+          t('cafile.unreachable', locale, { host, port, error: v.error }),
+          t('cafile.title', locale),
         )
       } else {
         reasons.push(`${abs}: chain mismatch (${v.error})`)
         await prompter.note(
-          [
-            'Файл не валидирует этот сервер:',
-            `  Trust anchor в файле: ${cert.issuerCN ?? cert.subject ?? '?'} (отпечаток ${shortFp(cert.fingerprint)})`,
-            `  Сервер подписан: ${v.serverCert?.issuerCN ?? v.serverCert?.subject ?? '?'} (отпечаток ${shortFp(v.serverCert?.fingerprint)})`,
-            '  Возможно: не тот файл / не тот сервер / chain не полный.',
-            `  TLS-стек: ${v.error}`,
-          ].join('\n'),
-          'CA file input',
+          t('cafile.chainMismatch', locale, {
+            fileIssuer: cert.issuerCN ?? cert.subject ?? '?',
+            fileFp: shortFp(cert.fingerprint),
+            serverIssuer: v.serverCert?.issuerCN ?? v.serverCert?.subject ?? '?',
+            serverFp: shortFp(v.serverCert?.fingerprint),
+            error: v.error,
+          }),
+          t('cafile.title', locale),
         )
       }
       continue
@@ -419,8 +459,10 @@ async function downloadAndAudit(args: {
   prompter?: WizardPrompter
   // Headless override: accept rotation unattended (CI / bootstrap).
   acceptRotated?: boolean
+  // Locale for the rotation prompt. Headless callers pass DEFAULT_LOCALE.
+  locale: Locale
 }): Promise<{ nextCaPath: string; nextCaBytes: ValidatedCaBytes }> {
-  const { host, port, mode, expected, prompter, acceptRotated } = args
+  const { host, port, mode, expected, prompter, acceptRotated, locale } = args
   const { path: ca, bytes } = await downloadCAChain({ host, port })
   const cert = parseCertFromPem(bytes)
 
@@ -431,22 +473,16 @@ async function downloadAndAudit(args: {
   const expFp = expected?.fingerprint ?? null
   const gotFp = cert?.fingerprint ?? null
   if (expFp && gotFp && expFp !== gotFp) {
-    const diff = [
-      '⚠⚠ Сертификат сервера ИЗМЕНИЛСЯ между показом баннера и скачиванием',
-      '',
-      'В баннере был:',
-      `  ${expected?.subject ?? '?'} / отпечаток ${expFp}`,
-      '',
-      'Скачан:',
-      `  ${cert?.subject ?? '?'} / отпечаток ${gotFp}`,
-      '',
-      'Либо плановая ротация сервером в момент setup, либо active MITM.',
-      'Сверь новый отпечаток с админом по отдельному каналу перед принятием.',
-    ].join('\n')
+    const diff = t('rotation.body', locale, {
+      expectedSubject: expected?.subject ?? '?',
+      expectedFp: expFp,
+      gotSubject: cert?.subject ?? '?',
+      gotFp,
+    })
     if (prompter) {
-      await prompter.note(diff, 'Обнаружена ротация cert')
+      await prompter.note(diff, t('rotation.title', locale))
       const confirmed = await prompter.confirm({
-        message: 'Всё равно закрепить только что скачанный cert?',
+        message: t('rotation.confirm', locale),
         initialValue: false,
       })
       if (!confirmed) {
@@ -480,8 +516,9 @@ async function handleUntrustedCert(args: {
   port: number
   existingCaPath: string | undefined
   currentCert: CertSummary | undefined
-}): Promise<{ nextCaPath: string; nextCaBytes: ValidatedCaBytes }> {
-  const { prompter, host, port, existingCaPath, currentCert } = args
+  locale: Locale
+}): Promise<{ nextCaPath?: string; nextCaBytes?: ValidatedCaBytes; tlsVerify?: boolean }> {
+  const { prompter, host, port, existingCaPath, currentCert, locale } = args
 
   if (existingCaPath) {
     const resolved = resolveAbsPath(existingCaPath)
@@ -494,18 +531,22 @@ async function handleUntrustedCert(args: {
     }
 
     if (!storedBytes) {
+      const reason = readErr?.code === 'ENOENT'
+        ? t('tls.banner.missing.reasonAbsent', locale)
+        : t('tls.banner.missing.reasonReadErr', locale, { message: readErr?.message ?? 'unknown' })
       const banner = buildConfigMissingBanner(
         resolved,
-        readErr?.code === 'ENOENT' ? 'файл отсутствует' : `ошибка чтения: ${readErr?.message ?? 'unknown'}`,
+        reason,
         currentCert ?? null,
+        locale,
       )
       await prompter.note(banner.body, banner.title)
       const choice = await prompter.select<string>({
-        message: 'Что делать?',
+        message: t('select.whatToDo', locale),
         options: [
-          { value: 'abort',    label: 'Отменить и разобраться (безопасно)' },
-          { value: 're-tofu',  label: 'Скачать цепочку заново (re-TOFU)' },
-          { value: 'use-file', label: 'Указать новый путь к файлу' },
+          { value: 'abort',    label: t('select.option.abort', locale) },
+          { value: 're-tofu',  label: t('select.option.reTofu', locale) },
+          { value: 'use-file', label: t('select.option.useFile', locale) },
         ],
       })
       if (choice === 'abort') {
@@ -518,9 +559,10 @@ async function handleUntrustedCert(args: {
           mode: 're-tofu',
           expected: currentCert ?? null,
           prompter,
+          locale,
         })
       }
-      return await readCaFileInteractive({ prompter, host, port })
+      return await readCaFileInteractive({ prompter, host, port, locale })
     }
 
     const v = await validateCaAgainstServer({ caBytes: storedBytes, host, port })
@@ -538,14 +580,14 @@ async function handleUntrustedCert(args: {
     }
 
     const storedCert = parseCertFromPem(storedBytes)
-    const banner = buildMismatchBanner(storedCert, currentCert ?? null, resolved, v.error)
+    const banner = buildMismatchBanner(storedCert, currentCert ?? null, resolved, v.error, locale)
     await prompter.note(banner.body, banner.title)
     const choice = await prompter.select<string>({
-      message: 'Что делать?',
+      message: t('select.whatToDo', locale),
       options: [
-        { value: 'abort',      label: 'Отменить и разобраться (безопасно)' },
-        { value: 'accept-new', label: 'Принять новый сертификат и перезаписать цепочку' },
-        { value: 'use-file',   label: 'Использовать файл от админа — укажу путь' },
+        { value: 'abort',      label: t('select.option.abort', locale) },
+        { value: 'accept-new', label: t('select.option.acceptNew', locale) },
+        { value: 'use-file',   label: t('select.option.useFileFromAdmin', locale) },
       ],
     })
     if (choice === 'abort') {
@@ -558,38 +600,45 @@ async function handleUntrustedCert(args: {
         mode: 'accept-new',
         expected: currentCert ?? null,
         prompter,
+        locale,
       })
     }
-    return await readCaFileInteractive({ prompter, host, port })
+    return await readCaFileInteractive({ prompter, host, port, locale })
   }
 
-  // Fresh TOFU
+  // Fresh untrusted cert (no prior caPath). Two safe paths only: pin a CA file
+  // the admin provided, or explicitly disable TLS verification for this
+  // TrueConf account. The legacy auto-download path is intentionally absent
+  // from this menu — it is reachable only as recovery for an existing caPath
+  // (re-tofu / accept-new branches above).
   if (!currentCert) {
-    throw new Error(`Untrusted TLS on ${host} but server returned no certificate — cannot prompt for TOFU`)
+    throw new Error(`Untrusted TLS on ${host} but server returned no certificate — cannot prompt for untrusted-cert flow`)
   }
-  const banner = buildFreshTofuBanner(currentCert)
+  const banner = buildFreshTofuBanner(currentCert, locale)
   await prompter.note(banner.body, banner.title)
   const choice = await prompter.select<string>({
-    message: 'Что делать?',
+    message: t('select.whatToDo', locale),
     options: [
-      { value: 'accept',   label: 'Принять и сохранить цепочку в ~/.openclaw/trueconf-ca.pem' },
-      { value: 'use-file', label: 'У меня есть файл сертификата от админа — укажу путь' },
-      { value: 'abort',    label: 'Отменить настройку' },
+      { value: 'use-file', label: t('tls.untrusted.choice.use-file', locale) },
+      { value: 'insecure', label: t('tls.untrusted.choice.insecure', locale) },
+      { value: 'abort',    label: t('select.option.abortSetup', locale) },
     ],
   })
   if (choice === 'abort') {
     throw new Error(`User aborted: untrusted cert on ${host}`)
   }
-  if (choice === 'accept') {
-    return await downloadAndAudit({
-      host,
-      port,
-      mode: 'fresh-tofu',
-      expected: currentCert,
-      prompter,
+  if (choice === 'insecure') {
+    await prompter.note(t('tls.insecure.warning', locale), t('tls.untrusted.title', locale))
+    const confirmed = await prompter.confirm({
+      message: t('tls.insecure.confirm', locale),
+      initialValue: false,
     })
+    if (!confirmed) {
+      throw new Error(`User declined to disable TLS verification on ${host}`)
+    }
+    return { tlsVerify: false }
   }
-  return await readCaFileInteractive({ prompter, host, port })
+  return await readCaFileInteractive({ prompter, host, port, locale })
 }
 
 export async function interactiveFinalize(params: {
@@ -602,15 +651,27 @@ export async function interactiveFinalize(params: {
   forceAllowFrom: boolean
 }): Promise<{ cfg: OpenClawConfig }> {
   const { cfg, prompter, credentialValues } = params
-  const tc =
-    (cfg as { channels?: { trueconf?: {
-      serverUrl?: string
-      username?: string
-      password?: string | { useEnv: string }
-      useTls?: boolean
-      port?: number
-      caPath?: string
-    } } }).channels?.trueconf ?? {}
+  const tc = readTrueConfSection(cfg)
+
+  // Resolve locale before any prompter call. Precedence: env > cfg > prompt.
+  // Env raw-read here (not via resolveAccount) to keep the precedence check
+  // simple and avoid threading through normalize().
+  const envLocale = readEnvLocale()
+  let locale: Locale
+  if (envLocale) {
+    locale = envLocale
+  } else if (tc.setupLocale === 'en' || tc.setupLocale === 'ru') {
+    locale = tc.setupLocale
+  } else {
+    const picked = await prompter.select<Locale>({
+      message: t('language.prompt', DEFAULT_LOCALE),
+      options: [
+        { value: 'en', label: t('language.option.en', DEFAULT_LOCALE) },
+        { value: 'ru', label: t('language.option.ru', DEFAULT_LOCALE) },
+      ],
+    })
+    locale = picked === 'ru' ? 'ru' : 'en'
+  }
 
   const serverUrl = tc.serverUrl
   const username = tc.username
@@ -624,6 +685,11 @@ export async function interactiveFinalize(params: {
   let port: number | undefined = tc.port
   let caPath: string | undefined
   let caBytes: ValidatedCaBytes | undefined
+  // tlsVerify is undefined unless the user explicitly picks insecure mode
+  // below. Default-undefined means "verify via system trust or pinned CA";
+  // only literal `false` opts out, matching the runtime resolver in
+  // src/config.ts that requires `tlsVerify === false` to disable verification.
+  let tlsVerify: boolean | undefined
 
   // STEP 1 — explicit env override takes precedence over probe + stored CA.
   // Rationale: operators bootstrapping via CI / Ansible / Kubernetes need a
@@ -631,7 +697,7 @@ export async function interactiveFinalize(params: {
   // that wins over whatever is currently on disk.
   const envPath = process.env.TRUECONF_CA_PATH?.trim()
   if (envPath) {
-    const loaded = await loadAndValidateEnvCa({ envPath, host: serverUrl, port: port ?? 443 })
+    const loaded = await loadAndValidateEnvCa({ envPath, host: serverUrl, port: port ?? 443, locale })
     useTls = true
     port = port ?? 443
     caPath = loaded.abs
@@ -641,12 +707,12 @@ export async function interactiveFinalize(params: {
     // on re-setup with a stored caPath, `probe.caUntrusted` fires when the
     // server cert has rotated or been MITM'd, routing us into the mismatch
     // branch in handleUntrustedCert. First-setup path uses the same probe.
-    await prompter.note('Определяю TLS/порт...', 'Проверка сервера')
+    await prompter.note(t('probe.detecting', locale), t('probe.title', locale))
     const probe = await probeTls({ host: serverUrl, port })
     if (!probe.reachable) {
       await prompter.note(
-        `Probe не смог определить TLS/порт (${probe.error ?? 'unknown'}).\nПробую HTTPS на порту 443 — если не сработает, OAuth вернёт точную причину.`,
-        'Probe пропущен',
+        t('probe.skipped', locale, { error: probe.error ?? 'unknown' }),
+        t('probe.skippedTitle', locale),
       )
       useTls = true
       port = port ?? 443
@@ -654,18 +720,22 @@ export async function interactiveFinalize(params: {
       useTls = probe.useTls
       port = port ?? probe.port
       if (probe.caUntrusted && useTls) {
-        // STEP 3 — branch into the TOFU UX only when the probe actually saw
-        // an untrusted cert. A trusted cert means system-CAs already cover it,
-        // so we skip pinning entirely and fall through to OAuth.
-        const { nextCaPath, nextCaBytes } = await handleUntrustedCert({
+        // STEP 3 — branch into the untrusted-cert UX only when the probe
+        // actually saw an untrusted cert. A trusted cert means system-CAs
+        // already cover it, so we skip pinning entirely and fall through to
+        // OAuth. The handler may return a CA file (legacy/use-file paths) or
+        // a tlsVerify:false opt-out (new fresh-untrusted insecure choice).
+        const decision = await handleUntrustedCert({
           prompter,
           host: serverUrl,
           port: port!,
           existingCaPath: tc.caPath,
           currentCert: probe.cert,
+          locale,
         })
-        caPath = nextCaPath
-        caBytes = nextCaBytes
+        caPath = decision.nextCaPath
+        caBytes = decision.nextCaBytes
+        tlsVerify = decision.tlsVerify
       }
     }
   }
@@ -676,13 +746,18 @@ export async function interactiveFinalize(params: {
   let currentPassword = password
   let validated = false
   for (let attempt = 0; attempt < 3 && !validated; attempt++) {
+    // tlsVerify:false means the user opted out of cert verification entirely
+    // for this account, so do NOT pass `ca` even if some prior step left bytes
+    // around — the dispatcher would just ignore them, and shipping both is a
+    // contradictory signal to readers.
     const result = await validateOAuthCredentials({
       serverUrl,
       username,
       password: currentPassword,
       useTls,
       port,
-      ca: caBytes,
+      ca: tlsVerify === false ? undefined : caBytes,
+      tlsVerify,
     })
     if (result.ok) {
       validated = true
@@ -690,33 +765,55 @@ export async function interactiveFinalize(params: {
     }
 
     if (result.category === 'invalid-credentials' && attempt < 2) {
-      await prompter.note(`Неверный пароль (${attempt + 1}/3)`, 'OAuth')
+      await prompter.note(
+        t('oauth.invalidPassword', locale, { attempt: attempt + 1 }),
+        t('oauth.title', locale),
+      )
       currentPassword = String(await prompter.text({
-        message: 'Введите пароль ещё раз',
+        message: t('oauth.passwordRetry', locale),
       }))
       continue
     }
 
-    await prompter.note(`OAuth error: ${result.error}`, 'Ошибка')
+    await prompter.note(
+      t('oauth.error', locale, { error: result.error }),
+      t('oauth.errorTitle', locale),
+    )
     throw new Error(`OAuth failed (user="${username}", server="${serverUrl}"): ${result.category}: ${result.error}`)
+  }
+
+  // Clear stale trust-mode fields based on the path we took. Mutually
+  // exclusive: useTls:false drops both caPath+tlsVerify (no TLS = no trust
+  // anchor); strict CA / system trust drops tlsVerify (we are verifying);
+  // insecure (tlsVerify:false) drops caPath (we are not pinning).
+  const clearFields: string[] = []
+  if (useTls === false) {
+    clearFields.push('caPath', 'tlsVerify')
+  } else if (tlsVerify === false) {
+    clearFields.push('caPath')
+  } else {
+    clearFields.push('tlsVerify')
   }
 
   const nextCfg = patchTopLevelChannelConfigSection({
     cfg,
     channel,
     enabled: true,
+    clearFields,
     patch: {
       ...(useTls !== undefined && { useTls }),
       ...(port !== undefined && { port }),
+      ...(useTls !== false && caPath !== undefined && { caPath }),
+      ...(tlsVerify === false && { tlsVerify: false }),
       password: currentPassword,
-      // Clear pinned caPath when TLS is explicitly off — a stale path would
-      // otherwise be read by loadCaFromAccount at runtime and handed to a
-      // ws:// socket that never uses it.
-      caPath: useTls === false ? undefined : caPath,
+      setupLocale: locale,
     },
   })
 
-  await prompter.note(`Подключено как ${username}`, 'TrueConf ready')
+  await prompter.note(
+    t('connected.body', locale, { username }),
+    t('connected.title', locale),
+  )
   return { cfg: nextCfg }
 }
 
@@ -725,6 +822,14 @@ export async function interactiveFinalize(params: {
 // OAuth once (no retry — fail fast in CI/bootstrap contexts), and returns a
 // patched cfg with channels.trueconf filled in. Exported for integration tests.
 export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClawConfig> {
+  const cfgTc = readTrueConfSection(cfg)
+
+  // Resolve locale at top of function. Headless never prompts; if neither env
+  // nor cfg sets it, fall back to DEFAULT_LOCALE ('en'). Invalid env throws.
+  const envLocale = readEnvLocale()
+  const locale: Locale = envLocale
+    ?? (cfgTc.setupLocale === 'en' || cfgTc.setupLocale === 'ru' ? cfgTc.setupLocale : DEFAULT_LOCALE)
+
   const serverUrl = process.env.TRUECONF_SERVER_URL?.trim()
   const username = process.env.TRUECONF_USERNAME?.trim()
   const password = process.env.TRUECONF_PASSWORD?.trim()
@@ -744,24 +849,46 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
   let resolvedPort = portHint
   let caPath: string | undefined
   let caBytes: ValidatedCaBytes | undefined
+  let tlsVerify: boolean | undefined
 
   const envCaPath = process.env.TRUECONF_CA_PATH?.trim()
+  const envTlsVerify = process.env.TRUECONF_TLS_VERIFY?.trim()
 
-  // 1) Explicit env override takes precedence
-  if (envCaPath) {
+  // Operator-acknowledged insecure mode via env. Only `'false'` or unset
+  // are accepted — `'true'`/anything else throws so a typo doesn't silently
+  // fall through to strict mode under the wrong assumption. Conflict with
+  // TRUECONF_CA_PATH is fatal: pinning a CA AND skipping verification is
+  // contradictory operator intent and we'd rather refuse than guess.
+  if (envTlsVerify !== undefined && envTlsVerify !== '') {
+    if (envTlsVerify !== 'false') {
+      throw new Error(t('tls.insecure.invalidEnv', locale, { value: envTlsVerify }))
+    }
+    if (envCaPath) {
+      throw new Error(t('tls.insecure.conflict', locale))
+    }
+    if (useTlsHint === false || (useTlsHint !== true && cfgTc.useTls === false)) {
+      throw new Error(t('tls.insecure.useTlsConflict', locale))
+    }
+    tlsVerify = false
+    resolvedUseTls = true
+    resolvedPort = resolvedPort ?? 443
+  }
+
+  // 1) Explicit CA env override takes precedence (skipped when in insecure mode)
+  if (tlsVerify !== false && envCaPath) {
     const loaded = await loadAndValidateEnvCa({
       envPath: envCaPath,
       host: serverUrl,
       port: resolvedPort ?? 443,
+      locale,
     })
     resolvedUseTls = true
     resolvedPort = resolvedPort ?? 443
     caPath = loaded.abs
     caBytes = loaded.caBytes
-  } else {
-    // 2) Check configured caPath in current cfg
-    const tc = (cfg as { channels?: { trueconf?: { caPath?: string } } }).channels?.trueconf
-    const existing = tc?.caPath
+  } else if (tlsVerify !== false) {
+    // 2) Check configured caPath in current cfg (skipped in insecure mode)
+    const existing = cfgTc.caPath
 
     if (existing) {
       const abs = resolveAbsPath(existing)
@@ -811,6 +938,7 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
             mode: 'headless-auto',
             expected: probe.cert ?? null,
             acceptRotated: process.env.TRUECONF_ACCEPT_ROTATED_CERT === 'true',
+            locale,
           })
           caPath = dl.nextCaPath
           caBytes = dl.nextCaBytes
@@ -831,23 +959,42 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
     password,
     useTls: resolvedUseTls,
     port: resolvedPort,
-    ca: caBytes,
+    // Insecure mode discards any stale ca bytes — verifier must see a clean
+    // "no trust anchor + skip verification" call so behavior matches the
+    // wizard's interactive insecure path.
+    ca: tlsVerify === false ? undefined : caBytes,
+    tlsVerify,
   })
   if (!result.ok) {
     throw new Error(`OAuth failed (user="${username}", server="${serverUrl}"): ${result.category}: ${result.error}`)
+  }
+
+  // Same three-mode mutual-exclusion rule as interactiveFinalize: useTls:false
+  // drops both trust knobs, insecure drops caPath (and sets tlsVerify), strict
+  // drops tlsVerify.
+  const clearFields: string[] = []
+  if (resolvedUseTls === false) {
+    clearFields.push('caPath', 'tlsVerify')
+  } else if (tlsVerify === false) {
+    clearFields.push('caPath')
+  } else {
+    clearFields.push('tlsVerify')
   }
 
   return patchTopLevelChannelConfigSection({
     cfg,
     channel,
     enabled: true,
+    clearFields,
     patch: {
       serverUrl,
       username,
       password,
+      setupLocale: locale,
       ...(resolvedUseTls !== undefined && { useTls: resolvedUseTls }),
       ...(resolvedPort !== undefined && { port: resolvedPort }),
-      caPath: resolvedUseTls === false ? undefined : caPath,
+      ...(tlsVerify === false && { tlsVerify: false }),
+      ...(resolvedUseTls !== false && tlsVerify !== false && caPath !== undefined && { caPath }),
     },
   })
 }

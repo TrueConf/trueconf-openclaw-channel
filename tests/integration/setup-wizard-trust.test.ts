@@ -62,6 +62,9 @@ beforeEach(() => {
   for (const k of Object.keys(process.env)) {
     if (k.startsWith('TRUECONF_')) delete process.env[k]
   }
+  // Pin to Russian so existing assertions on Russian wizard copy keep matching;
+  // the language prompt is skipped when TRUECONF_SETUP_LOCALE is set.
+  process.env.TRUECONF_SETUP_LOCALE = 'ru'
   oauth().mockReset()
   oauth().mockResolvedValue({ ok: true })
   tmpCaDir = mkdtempSync(join(tmpdir(), 'trust-test-'))
@@ -273,20 +276,70 @@ describe('interactiveFinalize — mismatch vs silent happy', () => {
   })
 })
 
-describe('interactiveFinalize — fresh TOFU', () => {
+describe('interactiveFinalize — fresh untrusted cert', () => {
   let server: Awaited<ReturnType<typeof startTlsFixtureServer>>
   beforeEach(async () => { server = await startTlsFixtureServer('ca-valid') })
   afterEach(async () => { await server.close() })
 
-  it('no existing caPath, untrusted cert → accept → chain downloaded and saved', async () => {
+  it('no existing caPath, untrusted cert → use-file → user-supplied PEM saved', async () => {
     const cfg = makeCfg({ port: server.port, useTls: true })
-    const prompter = makeFakePrompter({ selectResponses: ['accept'] })
+    const prompter = makeFakePrompter({
+      selectResponses: ['use-file'],
+      textResponses: [join(FIXTURES, 'ca-valid.pem')],
+    })
     const result = await interactiveFinalize({
       cfg, prompter, credentialValues: { password: 'x' },
       accountId: 'default', forceAllowFrom: false,
     })
-    expect((result.cfg as any).channels.trueconf.caPath).toContain('trueconf-ca.pem')
-    expect(download()).toHaveBeenCalledTimes(1)
+    expect((result.cfg as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
+    expect(download()).not.toHaveBeenCalled()
+  })
+
+  it('fresh untrusted cert -> insecure choice saves tlsVerify=false and no caPath', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true })
+    const prompter = makeFakePrompter({ selectResponses: ['insecure'], confirmResponses: [true] })
+    const result = await interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })
+    expect((result.cfg as any).channels.trueconf.tlsVerify).toBe(false)
+    expect((result.cfg as any).channels.trueconf.caPath).toBeUndefined()
+    const args = oauth().mock.calls[0][0]
+    expect((args as any).tlsVerify).toBe(false)
+    expect(args.ca).toBeUndefined()
+  })
+
+  it('use-file clears stale tlsVerify=false', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true, tlsVerify: false })
+    process.env.TRUECONF_CA_PATH = join(FIXTURES, 'ca-valid.pem')
+    const result = await interactiveFinalize({
+      cfg, prompter: makeFakePrompter({}), credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })
+    expect((result.cfg as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
+    expect((result.cfg as any).channels.trueconf.tlsVerify).toBeUndefined()
+  })
+
+  it('self-signed CA path prompt explains TrueConf crt/pem location', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true })
+    const notes: Array<{ body: string; title?: string }> = []
+    const prompter = makeFakePrompter({
+      selectResponses: ['use-file'],
+      textResponses: [join(FIXTURES, 'ca-valid.pem')],
+    }) as any
+    const originalNote = prompter.note
+    prompter.note = async (body: string, title?: string) => {
+      notes.push({ body, title })
+      return originalNote(body, title)
+    }
+    await interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })
+    const text = notes.map((n) => n.body).join('\n')
+    expect(text).toMatch(/\*\.crt/)
+    expect(text).toMatch(/\*\.pem/)
+    expect(text).toMatch(/HTTPS/)
   })
 })
 
@@ -351,7 +404,7 @@ describe('runHeadlessFinalize — trust paths', () => {
   let server: Awaited<ReturnType<typeof startTlsFixtureServer>>
   beforeEach(async () => { server = await startTlsFixtureServer('ca-valid') })
   afterEach(async () => {
-    for (const k of ['TRUECONF_SERVER_URL','TRUECONF_USERNAME','TRUECONF_PASSWORD','TRUECONF_USE_TLS','TRUECONF_PORT','TRUECONF_CA_PATH','TRUECONF_ACCEPT_UNTRUSTED_CA']) {
+    for (const k of ['TRUECONF_SERVER_URL','TRUECONF_USERNAME','TRUECONF_PASSWORD','TRUECONF_USE_TLS','TRUECONF_PORT','TRUECONF_CA_PATH','TRUECONF_ACCEPT_UNTRUSTED_CA','TRUECONF_TLS_VERIFY']) {
       delete process.env[k]
     }
     await server.close()
@@ -399,6 +452,75 @@ describe('runHeadlessFinalize — trust paths', () => {
     expect((next as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
     const args = oauth().mock.calls[0][0]
     expect(Buffer.from(args.ca!).equals(readFileSync(join(FIXTURES, 'ca-valid.pem')))).toBe(true)
+  })
+
+  it('TRUECONF_TLS_VERIFY=false → tlsVerify=false saved, OAuth gets tlsVerify=false and no ca', async () => {
+    baseEnv()
+    process.env.TRUECONF_TLS_VERIFY = 'false'
+    const next = await runHeadlessFinalize({} as never)
+    expect((next as any).channels.trueconf.tlsVerify).toBe(false)
+    expect((next as any).channels.trueconf.caPath).toBeUndefined()
+    const args = oauth().mock.calls[0][0] as { tlsVerify?: boolean; ca?: unknown }
+    expect(args.tlsVerify).toBe(false)
+    expect(args.ca).toBeUndefined()
+  })
+
+  it('TRUECONF_TLS_VERIFY=false + TRUECONF_CA_PATH together → fatal abort', async () => {
+    baseEnv()
+    process.env.TRUECONF_TLS_VERIFY = 'false'
+    process.env.TRUECONF_CA_PATH = join(FIXTURES, 'ca-valid.pem')
+    await expect(runHeadlessFinalize({} as never)).rejects.toThrow(/TRUECONF_CA_PATH.*TRUECONF_TLS_VERIFY/)
+  })
+
+  it('TRUECONF_TLS_VERIFY=false + TRUECONF_USE_TLS=false together → fatal abort', async () => {
+    baseEnv()
+    process.env.TRUECONF_USE_TLS = 'false'
+    process.env.TRUECONF_TLS_VERIFY = 'false'
+    await expect(runHeadlessFinalize({} as never)).rejects.toThrow(/TRUECONF_USE_TLS.*TRUECONF_TLS_VERIFY/)
+  })
+
+  it('TRUECONF_TLS_VERIFY=false + cfg.useTls=false (no env useTls) → fatal abort', async () => {
+    baseEnv()
+    delete process.env.TRUECONF_USE_TLS
+    process.env.TRUECONF_TLS_VERIFY = 'false'
+    const cfg = { channels: { trueconf: { useTls: false } } }
+    await expect(runHeadlessFinalize(cfg as never)).rejects.toThrow(/TRUECONF_USE_TLS.*TRUECONF_TLS_VERIFY/)
+  })
+
+  it('TRUECONF_USE_TLS=true overrides cfg.useTls=false even when TLS_VERIFY=false', async () => {
+    baseEnv()
+    process.env.TRUECONF_USE_TLS = 'true'
+    process.env.TRUECONF_TLS_VERIFY = 'false'
+    const cfg = { channels: { trueconf: { useTls: false } } }
+    const next = await runHeadlessFinalize(cfg as never)
+    expect((next as any).channels.trueconf.useTls).toBe(true)
+    expect((next as any).channels.trueconf.tlsVerify).toBe(false)
+  })
+
+  it('env CA-file throws honor TRUECONF_SETUP_LOCALE=en (wrong CA path)', async () => {
+    process.env.TRUECONF_SETUP_LOCALE = 'en'
+    baseEnv()
+    process.env.TRUECONF_CA_PATH = join(FIXTURES, 'ca-other.pem')
+    await expect(runHeadlessFinalize({} as never)).rejects.toThrow(
+      /TRUECONF_CA_PATH=.*does not validate this server/,
+    )
+  })
+
+  it('TRUECONF_TLS_VERIFY=garbage → fail-fast with both supported values listed', async () => {
+    baseEnv()
+    process.env.TRUECONF_TLS_VERIFY = 'true' // anything other than 'false' or unset is invalid
+    // Loose matcher — file is pinned to ru locale, so the en suffix
+    // ("or unset") and ru suffix ("или не задано") both follow `'false'`.
+    await expect(runHeadlessFinalize({} as never)).rejects.toThrow(/TRUECONF_TLS_VERIFY.*'false'/)
+  })
+
+  it('TRUECONF_TLS_VERIFY=false clears stale caPath from cfg', async () => {
+    baseEnv()
+    process.env.TRUECONF_TLS_VERIFY = 'false'
+    const cfg = { channels: { trueconf: { caPath: join(FIXTURES, 'ca-valid.pem') } } }
+    const next = await runHeadlessFinalize(cfg as never)
+    expect((next as any).channels.trueconf.caPath).toBeUndefined()
+    expect((next as any).channels.trueconf.tlsVerify).toBe(false)
   })
 
   // The TRUECONF_ACCEPT_UNTRUSTED_CA gate lives behind the raw-probe branch,

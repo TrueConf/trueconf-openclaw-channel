@@ -25,7 +25,17 @@ export function makeFakePrompter(script: FakePrompterScript = {}): WizardPrompte
     outro: async () => {},
     note: async () => {},
     text: async () => text.shift() ?? '',
-    select: async () => (select.length > 0 ? select.shift() : ''),
+    // Auto-handle the bin's language prompt (env+cfg empty fresh path) so
+    // existing tests don't need to thread an 'en' / 'ru' response through
+    // every selectResponses script. We detect it by the option shape: a
+    // select with values { 'en', 'ru' } is unambiguously the language picker
+    // (no other prompt in the wizard uses both 'en' and 'ru' as values).
+    select: async (opts?: { options?: ReadonlyArray<{ value: unknown }> }) => {
+      const values = opts?.options?.map((o) => o.value) ?? []
+      const isLanguagePrompt = values.includes('en') && values.includes('ru')
+      if (isLanguagePrompt) return 'en'
+      return select.length > 0 ? select.shift() : ''
+    },
     multiselect: async () => [],
     confirm: async () => (confirm.length > 0 ? Boolean(confirm.shift()) : true),
     progress: () => ({ update: () => {}, stop: () => {} }),

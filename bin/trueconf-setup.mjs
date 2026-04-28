@@ -25,7 +25,7 @@ function checkNodeVersion() {
   const [maj, min] = process.versions.node.split('.').map((n) => Number.parseInt(n, 10))
   if (!Number.isFinite(maj) || maj < MIN_NODE_MAJOR || (maj === MIN_NODE_MAJOR && min < MIN_NODE_MINOR)) {
     throw new Error(
-      `Node.js ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR}+ требуется, у вас ${process.versions.node}. Обновитесь: https://nodejs.org/`,
+      `Node.js ${MIN_NODE_MAJOR}.${MIN_NODE_MINOR}+ required, you have ${process.versions.node}. Upgrade: https://nodejs.org/`,
     )
   }
 }
@@ -33,10 +33,48 @@ function checkNodeVersion() {
 async function loadFinalizers() {
   const mod = await jiti.import(join(REPO_ROOT, 'src/channel-setup.ts'))
   return {
-    trueconfSetupWizard: mod.trueconfSetupWizard,
+    buildSetupWizardDescriptor: mod.buildSetupWizardDescriptor,
     interactiveFinalize: mod.interactiveFinalize,
     runHeadlessFinalize: mod.runHeadlessFinalize,
   }
+}
+
+async function loadI18n() {
+  const mod = await jiti.import(join(REPO_ROOT, 'src/i18n.ts'))
+  return { t: mod.t }
+}
+
+// Read TRUECONF_SETUP_LOCALE env. Returns null when unset, throws on invalid
+// values so misconfigured CI/Ansible bootstrap fails loud instead of silently
+// falling back to a default. Split from cfg-read so the bin can decide
+// whether to surface a language prompt before trusting cfg state.
+function readEnvLocale() {
+  const raw = process.env.TRUECONF_SETUP_LOCALE
+  if (raw === 'en' || raw === 'ru') return raw
+  if (raw !== undefined) {
+    throw new Error(`TRUECONF_SETUP_LOCALE must be 'en' or 'ru', got: ${raw}`)
+  }
+  return null
+}
+
+function readCfgLocale(cfg) {
+  const v = cfg?.channels?.trueconf?.setupLocale
+  return v === 'en' || v === 'ru' ? v : null
+}
+
+// Interactive language picker. Called only when neither env nor cfg pinned a
+// locale — gives the operator the choice that the wizard otherwise locks
+// silently to en. Labels stay locale-neutral ('English' / 'Russian') so the
+// picker reads the same in both languages (see i18n.ts language.option.*).
+async function promptLanguage(prompter, t) {
+  const picked = await prompter.select({
+    message: t('language.prompt', 'en'),
+    options: [
+      { value: 'en', label: t('language.option.en', 'en') },
+      { value: 'ru', label: t('language.option.ru', 'en') },
+    ],
+  })
+  return picked === 'ru' ? 'ru' : 'en'
 }
 
 async function loadProbe() {
@@ -44,14 +82,17 @@ async function loadProbe() {
   return {
     probeTls: mod.probeTls,
     downloadCAChain: mod.downloadCAChain,
+    parseCertFromPem: mod.parseCertFromPem,
+    validateCaAgainstServer: mod.validateCaAgainstServer,
   }
 }
 
-async function loadClackPrompter() {
+async function loadClackPrompter(t, locale) {
   // Direct @clack/prompts usage avoids coupling to the openclaw SDK's
   // setup-runtime re-export, which isn't guaranteed across our peerDep range.
   const clack = await import('@clack/prompts')
   const unwrap = (v) => (typeof v === 'symbol' ? null : v)
+  const cancelMsg = t('bin.cancel', locale)
   return {
     intro: async (msg) => clack.intro(msg),
     outro: async (msg) => clack.outro(msg),
@@ -63,27 +104,27 @@ async function loadClackPrompter() {
         initialValue: opts.initialValue,
         validate: opts.validate,
       })
-      if (clack.isCancel(r)) { clack.cancel('Отменено'); process.exit(1) }
+      if (clack.isCancel(r)) { clack.cancel(cancelMsg); process.exit(1) }
       return unwrap(r) ?? ''
     },
     password: async (opts) => {
       const r = await clack.password({ message: opts.message, validate: opts.validate })
-      if (clack.isCancel(r)) { clack.cancel('Отменено'); process.exit(1) }
+      if (clack.isCancel(r)) { clack.cancel(cancelMsg); process.exit(1) }
       return unwrap(r) ?? ''
     },
     confirm: async (opts) => {
       const r = await clack.confirm({ message: opts.message, initialValue: opts.initialValue })
-      if (clack.isCancel(r)) { clack.cancel('Отменено'); process.exit(1) }
+      if (clack.isCancel(r)) { clack.cancel(cancelMsg); process.exit(1) }
       return Boolean(r)
     },
     select: async (opts) => {
       const r = await clack.select({ message: opts.message, options: opts.options })
-      if (clack.isCancel(r)) { clack.cancel('Отменено'); process.exit(1) }
+      if (clack.isCancel(r)) { clack.cancel(cancelMsg); process.exit(1) }
       return r
     },
     multiselect: async (opts) => {
       const r = await clack.multiselect({ message: opts.message, options: opts.options, required: false })
-      if (clack.isCancel(r)) { clack.cancel('Отменено'); process.exit(1) }
+      if (clack.isCancel(r)) { clack.cancel(cancelMsg); process.exit(1) }
       return Array.isArray(r) ? r : []
     },
     progress: (opts) => {
@@ -102,12 +143,19 @@ function readJsonConfig(configPath) {
 
 // Reads the CA bundle into memory so probe.mjs can receive it as bytes.
 // Keeps probe.mjs free of filesystem reads for the security scanner.
+//
+// Throws loud on read failure: silently swallowing ENOENT here would
+// downgrade the operator's pinned-CA trust mode to system trust without
+// any indication, violating the "no silent fallbacks on readFileSync(caPath)"
+// invariant in AGENTS.md. Caller is responsible for handing tlsVerify=false
+// paths a `caPath` of undefined so this never fires for insecure mode.
 function readCaBuffer(caPath) {
   if (!caPath) return undefined
   try {
     return readFileSync(caPath)
-  } catch {
-    return undefined
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    throw new Error(`CA file unreadable: ${caPath} (${reason})`)
   }
 }
 
@@ -162,7 +210,7 @@ function hasExistingTrueconfChannel(cfg) {
   return Boolean(cfg.channels?.trueconf)
 }
 
-async function promptInteractiveInputs(prompter, wizard, currentCfg) {
+async function promptInteractiveInputs(prompter, wizard, currentCfg, t, locale) {
   // Optional inputs with no existing value are skipped; probe step owns TLS/port.
   let cfg = currentCfg
   for (const input of wizard.textInputs) {
@@ -177,7 +225,7 @@ async function promptInteractiveInputs(prompter, wizard, currentCfg) {
     })
     const value = typeof raw === 'string' ? raw.trim() : ''
     if (value === '' && !input.applyEmptyValue && current !== undefined) continue
-    if (value === '' && input.required) throw new Error(`Поле обязательно: ${input.message}`)
+    if (value === '' && input.required) throw new Error(t('bin.fieldRequired', locale, { message: input.message }))
     if (input.validate) {
       const err = input.validate({ value, cfg, accountId: 'default' })
       if (err) throw new Error(`${input.message}: ${err}`)
@@ -190,14 +238,14 @@ async function promptInteractiveInputs(prompter, wizard, currentCfg) {
   return cfg
 }
 
-async function promptPassword(prompter, wizard, cfg) {
+async function promptPassword(prompter, wizard, cfg, t, locale) {
   const credential = wizard.credentials[0]
   const state = credential.inspect({ cfg, accountId: 'default' })
   const allowEnv = credential.allowEnv?.({ cfg, accountId: 'default' }) ?? false
 
   if (allowEnv && state.envValue) {
     const useEnv = await prompter.confirm({
-      message: credential.envPrompt ?? `Использовать ${credential.preferredEnvVar} из окружения?`,
+      message: credential.envPrompt ?? t('bin.useEnvVar', locale, { var: credential.preferredEnvVar }),
       initialValue: true,
     })
     if (useEnv) {
@@ -208,46 +256,113 @@ async function promptPassword(prompter, wizard, cfg) {
 
   if (state.hasConfiguredValue) {
     const keep = await prompter.confirm({
-      message: credential.keepPrompt ?? 'Пароль уже задан. Оставить?',
+      message: credential.keepPrompt ?? t('bin.passwordKeep', locale),
       initialValue: true,
     })
     if (keep) return { cfg, credentialValues: {} }
   }
 
-  const pwd = await prompter.password({ message: credential.inputPrompt ?? 'Введите пароль' })
-  if (typeof pwd !== 'string' || pwd === '') throw new Error('Пароль не может быть пустым')
+  const pwd = await prompter.password({ message: credential.inputPrompt ?? t('bin.passwordPrompt', locale) })
+  if (typeof pwd !== 'string' || pwd === '') throw new Error(t('bin.passwordEmpty', locale))
   const nextCfg = credential.applySet({ cfg, value: pwd, accountId: 'default' })
   return { cfg: nextCfg, credentialValues: { [credential.inputKey]: pwd } }
 }
 
-async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTls, currentPort) {
-  // If user has pinned useTls or port in cfg, skip probe and respect choice.
+async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTls, currentPort, currentCaPath, t, locale) {
+  // If user has pinned useTls + port in cfg, skip probe and respect choice.
+  // Preserve any existing cfg.caPath through the short-circuit so the pin
+  // is not silently dropped on re-run; useTls=false renders caPath moot
+  // (mutually exclusive trust modes), so clear it in that case.
   if (currentUseTls !== undefined && currentPort !== undefined) {
-    return { useTls: currentUseTls, port: currentPort, caPath: undefined }
+    return {
+      useTls: currentUseTls,
+      port: currentPort,
+      caPath: currentUseTls === false ? undefined : currentCaPath,
+      caBytes: undefined,
+      tlsVerify: undefined,
+    }
   }
 
-  await prompter.note('Определяю TLS/порт...', 'Проверка сервера')
+  await prompter.note(t('probe.detecting', locale), t('probe.title', locale))
   const probe = await probeModule.probeTls({ host: serverUrl, port: currentPort })
 
-  let useTls, port, caPath, reason
+  let useTls, port, caPath, caBytes, tlsVerify, reason
   if (probe.reachable) {
     useTls = currentUseTls ?? probe.useTls
     port = currentPort ?? probe.port
     if (probe.caUntrusted && useTls) {
-      const confirmCa = await prompter.confirm({
-        message: 'Сертификат самоподписанный или от корпоративного CA. Скачать цепочку в ~/.openclaw/trueconf-ca.pem?',
-        initialValue: true,
+      const choice = await prompter.select({
+        message: t('select.whatToDo', locale),
+        options: [
+          { value: 'use-file', label: t('tls.untrusted.choice.use-file', locale) },
+          { value: 'insecure', label: t('tls.untrusted.choice.insecure', locale) },
+          { value: 'abort',    label: t('select.option.abortSetup', locale) },
+        ],
       })
-      if (!confirmCa) throw new Error(`User aborted: untrusted cert on ${serverUrl}`)
-      caPath = (await probeModule.downloadCAChain({ host: serverUrl, port })).path
+      if (choice === 'abort') {
+        throw new Error(`User aborted: untrusted cert on ${serverUrl}`)
+      }
+      if (choice === 'use-file') {
+        const hint = [
+          t('tls.cafile.hint.intro', locale),
+          t('tls.cafile.hint.format', locale),
+          t('tls.cafile.hint.location', locale),
+        ].join('\n')
+        await prompter.note(hint, t('cafile.title', locale))
+        const raw = await prompter.text({ message: t('cafile.prompt', locale) })
+        if (typeof raw !== 'string' || raw.trim() === '') {
+          throw new Error(`User aborted: empty CA path`)
+        }
+        const expanded = raw.startsWith('~/') || raw === '~' ? raw.replace(/^~/, homedir()) : raw
+        const abs = resolve(expanded)
+        // Validate inline so non-PEM / wrong-CA surfaces as a localized error
+        // before the operator-supplied path can be saved through the OAuth
+        // save-anyway fallback. Bytes are reused below for the OAuth call —
+        // single read closes the TOCTOU window between validate and use.
+        let bytes
+        try {
+          bytes = readFileSync(abs)
+        } catch (err) {
+          throw new Error(t('tls.cafile.unreadable', locale, {
+            path: abs, reason: err instanceof Error ? err.message : String(err),
+          }))
+        }
+        const cert = probeModule.parseCertFromPem(bytes)
+        if (!cert) {
+          throw new Error(t('cafile.notPem', locale))
+        }
+        const v = await probeModule.validateCaAgainstServer({ caBytes: bytes, host: serverUrl, port })
+        if (!v.ok) {
+          if (v.kind === 'unreachable') {
+            throw new Error(t('cafile.unreachable', locale, { host: serverUrl, port, error: v.error }))
+          }
+          throw new Error(t('cafile.chainMismatch', locale, {
+            fileIssuer: cert.issuerCN ?? cert.subject ?? '?',
+            fileFp: cert.fingerprint ?? '?',
+            serverIssuer: v.serverCert?.issuerCN ?? '?',
+            serverFp: v.serverCert?.fingerprint ?? '?',
+            error: v.error,
+          }))
+        }
+        caPath = abs
+        caBytes = bytes
+      } else {
+        await prompter.note(t('tls.insecure.warning', locale), t('tls.untrusted.title', locale))
+        const confirmed = await prompter.confirm({
+          message: t('tls.insecure.confirm', locale),
+          initialValue: false,
+        })
+        if (!confirmed) throw new Error(`User aborted: untrusted cert on ${serverUrl}`)
+        tlsVerify = false
+      }
     }
-    reason = probe.caUntrusted ? 'tls-untrusted' : (useTls ? 'tls-valid' : 'bridge-open')
+    reason = probe.caUntrusted ? (tlsVerify === false ? 'tls-insecure' : 'tls-untrusted') : (useTls ? 'tls-valid' : 'bridge-open')
   } else {
     // Probe failure is a hint, not a gate: OAuth over a corporate proxy can
     // still succeed even when a raw TLS probe is firewalled.
     await prompter.note(
-      `Probe не смог определить TLS/порт: ${probe.error ?? 'unknown'}.\nПо умолчанию пробую HTTPS:443. OAuth вернёт точную причину если не сработает.`,
-      'Probe пропущен',
+      t('probe.skipped', locale, { error: probe.error ?? 'unknown' }),
+      t('probe.skippedTitle', locale),
     )
     useTls = currentUseTls ?? true
     port = currentPort ?? 443
@@ -258,76 +373,90 @@ async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTl
   const scheme = useTls ? 'wss' : 'ws'
   const isDefaultPort = (useTls && port === 443) || (!useTls && port === 80)
   const hostPart = isDefaultPort ? serverUrl : `${serverUrl}:${port}`
+  const caClause = caPath ? t('probe.preview.reason.caClause', locale, { path: caPath }) : ''
   const reasonLabels = {
-    'tls-valid': `TLS на ${port}, валидный сертификат`,
-    'tls-untrusted': `TLS на ${port}, корпоративный/самоподписанный CA${caPath ? ` (скачан в ${caPath})` : ''}`,
-    'bridge-open': `без TLS, Bridge на ${port}`,
-    'fallback': `probe не ответил, пробую HTTPS:${port}`,
+    'tls-valid': t('probe.preview.reason.tlsValid', locale, { port }),
+    'tls-untrusted': t('probe.preview.reason.tlsUntrusted', locale, { port, caClause }),
+    'tls-insecure': t('probe.preview.reason.tlsInsecure', locale, { port }),
+    'bridge-open': t('probe.preview.reason.bridgeOpen', locale, { port }),
+    'fallback': t('probe.preview.reason.fallback', locale, { port }),
   }
   await prompter.note(
     `${scheme}://${hostPart}/websocket/chat_bot/\n(${reasonLabels[reason] ?? reason})`,
-    'Подключусь как',
+    t('probe.preview.title', locale),
   )
 
   const accept = await prompter.confirm({
-    message: 'Принять?',
+    message: t('probe.preview.accept', locale),
     initialValue: true,
   })
-  if (accept) return { useTls, port, caPath }
+  if (accept) return { useTls, port, caPath, caBytes, tlsVerify }
 
   // Manual override branch.
-  const manualTls = await prompter.confirm({ message: 'TLS (https/wss)?', initialValue: useTls })
+  const manualTls = await prompter.confirm({ message: t('probe.preview.tlsToggle', locale), initialValue: useTls })
+  const manualPortDefault = manualTls ? 443 : 4309
   const manualPortRaw = await prompter.text({
-    message: `Порт (пусто = ${manualTls ? 443 : 4309})`,
-    placeholder: String(manualTls ? 443 : 4309),
+    message: t('probe.preview.port', locale, { default: manualPortDefault }),
+    placeholder: String(manualPortDefault),
   })
   const manualPortTrimmed = typeof manualPortRaw === 'string' ? manualPortRaw.trim() : ''
-  const manualPort = manualPortTrimmed === '' ? (manualTls ? 443 : 4309) : Number.parseInt(manualPortTrimmed, 10)
+  const manualPort = manualPortTrimmed === '' ? manualPortDefault : Number.parseInt(manualPortTrimmed, 10)
   if (!Number.isFinite(manualPort) || manualPort < 1 || manualPort > 65535) {
-    throw new Error(`Невалидный порт: ${manualPortRaw}`)
+    throw new Error(t('probe.preview.invalidPort', locale, { value: String(manualPortRaw) }))
   }
-  return { useTls: manualTls, port: manualPort, caPath }
+  return { useTls: manualTls, port: manualPort, caPath, caBytes, tlsVerify }
 }
 
-function patchChannelWithFinalValues(cfg, { serverUrl, username, password, useTls, port, caPath }) {
+function patchChannelWithFinalValues(cfg, { serverUrl, username, password, useTls, port, caPath, tlsVerify, setupLocale }) {
   // Shallow-patch channels.trueconf preserving any existing side-fields
   // (dmPolicy, allowFrom, maxFileSize, etc.) that the user configured manually.
+  // Mutually exclusive trust modes: when tlsVerify === false the saved cfg
+  // must NOT carry a stale caPath — runtime would otherwise see two
+  // contradictory trust signals. We rebuild the spread without caPath in
+  // that case rather than relying on the consumer to ignore it.
   const existing = cfg.channels?.trueconf ?? {}
+  const { caPath: _existingCaPath, tlsVerify: _existingTlsVerify, ...existingRest } = existing
+  const trueconf = {
+    ...existingRest,
+    enabled: true,
+    serverUrl,
+    username,
+    password,
+    useTls,
+    port,
+    ...(setupLocale && { setupLocale }),
+  }
+  if (tlsVerify === false) {
+    trueconf.tlsVerify = false
+  } else if (caPath) {
+    trueconf.caPath = caPath
+  }
   return {
     ...cfg,
     channels: {
       ...cfg.channels,
-      trueconf: {
-        ...existing,
-        enabled: true,
-        serverUrl,
-        username,
-        password,
-        useTls,
-        port,
-        ...(caPath && { caPath }),
-      },
+      trueconf,
     },
   }
 }
 
-function showFinalBanner(prompter, { backupPath, caPath, wizard }) {
+function showFinalBanner(prompter, { backupPath, caPath, wizard, t, locale }) {
   const lines = []
-  if (backupPath) lines.push(`Предыдущий конфиг сохранён: ${backupPath}`)
-  lines.push('', 'Дальше:')
-  lines.push('  1. Настроить LLM-провайдера, если ещё не: openclaw configure')
-  lines.push('  2. Запустить gateway:')
+  if (backupPath) lines.push(t('bin.completion.backupSaved', locale, { path: backupPath }))
+  lines.push('', t('bin.completion.next', locale))
+  lines.push(t('bin.completion.step1', locale))
+  lines.push(t('bin.completion.step2', locale))
   if (caPath) {
-    lines.push(`       openclaw gateway      (CA уже прописан в конфиг, доп. env не нужен)`)
-    lines.push(`       # или на старой openclaw без caPath-поддержки:`)
+    lines.push(t('bin.completion.gatewayCa', locale))
+    lines.push(t('bin.completion.gatewayLegacy', locale))
     lines.push(`       NODE_EXTRA_CA_CERTS=${caPath} openclaw gateway`)
   } else {
     lines.push('       openclaw gateway')
   }
-  lines.push('', 'Ожидаемые логи успеха:')
+  lines.push('', t('bin.completion.expectedLogs', locale))
   lines.push('  [trueconf] Starting 1 account(s)')
   lines.push('  [trueconf] Connected and authenticated')
-  return prompter.note(lines.join('\n'), wizard.completionNote?.title ?? 'Готово')
+  return prompter.note(lines.join('\n'), wizard.completionNote?.title ?? t('bin.completion.title', locale))
 }
 
 export async function runSetup({ configPath: configPathArg, prompter: injectedPrompter, probeModule: injectedProbe } = {}) {
@@ -335,9 +464,18 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
 
   const configPath = configPathArg ?? join(homedir(), '.openclaw', 'openclaw.json')
   const cfg = readJsonConfig(configPath)
-  const { trueconfSetupWizard, runHeadlessFinalize } = await loadFinalizers()
+  const { buildSetupWizardDescriptor, runHeadlessFinalize } = await loadFinalizers()
+
+  // Fail-fast on invalid TRUECONF_SETUP_LOCALE before any backup/probe/OAuth
+  // work. cfg-read is separate so we can decide between honoring stored locale
+  // and surfacing a language prompt for fresh installs.
+  const envLocale = readEnvLocale()
+  const cfgLocale = readCfgLocale(cfg)
+  const { t } = await loadI18n()
 
   if (hasEnvShortcut()) {
+    // Headless path bypasses the wizard entirely. Locale only matters for
+    // any error throwsa runHeadlessFinalize emits; default 'en' is fine.
     const nextCfg = await runHeadlessFinalize(cfg)
     const { cfg: cleaned } = cleanupStaleEntries(nextCfg)
     // Backup only after finalize succeeds — otherwise repeated CI failures
@@ -350,34 +488,53 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
     return { backupPath, mode: 'headless' }
   }
 
-  const prompter = injectedPrompter ?? (await loadClackPrompter())
+  // Prompter must exist before the language prompt; it's also the cancel-msg
+  // owner, so the locale passed here only colors that one banner. Subsequent
+  // prompts honor the resolved `locale` below.
+  const initialLocale = envLocale ?? cfgLocale ?? 'en'
+  const prompter = injectedPrompter ?? (await loadClackPrompter(t, initialLocale))
+
+  // Show language prompt only when neither env nor cfg pinned a locale.
+  // UAT scenarios E2/E3 (env or cfg locale set) → no prompt; A1/E1 (fresh
+  // install, nothing set) → prompt.
+  let locale
+  if (envLocale) locale = envLocale
+  else if (cfgLocale) locale = cfgLocale
+  else locale = await promptLanguage(prompter, t)
+
+  // Build the wizard descriptor with the now-final locale so all operator-
+  // facing strings (intro, validate messages, credential prompts, completion)
+  // render in the user's chosen language.
+  const wizard = buildSetupWizardDescriptor(t, locale)
 
   if (hasExistingTrueconfChannel(cfg)) {
     const overwrite = await prompter.confirm({
-      message: 'В конфиге уже есть channels.trueconf. Перезаписать?',
+      message: t('bin.overwrite.confirm', locale),
       initialValue: false,
     })
     if (!overwrite) {
       await prompter.note(
-        'Конфиг не тронут. Чтобы запустить без изменений: openclaw gateway',
-        'Отменено',
+        t('bin.overwrite.untouched', locale),
+        t('bin.cancel', locale),
       )
       return { mode: 'cancelled-overwrite' }
     }
   }
 
-  if (trueconfSetupWizard.introNote) {
+  if (wizard.introNote) {
     await prompter.note(
-      trueconfSetupWizard.introNote.lines.join('\n'),
-      trueconfSetupWizard.introNote.title,
+      wizard.introNote.lines.join('\n'),
+      wizard.introNote.title,
     )
   }
 
-  const cfgWithInputs = await promptInteractiveInputs(prompter, trueconfSetupWizard, cfg)
+  const cfgWithInputs = await promptInteractiveInputs(prompter, wizard, cfg, t, locale)
   const { cfg: cfgWithPassword, credentialValues } = await promptPassword(
     prompter,
-    trueconfSetupWizard,
+    wizard,
     cfgWithInputs,
+    t,
+    locale,
   )
 
   const tcFields = cfgWithPassword.channels?.trueconf ?? {}
@@ -385,16 +542,19 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
   const username = tcFields.username
   const password = credentialValues.password ?? tcFields.password
   if (!serverUrl || !username || !password) {
-    throw new Error('Invariant: серверU/логин/пароль не собрались к финальной стадии')
+    throw new Error('Invariant: serverUrl/username/password missing at finalize entry')
   }
 
   const probeModule = injectedProbe ?? (await loadProbe())
-  const { useTls, port, caPath } = await promptProbePreview(
+  const { useTls, port, caPath, caBytes, tlsVerify } = await promptProbePreview(
     prompter,
     probeModule,
     serverUrl,
     tcFields.useTls,
     tcFields.port,
+    tcFields.caPath,
+    t,
+    locale,
   )
 
   const { validateOAuthCredentials } = injectedProbe ?? (await import(join(REPO_ROOT, 'src/probe.mjs')))
@@ -403,16 +563,21 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
   let currentPassword = password
 
   for (let attempt = 0; attempt < 3 && !oauthOk; attempt++) {
+    // tlsVerify:false drops the CA bytes — passing both is a contradictory
+    // signal to validateOAuthCredentials and the operator already opted out
+    // of pinning when they picked insecure mode.
     const result = await validateOAuthCredentials({
-      serverUrl, username, password: currentPassword, useTls, port, ca: readCaBuffer(caPath),
+      serverUrl, username, password: currentPassword, useTls, port,
+      ca: tlsVerify === false ? undefined : (caBytes ?? readCaBuffer(caPath)),
+      tlsVerify,
     })
     if (result.ok) { oauthOk = true; break }
     oauthError = result
     if (result.category === 'invalid-credentials' && attempt < 2) {
-      await prompter.note(`Неверный пароль (${attempt + 1}/3)`, 'OAuth')
-      currentPassword = await prompter.password({ message: 'Введите пароль ещё раз' })
+      await prompter.note(t('oauth.invalidPassword', locale, { attempt: attempt + 1 }), t('oauth.title', locale))
+      currentPassword = await prompter.password({ message: t('oauth.passwordRetry', locale) })
       if (typeof currentPassword !== 'string' || currentPassword === '') {
-        throw new Error('Пароль не может быть пустым')
+        throw new Error(t('bin.passwordEmpty', locale))
       }
       continue
     }
@@ -424,7 +589,7 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
 
   if (oauthOk) {
     finalCfg = patchChannelWithFinalValues(cfgWithPassword, {
-      serverUrl, username, password: currentPassword, useTls, port, caPath,
+      serverUrl, username, password: currentPassword, useTls, port, caPath, tlsVerify, setupLocale: locale,
     })
   } else {
     // Save-without-validation fallback — only for categories other than
@@ -434,22 +599,22 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
       throw new Error(`OAuth failed (user="${username}", server="${serverUrl}"): ${errMsg}`)
     }
     await prompter.note(
-      `OAuth ошибка: ${errMsg}\nСервер мог быть временно недоступен, за прокси, или TLS-конфигурация странная.`,
-      'Проверка не прошла',
+      t('bin.oauth.errorBody', locale, { error: errMsg }),
+      t('bin.oauth.errorTitle', locale),
     )
     // Default=true only for `network` (transient/intermittent). For `tls`
     // and `server-error`, retry at gateway startup will hit the same wall,
     // so default=false and require user to actively opt in.
     const saveAnywayDefault = oauthError.category === 'network'
     const saveAnyway = await prompter.confirm({
-      message: 'Сохранить креды как есть? OAuth проверится при `openclaw gateway`',
+      message: t('bin.oauth.saveAnyway', locale),
       initialValue: saveAnywayDefault,
     })
     if (!saveAnyway) {
       throw new Error(`OAuth failed (user="${username}", server="${serverUrl}"): ${errMsg}`)
     }
     finalCfg = patchChannelWithFinalValues(cfgWithPassword, {
-      serverUrl, username, password: currentPassword, useTls, port, caPath,
+      serverUrl, username, password: currentPassword, useTls, port, caPath, tlsVerify, setupLocale: locale,
     })
     savedWithoutValidation = true
   }
@@ -458,25 +623,25 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
   const { backupPath, error: backupErr } = backupConfigIfExists(configPath)
   if (backupErr) {
     await prompter.note(
-      `Не смог создать backup (${backupErr.message}). Продолжаем без него.`,
+      t('bin.backupFailed', locale, { message: backupErr.message }),
       'Backup warning',
     )
   }
   writeJsonConfigAtomic(configPath, cleanedFinal)
 
   if (cleaned) {
-    await prompter.note('Удалил устаревший plugins.entries.trueconf из конфига', 'Очистка')
+    await prompter.note(t('bin.cleanup.removed', locale), t('bin.cleanup.title', locale))
   }
   if (savedWithoutValidation) {
     await prompter.note(
-      'Конфиг записан без OAuth-валидации. Если при `openclaw gateway` будут ошибки подключения — запусти `npm run setup` ещё раз.',
-      'Важно',
+      t('bin.savedNoOauth.body', locale),
+      t('bin.savedNoOauth.title', locale),
     )
   } else {
-    await prompter.note(`Подключено как ${username}`, 'TrueConf ready')
+    await prompter.note(t('connected.body', locale, { username }), t('connected.title', locale))
   }
 
-  await showFinalBanner(prompter, { backupPath, caPath, wizard: trueconfSetupWizard })
+  await showFinalBanner(prompter, { backupPath, caPath, wizard, t, locale })
 
   return { backupPath, caPath, mode: savedWithoutValidation ? 'saved-without-validation' : 'saved' }
 }

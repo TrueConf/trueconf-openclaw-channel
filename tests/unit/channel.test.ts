@@ -50,6 +50,21 @@ describe('channel.ts caPath plumbing', () => {
       }),
     ).toThrow(/trust anchor unreadable.*\/nonexistent\/path\/ca\.pem/)
   })
+
+  it('loadCaFromAccount returns undefined and skips caPath read when tlsVerify=false', async () => {
+    const { loadCaFromAccount } = await import('../../src/channel')
+    const ca = loadCaFromAccount({
+      accountId: 'default',
+      configured: true,
+      enabled: true,
+      serverUrl: 'tc.example.com',
+      username: 'bot',
+      password: 'pw',
+      caPath: '/nonexistent/path/ca.pem',
+      tlsVerify: false,
+    })
+    expect(ca).toBeUndefined()
+  })
 })
 
 describe('shutdownAccountEntry', () => {

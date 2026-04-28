@@ -16,9 +16,9 @@ interface NormalizedConfig {
 
 function normalize(cfg: TrueConfChannelConfig): NormalizedConfig {
   if ('serverUrl' in cfg && !('accounts' in cfg)) {
-    const { serverUrl, username, password, useTls, port, enabled, caPath, dmPolicy, allowFrom } = cfg
+    const { serverUrl, username, password, useTls, port, enabled, caPath, tlsVerify, setupLocale, dmPolicy, allowFrom } = cfg
     return {
-      accounts: { default: { serverUrl, username, password, useTls, port, enabled, caPath } },
+      accounts: { default: { serverUrl, username, password, useTls, port, enabled, caPath, tlsVerify, setupLocale } },
       dmPolicy: dmPolicy ?? 'open',
       allowFrom,
     }
@@ -79,6 +79,8 @@ export function resolveAccount(
     useTls: raw.useTls,
     port: normalizePort(raw.port),
     caPath: raw.caPath,
+    tlsVerify: raw.tlsVerify,
+    setupLocale: raw.setupLocale,
   }
 }
 

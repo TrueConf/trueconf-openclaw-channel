@@ -86,4 +86,37 @@ describe('resolveAccount with secret-ref password', () => {
     } as never)
     expect(account.caPath).toBe('/tmp/custom-ca.pem')
   })
+
+  it('exposes tlsVerify=false on ResolvedAccount when set on flat config', () => {
+    const account = resolveAccount({
+      serverUrl: 'tc.example.com',
+      username: 'bot@tc.example.com',
+      password: 'plain',
+      tlsVerify: false,
+    } as never)
+    expect(account.tlsVerify).toBe(false)
+  })
+
+  it('exposes tlsVerify=false on ResolvedAccount for nested accounts', () => {
+    const account = resolveAccount({
+      accounts: {
+        office: {
+          serverUrl: 'tc.example.com',
+          username: 'bot@tc.example.com',
+          password: 'plain',
+          tlsVerify: false,
+        },
+      },
+    } as never, 'office')
+    expect(account.tlsVerify).toBe(false)
+  })
+
+  it('leaves tlsVerify undefined when omitted (default = strict verify)', () => {
+    const account = resolveAccount({
+      serverUrl: 'tc.example.com',
+      username: 'bot@tc.example.com',
+      password: 'plain',
+    } as never)
+    expect(account.tlsVerify).toBeUndefined()
+  })
 })

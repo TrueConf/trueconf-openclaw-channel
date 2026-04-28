@@ -52,6 +52,11 @@ function getChannelConfig(cfg: unknown): TrueConfChannelConfig {
 // Throws when caPath is set but unreadable — failing silent here would
 // downgrade pinned trust to the system store without telling the operator.
 export function loadCaFromAccount(account: ResolvedAccount): Buffer | undefined {
+  // Operator-acknowledged insecure mode: skip the caPath read entirely.
+  // tlsVerify=false means "trust nothing, verify nothing" — pinning a CA on
+  // top of that would be contradictory and would fail loud here if the file
+  // is gone, masking the actual operator intent.
+  if (account.tlsVerify === false) return undefined
   if (!account.caPath) return undefined
   try {
     return readFileSync(account.caPath)
@@ -432,11 +437,14 @@ export const channelPlugin = {
         setStatus({ accountId, running: false, lastStopAt: Date.now(), lastError: msg })
         return
       }
-      const dispatcher: Dispatcher | undefined = ca
-        ? new UndiciAgent({ connect: { ca } })
-        : undefined
+      const tlsVerify = resolved.tlsVerify !== false
+      const dispatcher: Dispatcher | undefined = !tlsVerify
+        ? new UndiciAgent({ connect: { rejectUnauthorized: false } })
+        : ca
+          ? new UndiciAgent({ connect: { ca } })
+          : undefined
 
-      const wsClient = new WsClient({ ca })
+      const wsClient = new WsClient({ ca, tlsVerify })
       wsClient.logger = logger
 
       const wireAdapter: WireAdapter = {

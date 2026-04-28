@@ -8,7 +8,7 @@ import { X509Certificate } from 'node:crypto'
 import { writeFileSync, mkdirSync, chmodSync, renameSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
-import { Agent as UndiciAgent } from 'undici'
+import { Agent as UndiciAgent, fetch } from 'undici'
 
 const BRIDGE_PORT = 4309
 const BRIDGE_TIMEOUT_MS = 3000
@@ -179,7 +179,7 @@ export async function downloadCAChain({ host, port, caFilePath = CA_FILE }) {
 }
 
 export async function validateOAuthCredentials({
-  serverUrl, username, password, useTls, port, ca,
+  serverUrl, username, password, useTls, port, ca, tlsVerify,
 }) {
   // Guard against silent CA-drop: caller passed CA bytes but flipped useTls
   // off (or left it undefined). The old code would hand the CA to nothing
@@ -192,6 +192,15 @@ export async function validateOAuthCredentials({
       'omit ca when connecting over plain HTTP.',
     )
   }
+  // Same shape, different flag: tlsVerify:false on a plain-HTTP call is a
+  // contradiction (nothing to verify), and the wizard would silently send
+  // creds over http://. Fail loud.
+  if (tlsVerify === false && useTls !== true) {
+    throw new Error(
+      'validateOAuthCredentials: `tlsVerify:false` requires `useTls:true` — ' +
+      'TLS verification cannot be disabled on a plain-HTTP request.',
+    )
+  }
 
   const scheme = useTls ? 'https' : 'http'
   const hostport = port !== undefined ? `${serverUrl}:${port}` : serverUrl
@@ -199,9 +208,13 @@ export async function validateOAuthCredentials({
 
   // Node's global fetch is undici-backed; its `dispatcher` option requires an
   // undici Dispatcher, not a `node:https` Agent. Build an undici Agent that
-  // trusts the caller-supplied CA bytes when operating over TLS.
-  const dispatcher = ca && useTls
-    ? new UndiciAgent({ connect: { ca } })
+  // trusts the caller-supplied CA bytes (or skips verification for the
+  // operator-acknowledged insecure mode) when operating over TLS.
+  const connect = {}
+  if (ca && useTls) connect.ca = ca
+  if (tlsVerify === false && useTls) connect.rejectUnauthorized = false
+  const dispatcher = useTls && (ca || tlsVerify === false)
+    ? new UndiciAgent({ connect })
     : undefined
 
   let response

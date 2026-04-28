@@ -1,5 +1,5 @@
 import WebSocket from 'ws'
-import type { Dispatcher } from 'undici'
+import { fetch, type Dispatcher, type RequestInit, type Response } from 'undici'
 import { IdCounter, RequestMatcher, buildAuthRequest } from './types'
 import type {
   TrueConfAccountConfig,
@@ -9,8 +9,11 @@ import type {
   Logger,
 } from './types'
 
-const HEARTBEAT_INTERVAL_MS = 20_000
-const HEARTBEAT_PONG_TIMEOUT_MS = 20_000
+// Match TrueConf's own python-trueconf-bot SDK (websockets.connect
+// ping_interval=30, ping_timeout=10) — production-tested against the same
+// servers we talk to.
+const HEARTBEAT_INTERVAL_MS = 30_000
+const HEARTBEAT_PONG_TIMEOUT_MS = 10_000
 
 export function hostPort(config: { serverUrl: string; useTls: boolean; port?: number }): string {
   if (typeof config.serverUrl !== 'string' || config.serverUrl.length === 0) {
@@ -99,12 +102,28 @@ export class WsClient {
   // Custom CA bundle for WebSocket TLS (downloaded by the setup wizard and
   // written to caPath). Passed straight through to ws's `ca` option.
   public ca: Buffer | undefined = undefined
+  // When false, the WebSocket handshake skips cert verification — the
+  // operator-acknowledged insecure mode for self-signed TrueConf Servers.
+  // Defaults to true so any code path that forgets to thread the flag stays
+  // safe-by-default.
+  public tlsVerify = true
 
   private pushListeners: Array<(method: string, payload: Record<string, unknown>) => void> = []
   private authListeners: Array<() => void> = []
 
-  constructor(options?: { ca?: Buffer }) {
+  constructor(options?: { ca?: Buffer; tlsVerify?: boolean }) {
     if (options?.ca) this.ca = options.ca
+    if (options?.tlsVerify === false) this.tlsVerify = false
+  }
+
+  // Returns the option bag passed to `new WebSocket(..., options)`. When
+  // tlsVerify=false, the insecure flag wins over a stale ca pin so the
+  // outcome is unambiguous. When neither knob is set, returns undefined so
+  // ws falls back to the system trust store (default behavior).
+  buildClientOptions(): { rejectUnauthorized: false } | { ca: Buffer } | undefined {
+    if (this.tlsVerify === false) return { rejectUnauthorized: false }
+    if (this.ca) return { ca: this.ca }
+    return undefined
   }
 
   onFileProgress(fileId: string, handler: (progress: number) => void): void {
@@ -136,7 +155,7 @@ export class WsClient {
     const ws = new WebSocket(
       buildWsUrl(config),
       'json.v1',
-      this.ca ? { ca: this.ca } : undefined,
+      this.buildClientOptions(),
     )
     this.ws = ws
 
@@ -254,11 +273,11 @@ interface LifecycleOptions {
   onDisconnected?: () => void
 }
 
-// Middleboxes drop idle TCP in ~30–60s; we originate pings to survive one-way
-// idle timers. Keepalive failure is a death signal — escalate via terminate()
-// so the normal close → scheduleReconnect path runs.
+// Liveness is governed by WebSocket protocol ping/pong (opcode 0x9/0xA) on a
+// 30s/10s schedule, mirroring python-trueconf-bot's websockets.connect
+// configuration. Pong timeout escalates via terminate() so the normal
+// close → scheduleReconnect path runs.
 export class ConnectionLifecycle {
-  private keepaliveTimer: ReturnType<typeof setInterval> | null = null
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private tokenRefreshTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -277,6 +296,11 @@ export class ConnectionLifecycle {
 
   async start(): Promise<void> {
     const tokenResponse = await acquireToken(this.config, { dispatcher: this.options?.dispatcher })
+    // Register lifecycle handlers BEFORE connect so a close event that fires
+    // between auth completion and the first post-connect line still routes
+    // through handleClose → scheduleReconnect.
+    this.wsClient.onClose = (code, reason) => this.handleClose(code, reason)
+    this.wsClient.onPong = () => { this.lastPongAt = Date.now() }
     await this.wsClient.connect(this.config, tokenResponse.access_token)
 
     this.backoffMs = 1000
@@ -289,8 +313,6 @@ export class ConnectionLifecycle {
     }
 
     this.startTimers(tokenResponse.expires_at)
-    this.wsClient.onClose = (code, reason) => this.handleClose(code, reason)
-    this.wsClient.onPong = () => { this.lastPongAt = Date.now() }
   }
 
   shutdown(): void {
@@ -306,8 +328,6 @@ export class ConnectionLifecycle {
     const now = Date.now()
     this.lastPingAt = now
     this.lastPongAt = now
-    this.sendKeepalive()
-    this.keepaliveTimer = setInterval(() => this.sendKeepalive(), 15_000)
     this.heartbeatTimer = setInterval(() => this.heartbeatTick(), HEARTBEAT_INTERVAL_MS)
 
     const delayMs = (expiresAt - 3600) * 1000 - Date.now()
@@ -319,7 +339,6 @@ export class ConnectionLifecycle {
   }
 
   private stopTimers(): void {
-    if (this.keepaliveTimer) { clearInterval(this.keepaliveTimer); this.keepaliveTimer = null }
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null }
     if (this.tokenRefreshTimer) { clearTimeout(this.tokenRefreshTimer); this.tokenRefreshTimer = null }
   }
@@ -340,28 +359,6 @@ export class ConnectionLifecycle {
     }
     this.reconnecting = true
     this.scheduleReconnect()
-  }
-
-  private sendKeepalive(): void {
-    try {
-      this.wsClient
-        .sendRequest('getUserDisplayName', { userId: this.config.username })
-        .then((response) => {
-          const errorCode = response.payload?.errorCode as number | undefined
-          if (errorCode !== undefined && errorCode !== 0) {
-            this.logger.warn(
-              `[trueconf] Keepalive response error: errorCode ${errorCode} ${response.payload?.errorDescription ?? ''}`.trim(),
-            )
-          }
-        })
-        .catch((err: unknown) => {
-          this.logger.warn(`[trueconf] Keepalive request failed: ${err instanceof Error ? err.message : String(err)}`)
-          this.escalateDeadConnection('keepalive failure')
-        })
-    } catch (err) {
-      this.logger.warn(`[trueconf] Keepalive send failed synchronously: ${err instanceof Error ? err.message : String(err)}`)
-      this.escalateDeadConnection('keepalive failure')
-    }
   }
 
   private heartbeatTick(): void {

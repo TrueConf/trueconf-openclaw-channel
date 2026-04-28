@@ -41,7 +41,7 @@ describe('trueconfSetupWizard.textInputs validation', () => {
       value: 'http://tc.example.com',
       cfg: {} as never, accountId: 'default', credentialValues: {},
     })
-    expect(result).toContain('без http')
+    expect(result).toMatch(/without http/i)
   })
 
   it('serverUrl accepts bare host', () => {
@@ -59,7 +59,7 @@ describe('trueconfSetupWizard.textInputs validation', () => {
       value: 'abc',
       cfg: {} as never, accountId: 'default', credentialValues: {},
     })
-    expect(result).toBe('Невалидный порт')
+    expect(result).toBe('Invalid port')
   })
 
   it('port rejects out-of-range', () => {

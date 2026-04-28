@@ -26,7 +26,7 @@ const SAMPLE_SELF_SIGNED: CertSummary = {
 
 describe('buildFreshTofuBanner', () => {
   it('includes subject, issuer, validity, fingerprint', () => {
-    const b = buildFreshTofuBanner(SAMPLE_INTERNAL)
+    const b = buildFreshTofuBanner(SAMPLE_INTERNAL, 'ru')
     expect(b.body).toContain('tc.example.com')
     expect(b.body).toContain('Acme Internal CA')
     expect(b.body).toContain('Acme, Inc.')
@@ -36,18 +36,25 @@ describe('buildFreshTofuBanner', () => {
   })
 
   it('includes selfSigned hint when cert.selfSigned is true', () => {
-    const b = buildFreshTofuBanner(SAMPLE_SELF_SIGNED)
+    const b = buildFreshTofuBanner(SAMPLE_SELF_SIGNED, 'ru')
     expect(b.body).toMatch(/самоподписан/)
   })
 
   it('omits selfSigned hint for internal CA', () => {
-    const b = buildFreshTofuBanner(SAMPLE_INTERNAL)
+    const b = buildFreshTofuBanner(SAMPLE_INTERNAL, 'ru')
     expect(b.body).not.toMatch(/самоподписан/)
   })
 
   it('prompts for out-of-band verification', () => {
-    const b = buildFreshTofuBanner(SAMPLE_INTERNAL)
+    const b = buildFreshTofuBanner(SAMPLE_INTERNAL, 'ru')
     expect(b.body).toMatch(/Сверьте отпечаток/)
+  })
+
+  it('renders English copy when locale is en', () => {
+    const b = buildFreshTofuBanner(SAMPLE_SELF_SIGNED, 'en')
+    expect(b.body).toMatch(/self-signed/)
+    expect(b.body).toMatch(/Verify the fingerprint/)
+    expect(b.title).not.toMatch(/Подтверждение/)
   })
 })
 
@@ -63,21 +70,27 @@ describe('buildMismatchBanner', () => {
   }
 
   it('labels stored side as "trust anchor" not as a leaf cert', () => {
-    const b = buildMismatchBanner(stored, current, '/tmp/ca.pem', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE')
+    const b = buildMismatchBanner(stored, current, '/tmp/ca.pem', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ru')
     expect(b.body).toMatch(/trust anchor/)
     expect(b.body).not.toMatch(/сертификат сервера изменился/)
   })
 
   it('shows both stored and current fingerprints', () => {
-    const b = buildMismatchBanner(stored, current, '/tmp/ca.pem', 'err')
+    const b = buildMismatchBanner(stored, current, '/tmp/ca.pem', 'err', 'ru')
     expect(b.body).toContain('11:22:33')
     expect(b.body).toContain('FF:EE:DD')
   })
 
   it('includes the caPath and tls error', () => {
-    const b = buildMismatchBanner(stored, current, '/tmp/ca.pem', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE')
+    const b = buildMismatchBanner(stored, current, '/tmp/ca.pem', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ru')
     expect(b.body).toContain('/tmp/ca.pem')
     expect(b.body).toContain('UNABLE_TO_VERIFY_LEAF_SIGNATURE')
+  })
+
+  it('renders English copy when locale is en', () => {
+    const b = buildMismatchBanner(stored, current, '/tmp/ca.pem', 'err', 'en')
+    expect(b.body).toMatch(/no longer validates|trust anchor/)
+    expect(b.body).not.toMatch(/больше не валидирует/)
   })
 })
 
@@ -87,6 +100,7 @@ describe('buildConfigMissingBanner', () => {
       '/tmp/ca.pem',
       'ENOENT: no such file or directory',
       SAMPLE_INTERNAL,
+      'ru',
     )
     expect(b.body).toContain('/tmp/ca.pem')
     expect(b.body).toMatch(/ENOENT|не найден|не читается/)
@@ -94,7 +108,13 @@ describe('buildConfigMissingBanner', () => {
   })
 
   it('instructs user to verify fingerprint with admin before re-TOFU', () => {
-    const b = buildConfigMissingBanner('/x', 'err', SAMPLE_INTERNAL)
+    const b = buildConfigMissingBanner('/x', 'err', SAMPLE_INTERNAL, 'ru')
     expect(b.body).toMatch(/Сверьте отпечаток/)
+  })
+
+  it('renders English copy when locale is en', () => {
+    const b = buildConfigMissingBanner('/tmp/ca.pem', 'ENOENT', SAMPLE_INTERNAL, 'en')
+    expect(b.body).toMatch(/Verify the fingerprint/)
+    expect(b.body).not.toMatch(/Сверьте/)
   })
 })

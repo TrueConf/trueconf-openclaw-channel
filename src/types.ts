@@ -25,6 +25,8 @@ export type TrueConfChannelSection = Partial<Pick<TrueConfAccountConfig,
   | 'password'
   | 'useTls'
   | 'port'
+  | 'clientId'
+  | 'clientSecret'
   | 'caPath'
   | 'tlsVerify'
   | 'setupLocale'
@@ -56,6 +58,7 @@ export const EnvelopeType = {
   PLAIN_MESSAGE: 200,
   FORWARDED_MESSAGE: 201,
   ATTACHMENT: 202,
+  LOCATION: 203,
   SURVEY: 204,
 } as const
 export type EnvelopeType = (typeof EnvelopeType)[keyof typeof EnvelopeType]
@@ -137,6 +140,46 @@ export interface OAuthTokenResponse {
   expires_at: number
 }
 
+// Hint attached to non-PLAIN inbound messages. Discriminated by
+// TrueConfEnvelopeType so consumers narrow without unsafe casts; required
+// side-fields ('location' / 'survey') are bundled into the variant they
+// belong to, making illegal states (e.g. type='location' without coords)
+// unrepresentable. PascalCase keys (here and in InboundMediaContext) are
+// the OpenClaw extraContext wire contract — they reach downstream consumers
+// as-is, so the casing is intentional.
+export type InboundEnvelopeHint =
+  | { TrueConfEnvelopeType: 'forwarded' }
+  | { TrueConfEnvelopeType: 'location'; location: { latitude: number; longitude: number; description: string | null } }
+  | { TrueConfEnvelopeType: 'survey'; survey: unknown }
+
+// Media file paths threaded into extraContext when the inbound carried an
+// attachment. The arrays are the bulk-media API form; the singular
+// MediaPath/MediaType are kept for SDK consumers that read one entry.
+export interface InboundMediaContext {
+  MediaPath: string
+  MediaType: string
+  MediaPaths: string[]
+  MediaTypes: string[]
+}
+
+// extraContext is built across two layers: inbound.ts attaches the envelope
+// hint when the message is non-PLAIN; channel.ts spreads media fields when
+// an attachment was downloaded. Either, both, or none may be present.
+export type InboundExtraContext =
+  | InboundEnvelopeHint
+  | InboundMediaContext
+  | (InboundEnvelopeHint & InboundMediaContext)
+
+// Widens the structured InboundExtraContext to the Record<string, unknown>
+// the SDK dispatcher accepts. The widening is the single seam between the
+// typed inbound layer and the bag-typed dispatch boundary; concentrating it
+// here keeps the unsafe cast grep-able instead of inlined at each call.
+export function widenExtraContext(
+  e: InboundExtraContext | undefined,
+): Record<string, unknown> | undefined {
+  return e as Record<string, unknown> | undefined
+}
+
 export interface InboundMessage {
   channel: string
   accountId: string
@@ -151,6 +194,7 @@ export interface InboundMessage {
   attachmentContent?: AttachmentContent
   replyMessageId?: string
   parseMode?: 'text' | 'markdown' | 'html'
+  extraContext?: InboundExtraContext
 }
 
 export type InboundDispatchFn = (msg: InboundMessage) => void | Promise<void>
@@ -197,6 +241,8 @@ export interface ResolvedAccount {
   password?: string
   useTls?: boolean
   port?: number
+  clientId?: string
+  clientSecret?: string
   caPath?: string
   tlsVerify?: boolean
   setupLocale?: SetupLocale
@@ -209,9 +255,51 @@ export interface AccountDescription {
   configured: boolean
 }
 
-export function buildAuthRequest(id: number, token: string, receiveUnread = false): TrueConfRequest {
-  return { type: 1, id, method: 'auth', payload: { token, tokenType: 'JWT', receiveUnread } }
+export interface AuthRequestOptions {
+  receiveUnread?: boolean
+  receiveSystemMessageEnvelopes?: boolean
 }
+
+export function buildAuthRequest(
+  id: number,
+  token: string,
+  options: AuthRequestOptions = {},
+): TrueConfRequest {
+  return {
+    type: 1,
+    id,
+    method: 'auth',
+    payload: {
+      token,
+      tokenType: 'JWT',
+      receiveUnread: options.receiveUnread ?? false,
+      receiveSystemMessageEnvelopes: options.receiveSystemMessageEnvelopes ?? false,
+    },
+  }
+}
+
+export type NetworkErrorPhase = 'oauth' | 'websocket' | 'ws-handshake' | 'ws-message' | 'unknown'
+
+export class NetworkError extends Error {
+  constructor(
+    message: string,
+    readonly phase: NetworkErrorPhase = 'unknown',
+    readonly cause?: Error,
+    readonly code?: string,
+    readonly syscall?: string,
+    readonly hostname?: string,
+  ) {
+    super(message)
+    this.name = 'NetworkError'
+  }
+}
+
+export const DNS_ERROR_CODES: ReadonlySet<string> = new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_NODATA', 'EAI_NONAME'])
+
+// Terminal counterpart to DNS_ERROR_CODES: emitted on the NetworkError after
+// retry exhaustion. Intentionally NOT a member of DNS_ERROR_CODES so
+// isDnsError() classifies it as terminal (no further reconnect spin).
+export const DNS_TERMINAL_CODE = 'DNS_GIVEUP' as const
 
 export function buildAck(serverRequestId: number): TrueConfResponse {
   return { type: 2, id: serverRequestId }

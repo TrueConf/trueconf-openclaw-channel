@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { basename, resolve as pathResolve, sep as pathSep, join as pathJoin } from 'node:path'
 import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web'
 import { getMediaDir, kindFromMime, type MediaKind } from 'openclaw/plugin-sdk/media-runtime'
-import { fetch, type Response } from 'undici'
+import { fetch, type Dispatcher, type Response } from 'undici'
 import { EnvelopeType, FileReadyState, TrueConfChatType } from './types'
 import type {
   TrueConfRequest,
@@ -15,14 +15,18 @@ import type {
   Logger,
   TrueConfChannelConfig,
   InboundMessage,
+  InboundEnvelopeHint,
   FileInfo,
   ResolvedChatKind,
+  AttachmentContent,
 } from './types'
 import { WsClient, hostPort } from './ws-client'
 import { sendText, sendTextToChat, isReconnectableSendError } from './outbound'
 import { resolveAccount } from './config'
+import { PerChatSendQueue } from './send-queue'
 
 const DEFAULT_MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
+export const MAX_FILE_SIZE_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
 const COALESCE_WINDOW_MS = 300
 const RECENT_BOT_MSG_PER_CHAT_CAP = 50
 const bytesToMB = (n: number): number => (n > 0 ? Math.ceil(n / (1024 * 1024)) : 0)
@@ -177,7 +181,6 @@ export interface InboundContext {
   wsClient: WsClient
   botIdentityCandidates: string[]
   accountId: string
-  sendAck: (id: number) => void
   dispatch: InboundDispatchFn
   logger: Logger
   directChats: Map<string, string>
@@ -191,7 +194,8 @@ export async function handleInboundMessage(
   msg: TrueConfRequest,
   ctx: InboundContext,
 ): Promise<void> {
-  ctx.sendAck(msg.id)
+  // Auto-ack happens in WsClient.connect's ws.on('message') handler — see
+  // ws-client.ts. handleInboundMessage only routes sendMessage envelopes.
   if (msg.method !== 'sendMessage') return
 
   const envelope = msg.payload as unknown as Envelope | undefined
@@ -236,10 +240,74 @@ export async function handleInboundMessage(
 
   const key = coalesceKey(ctx.accountId, chatId, stableUserId)
 
+  // Pre-validate envelope shape and build synthetic text + extraContext for
+  // non-PLAIN types. Validation runs BEFORE the group gate so malformed
+  // envelopes are dropped via logger.warn regardless of chat kind.
+  let plainText: string | null = null
+  let plainParseMode: 'text' | 'markdown' | 'html' | undefined
+  let syntheticText: string | null = null
+  let extraContext: InboundEnvelopeHint | undefined
+  let attachment: AttachmentContent | null = null
+
+  if (envelope.type === EnvelopeType.PLAIN_MESSAGE) {
+    const content = envelope.content as { text: string; parseMode?: string }
+    const parseMode = content.parseMode as 'text' | 'markdown' | 'html' | undefined
+    plainText = parseMode === 'html' ? stripHtmlTags(content.text) : content.text
+    plainParseMode = parseMode
+  } else if (envelope.type === EnvelopeType.FORWARDED_MESSAGE) {
+    const c = envelope.content as { text?: unknown; parseMode?: unknown } | undefined
+    if (!c || typeof c.text !== 'string') {
+      ctx.logger.warn('[trueconf] FORWARDED_MESSAGE missing text; dropping')
+      return
+    }
+    const parseMode = typeof c.parseMode === 'string'
+      ? (c.parseMode as 'text' | 'markdown' | 'html')
+      : undefined
+    syntheticText = parseMode === 'html' ? stripHtmlTags(c.text) : c.text
+    plainParseMode = parseMode
+    extraContext = { TrueConfEnvelopeType: 'forwarded' }
+  } else if (envelope.type === EnvelopeType.ATTACHMENT) {
+    const a = envelope.content as AttachmentContent | undefined
+    if (!a || typeof a.fileId !== 'string' || typeof a.name !== 'string') {
+      ctx.logger.warn('[trueconf] ATTACHMENT envelope missing required fields')
+      return
+    }
+    attachment = a
+  } else if (envelope.type === EnvelopeType.LOCATION) {
+    const loc = envelope.content as
+      | { latitude?: unknown; longitude?: unknown; description?: unknown }
+      | undefined
+    if (!loc || typeof loc.latitude !== 'number' || typeof loc.longitude !== 'number') {
+      ctx.logger.warn('[trueconf] LOCATION missing lat/lng; dropping')
+      return
+    }
+    const description = typeof loc.description === 'string' && loc.description.length > 0
+      ? loc.description
+      : null
+    syntheticText = description !== null
+      ? `[Локация: lat=${loc.latitude}, lng=${loc.longitude}, описание: ${description}]`
+      : `[Локация: lat=${loc.latitude}, lng=${loc.longitude}]`
+    extraContext = {
+      TrueConfEnvelopeType: 'location',
+      location: { latitude: loc.latitude, longitude: loc.longitude, description },
+    }
+  } else if (envelope.type === EnvelopeType.SURVEY) {
+    const survey = envelope.content as { title?: unknown } | undefined
+    if (!survey || typeof survey.title !== 'string') {
+      ctx.logger.warn('[trueconf] SURVEY missing title; dropping')
+      return
+    }
+    syntheticText = `[Опрос: «${survey.title}»]`
+    extraContext = { TrueConfEnvelopeType: 'survey', survey: envelope.content }
+  } else {
+    ctx.logger.info(`[trueconf] unsupported envelope type ${envelope.type}; dropping`)
+    return
+  }
+
   // Group activation gate (skipped when isAlwaysRespond(chatId) is true):
   // bot must be @-mentioned (html) or the message must reply to a recent bot
-  // message. Attachment-only messages still pass when a preceding gated text
-  // is waiting in the coalescer (text+file as one turn).
+  // message. ATTACHMENT/LOCATION/SURVEY envelopes still pass when a preceding
+  // gated text is waiting in the coalescer (caption + media as one turn).
   if (kind === 'group' && !ctx.isAlwaysRespond(chatId)) {
     let activated = false
     if (envelope.type === EnvelopeType.PLAIN_MESSAGE) {
@@ -251,12 +319,22 @@ export async function handleInboundMessage(
       )
       const replied = isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))
       activated = mentioned || replied
-    } else if (envelope.type === EnvelopeType.ATTACHMENT) {
+    } else if (envelope.type === EnvelopeType.FORWARDED_MESSAGE) {
+      // Forwards don't carry the bot's mention markup, so reply-to-bot is the
+      // only direct activation path. A preceding gated text in the coalescer
+      // also activates (forward as a follow-up to a captioned turn).
+      const replied = isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))
+      activated = replied || pendingTextInbounds.has(key)
+    } else if (
+      envelope.type === EnvelopeType.ATTACHMENT
+      || envelope.type === EnvelopeType.LOCATION
+      || envelope.type === EnvelopeType.SURVEY
+    ) {
       const replied = isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))
       activated = replied || pendingTextInbounds.has(key)
     }
     if (!activated) {
-      ctx.logger.info(`[trueconf] group ${chatId}: no mention/reply, dropping`)
+      ctx.logger.info(`[trueconf] group ${chatId}: no mention/reply for type ${envelope.type}, dropping`)
       return
     }
   }
@@ -282,26 +360,19 @@ export async function handleInboundMessage(
     isGroup: kind === 'group',
     senderName: stableUserId,
     replyMessageId: envelope.replyMessageId,
+    ...(plainParseMode ? { parseMode: plainParseMode } : {}),
+    ...(extraContext ? { extraContext } : {}),
   }
 
   if (envelope.type === EnvelopeType.PLAIN_MESSAGE) {
-    const content = envelope.content as { text: string; parseMode?: string }
-    const parseMode = content.parseMode as 'text' | 'markdown' | 'html' | undefined
-    const text = parseMode === 'html' ? stripHtmlTags(content.text) : content.text
-    const baseWithParse: Omit<InboundMessage, 'text' | 'attachmentContent'> = { ...base, parseMode }
     if (pendingTextInbounds.has(key)) flushPendingText(key)
     const timer = setTimeout(() => flushPendingText(key), COALESCE_WINDOW_MS)
     timer.unref?.()
-    pendingTextInbounds.set(key, { base: baseWithParse, text, timer, dispatch: ctx.dispatch, logger: ctx.logger })
+    pendingTextInbounds.set(key, { base, text: plainText!, timer, dispatch: ctx.dispatch, logger: ctx.logger })
     return
   }
 
   if (envelope.type === EnvelopeType.ATTACHMENT) {
-    const attachment = envelope.content
-    if (!attachment || typeof attachment.fileId !== 'string' || typeof attachment.name !== 'string') {
-      ctx.logger.warn('[trueconf] ATTACHMENT envelope missing required fields')
-      return
-    }
     const pending = pendingTextInbounds.get(key)
     let text: string
     if (pending) {
@@ -309,10 +380,19 @@ export async function handleInboundMessage(
       pendingTextInbounds.delete(key)
       text = pending.text
     } else {
-      text = `[File: ${sanitizeAttachmentName(attachment.name)}]`
+      text = `[File: ${sanitizeAttachmentName(attachment!.name)}]`
     }
-    dispatchWithFence(ctx.dispatch, { ...base, text, attachmentContent: attachment }, ctx.logger)
+    dispatchWithFence(ctx.dispatch, { ...base, text, attachmentContent: attachment! }, ctx.logger)
+    return
   }
+
+  // FORWARDED, LOCATION, SURVEY all go through the same coalescer-buffered
+  // path as PLAIN. A trailing attachment in the coalesce window will replace
+  // the synthetic placeholder with the real caption from this envelope.
+  if (pendingTextInbounds.has(key)) flushPendingText(key)
+  const timer = setTimeout(() => flushPendingText(key), COALESCE_WINDOW_MS)
+  timer.unref?.()
+  pendingTextInbounds.set(key, { base, text: syntheticText!, timer, dispatch: ctx.dispatch, logger: ctx.logger })
 }
 
 function dispatchWithFence(dispatch: InboundDispatchFn, inbound: InboundMessage, logger: Logger): void {
@@ -377,6 +457,7 @@ export async function downloadFile(
   destPath: string,
   maxBytes: number,
   logger: Logger,
+  dispatcher?: Dispatcher,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   let parsedUrl: URL
   try {
@@ -391,7 +472,11 @@ export async function downloadFile(
   let response: Response
   try {
     logger.info(`[trueconf] downloadFile: fetching ${downloadUrl}`)
-    response = await fetch(downloadUrl)
+    // The account-level dispatcher carries the same TLS trust the operator
+    // configured for OAuth and WS (caPath / tlsVerify:false). Without it,
+    // self-signed-server deployments connect over OAuth/WS but fail on
+    // inbound media — see TLS-trust invariant in AGENTS.md.
+    response = await fetch(downloadUrl, dispatcher ? { dispatcher } : undefined)
   } catch (err) {
     const cause = err instanceof Error ? (err as Error & { cause?: unknown }).cause : undefined
     const causeMsg = cause instanceof Error ? cause.message : cause != null ? String(cause) : ''
@@ -444,7 +529,14 @@ export async function downloadFile(
 
 export function getMaxFileSize(cfg: TrueConfChannelConfig): number {
   const raw = (cfg as unknown as { maxFileSize?: unknown }).maxFileSize
-  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return raw
+  if (
+    typeof raw === 'number' &&
+    Number.isFinite(raw) &&
+    raw > 0 &&
+    raw <= MAX_FILE_SIZE_HARD_LIMIT_BYTES
+  ) {
+    return raw
+  }
   return DEFAULT_MAX_FILE_SIZE_BYTES
 }
 
@@ -541,7 +633,8 @@ export interface InboundAttachmentReady {
 // Download the inbound attachment and prepare extraContext for dispatch. Error
 // replies are sent here; on failure returns { ok: false } and the caller
 // skips dispatch. On success the caller must dispatch AND is responsible for
-// unlinking `tempPath` if dispatch itself throws.
+// unlinking `tempPath` on any dispatch failure path: sync throw,
+// onRecordError, or onDispatchError.
 export async function prepareInboundAttachment(params: {
   inboundMsg: InboundMessage
   wsClient: WsClient
@@ -549,8 +642,17 @@ export async function prepareInboundAttachment(params: {
   store: { directChatsByStableUserId: Map<string, string> }
   channelConfig: TrueConfChannelConfig
   logger: Logger
+  // Per-account send queue threaded by channel.ts. Error-reply paths in this
+  // function call sendText/sendTextToChat, which require a queue to serialize
+  // chunks per chatId. Owning the queue at the account level keeps replies
+  // from one account from blocking on another's outbound burst.
+  sendQueue: PerChatSendQueue
+  // Per-account undici dispatcher built from the operator's CA / tlsVerify.
+  // OAuth and WS already use it; we thread it into the inbound download path
+  // so caPath / tlsVerify:false deployments can also fetch inbound media.
+  dispatcher?: Dispatcher
 }): Promise<InboundAttachmentReady | { ok: false }> {
-  const { inboundMsg, wsClient, accountId, store, channelConfig, logger } = params
+  const { inboundMsg, wsClient, accountId, store, channelConfig, logger, sendQueue, dispatcher } = params
   const attachment = inboundMsg.attachmentContent
   if (!attachment) {
     logger.error('[trueconf] prepareInboundAttachment called without attachmentContent')
@@ -563,11 +665,12 @@ export async function prepareInboundAttachment(params: {
   const replyOn = async (text: string) => {
     try {
       const result = inboundMsg.isGroup
-        ? await sendTextToChat(wsClient, inboundMsg.chatId, text, logger)
+        ? await sendTextToChat(wsClient, inboundMsg.chatId, text, logger, sendQueue)
         : await sendText(wsClient, inboundMsg.peerId, text, logger, {
             fallbackUserId: inboundMsg.peerId,
             directChatStore: store,
             accountId,
+            sendQueue,
           })
       if (!result.ok) logger.warn('[trueconf] replyErrorText: send returned ok=false')
     } catch (err) {
@@ -664,7 +767,13 @@ export async function prepareInboundAttachment(params: {
     logger.info(`[trueconf] attachment tempPath: ${tempPath}`)
     await ensureAttachmentDirExists(logger)
 
-    const dlResult = await downloadFile(rewriteUrlForAccount(finalInfo.downloadUrl), tempPath, maxBytes, logger)
+    const dlResult = await downloadFile(
+      rewriteUrlForAccount(finalInfo.downloadUrl),
+      tempPath,
+      maxBytes,
+      logger,
+      dispatcher,
+    )
     if (!dlResult.ok) {
       logger.warn(`[trueconf] downloadFile failed: ${dlResult.error}`)
       return fail(

@@ -1,6 +1,14 @@
 import WebSocket from 'ws'
 import { fetch, type Dispatcher, type RequestInit, type Response } from 'undici'
-import { IdCounter, RequestMatcher, buildAuthRequest } from './types'
+import {
+  IdCounter,
+  RequestMatcher,
+  buildAuthRequest,
+  ErrorCode,
+  NetworkError,
+  DNS_ERROR_CODES,
+  DNS_TERMINAL_CODE,
+} from './types'
 import type {
   TrueConfAccountConfig,
   TrueConfResponse,
@@ -38,12 +46,19 @@ export function buildTokenUrl(config: TrueConfAccountConfig): string {
   return `${config.useTls ? 'https' : 'http'}://${hostPort(config)}/bridge/api/client/v1/oauth/token`
 }
 
-function describeFetchError(err: unknown): string {
-  const outerMsg = err instanceof Error ? err.message : String(err)
+// Pull libuv-style metadata off `err.cause`. fetch wraps a TypeError around
+// the underlying ENOTFOUND/ECONNREFUSED/etc. — we want code/syscall/hostname
+// to flow through to NetworkError so callers (DNS retry policy, telemetry)
+// can branch on them without parsing message strings.
+function extractFetchCauseMeta(err: unknown): { code?: string; syscall?: string; hostname?: string } {
   const cause = err instanceof Error ? err.cause : undefined
-  if (!(cause instanceof Error)) return outerMsg
-  const code = 'code' in cause ? String(cause.code) : ''
-  return `${outerMsg} (${code ? `${code}: ` : ''}${cause.message})`
+  if (!cause || typeof cause !== 'object') return {}
+  const obj = cause as Record<string, unknown>
+  return {
+    code: 'code' in obj && typeof obj.code !== 'undefined' ? String(obj.code) : undefined,
+    syscall: 'syscall' in obj && typeof obj.syscall !== 'undefined' ? String(obj.syscall) : undefined,
+    hostname: 'hostname' in obj && typeof obj.hostname !== 'undefined' ? String(obj.hostname) : undefined,
+  }
 }
 
 export async function acquireToken(
@@ -65,7 +80,18 @@ export async function acquireToken(
       ...(options?.dispatcher && { dispatcher: options.dispatcher }),
     } as RequestInit)
   } catch (err) {
-    throw new Error(`OAuth token request failed: ${describeFetchError(err)}`)
+    const meta = extractFetchCauseMeta(err)
+    const outerMsg = err instanceof Error ? err.message : String(err)
+    const causeMsg = err instanceof Error && err.cause instanceof Error ? err.cause.message : ''
+    const detail = `${outerMsg}${meta.code ? ` (${meta.code}: ${causeMsg || meta.code})` : causeMsg ? ` (${causeMsg})` : ''}`
+    throw new NetworkError(
+      `OAuth token request failed: ${detail}`,
+      'oauth',
+      err instanceof Error ? err : undefined,
+      meta.code,
+      meta.syscall,
+      meta.hostname,
+    )
   }
 
   if (!response.ok) {
@@ -84,6 +110,22 @@ export async function acquireToken(
     throw new Error('Invalid OAuth response: missing access_token or expires_at')
   }
   return json as unknown as OAuthTokenResponse
+}
+
+interface Deferred {
+  promise: Promise<void>
+  resolve: () => void
+  reject: (err: Error) => void
+}
+
+export interface WsClientOptions {
+  ca?: Buffer
+  tlsVerify?: boolean
+  // Optional reconnect adapter. When sendRequest sees errorCode=203
+  // CREDENTIALS_EXPIRED it calls back here to drive a full close → fresh-token
+  // reconnect, then retries the original request once. Without an adapter
+  // wired, the 203 response surfaces to the caller as-is.
+  forceReconnect?: (reason: string) => Promise<void>
 }
 
 export class WsClient {
@@ -110,10 +152,17 @@ export class WsClient {
 
   private pushListeners: Array<(method: string, payload: Record<string, unknown>) => void> = []
   private authListeners: Array<() => void> = []
+  private readonly forceReconnect?: (reason: string) => Promise<void>
 
-  constructor(options?: { ca?: Buffer; tlsVerify?: boolean }) {
+  // Awaitable barrier between connect-start and auth-success. sendRequest
+  // gates on this so callers can fire requests during a reconnect window
+  // and have them automatically queue until the next auth completes.
+  private authBarrier: Deferred = this.makeDeferred()
+
+  constructor(options?: WsClientOptions) {
     if (options?.ca) this.ca = options.ca
     if (options?.tlsVerify === false) this.tlsVerify = false
+    this.forceReconnect = options?.forceReconnect
   }
 
   // Returns the option bag passed to `new WebSocket(..., options)`. When
@@ -145,6 +194,54 @@ export class WsClient {
     this.authListeners.push(listener)
     return () => {
       this.authListeners = this.authListeners.filter((l) => l !== listener)
+    }
+  }
+
+  private makeDeferred(): Deferred {
+    let resolve!: () => void
+    let reject!: (err: Error) => void
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res
+      reject = rej
+    })
+    // Pre-attach a no-op catch so a barrier rejected before anyone called
+    // waitAuthenticated() does not surface as an unhandled-rejection warning.
+    promise.catch(() => undefined)
+    return { promise, resolve, reject }
+  }
+
+  // resetAuthBarrier MUST reject the previous deferred before swapping so any
+  // pending waitAuthenticated() callers fail fast instead of hanging until
+  // their per-call timeout. Otherwise concurrent senders can hold a
+  // resolved-old reference past close().
+  resetAuthBarrier(reason: string = 'reset'): void {
+    const old = this.authBarrier
+    this.authBarrier = this.makeDeferred()
+    old.reject(new Error(`auth barrier reset: ${reason}`))
+  }
+
+  markAuthenticated(): void {
+    this.authBarrier.resolve()
+  }
+
+  markAuthFailed(err: Error): void {
+    this.authBarrier.reject(err)
+  }
+
+  async waitAuthenticated(timeoutMs = 30_000): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        this.authBarrier.promise,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error(`waitAuthenticated timed out after ${timeoutMs}ms`))
+          }, timeoutMs)
+          timer.unref?.()
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
     }
   }
 
@@ -189,43 +286,94 @@ export class WsClient {
           .catch((err: Error) => settle(() => reject(err)))
       })
 
+      // Auto-ack and inbound dispatch close over the LOCAL `ws` reference so a
+      // mid-frame reconnect that reassigns `this.ws` cannot misroute the ack
+      // (or push) to the new socket. This mirrors python-trueconf-bot's
+      // per-connection task model.
       ws.on('message', (data: Buffer | string) => {
+        let msg: { type?: number; id?: number; method?: string; payload?: unknown }
         try {
-          const msg = JSON.parse(data.toString())
-          if (msg.type === 2) {
-            this.matcher.resolve(msg.id, msg as TrueConfResponse)
-          } else if (msg.type === 1) {
-            // Docs name the event `uploadingProgress` but the server actually
-            // sends `uploadFileProgress`. Route it to the registered
-            // per-fileId handler and don't forward to onInboundMessage.
-            if (msg.method === 'uploadFileProgress') {
-              const fileId = msg.payload?.fileId
-              const progress = msg.payload?.progress
-              if (typeof fileId === 'string' && typeof progress === 'number') {
-                this.progressHandlers.get(fileId)?.(progress)
-              }
-              return
+          msg = JSON.parse(data.toString()) as typeof msg
+        } catch (err) {
+          this.logger?.warn(
+            `[trueconf] Malformed JSON in message handler: ${err instanceof Error ? err.message : String(err)}`,
+          )
+          return
+        }
+
+        // Auto-ack every server-originated request so we never miss the
+        // protocol's mandatory reply. Use the captured ws (not this.ws) and
+        // skip if the socket already closed underneath us.
+        if (msg?.type === 1 && typeof msg.id === 'number') {
+          if (ws.readyState === WebSocket.OPEN) {
+            try {
+              ws.send(JSON.stringify({ type: 2, id: msg.id }))
+            } catch (err) {
+              this.logger?.warn(
+                `[trueconf] auto-ack failed: ${err instanceof Error ? err.message : String(err)}`,
+              )
             }
-            // Notify push listeners (skip uploadFileProgress — handled above).
+          }
+        }
+
+        if (msg?.type === 2 && typeof msg.id === 'number') {
+          this.matcher.resolve(msg.id, msg as TrueConfResponse)
+          return
+        }
+
+        if (msg?.type === 1) {
+          // Docs name the event `uploadingProgress` but the server actually
+          // sends `uploadFileProgress`. Route it to the registered
+          // per-fileId handler and don't forward to onInboundMessage.
+          if (msg.method === 'uploadFileProgress') {
+            const payload = (msg.payload ?? {}) as { fileId?: unknown; progress?: unknown }
+            const fileId = payload.fileId
+            const progress = payload.progress
+            if (typeof fileId === 'string' && typeof progress === 'number') {
+              this.progressHandlers.get(fileId)?.(progress)
+            }
+            return
+          }
+          // sendMessage is delivered via onInboundMessage only — push
+          // listeners are for non-message events (chat lifecycle, member role
+          // changes, presence, etc.). Mirrors python-trueconf-bot routing.
+          if (msg.method !== 'sendMessage') {
             for (const l of this.pushListeners) {
-              try { l(msg.method, (msg.payload ?? {}) as Record<string, unknown>) }
+              try { l(msg.method!, (msg.payload ?? {}) as Record<string, unknown>) }
               catch (err) {
                 this.logger?.error(
                   `[trueconf] push listener error for method=${msg.method}: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
                 )
               }
             }
-            if (this.onInboundMessage) this.onInboundMessage(msg as TrueConfRequest)
           }
-        } catch (err) {
-          this.logger?.warn(
-            `[trueconf] Malformed JSON in message handler: ${err instanceof Error ? err.message : String(err)}`,
-          )
+          if (this.onInboundMessage) this.onInboundMessage(msg as TrueConfRequest)
         }
       })
 
-      ws.on('error', (err: Error) => settle(() => reject(new Error('WebSocket error: ' + err.message))))
+      ws.on('error', (err: Error) => {
+        const code = 'code' in err ? String((err as { code: unknown }).code) : undefined
+        const syscall = 'syscall' in err ? String((err as { syscall: unknown }).syscall) : undefined
+        const hostname = 'hostname' in err ? String((err as { hostname: unknown }).hostname) : undefined
+        settle(() => reject(new NetworkError(
+          `WebSocket error: ${err.message}`,
+          'websocket',
+          err,
+          code,
+          syscall,
+          hostname,
+        )))
+      })
       ws.on('close', (code: number, reason: Buffer) => {
+        // Stale close from an old socket (e.g., a delayed close event arriving
+        // after a forced reconnect already swapped this.ws to a new socket).
+        // Ignoring is correct: rejecting matcher pendings or clearing progress
+        // handlers would clobber the new socket's in-flight state, and bubbling
+        // up to lifecycle.handleClose would schedule a redundant reconnect.
+        if (this.ws !== ws) {
+          this.logger?.info(`[trueconf] stale close from old socket (code=${code}); ignoring`)
+          return
+        }
         this.matcher.rejectAll(new Error('WebSocket closed: ' + code + ' ' + (reason?.toString() ?? '')))
         this.progressHandlers.clear()
         this.onClose?.(code, reason?.toString() ?? '')
@@ -234,7 +382,35 @@ export class WsClient {
     })
   }
 
-  sendRequest(method: string, payload: Record<string, unknown>): Promise<TrueConfResponse> {
+  // Public sendRequest gates on the auth barrier (so requests fired during a
+  // reconnect window queue until auth lands) and recovers from
+  // CREDENTIALS_EXPIRED (203) by forcing a fresh-token reconnect once.
+  async sendRequest(method: string, payload: Record<string, unknown>): Promise<TrueConfResponse> {
+    await this.waitAuthenticated()
+    const response = await this.sendRequestInternal(method, payload)
+
+    if (response.payload?.errorCode === ErrorCode.CREDENTIALS_EXPIRED) {
+      this.logger?.warn(
+        `[trueconf] ${method} returned 203 CREDENTIALS_EXPIRED; forcing reconnect with fresh token`,
+      )
+      if (!this.forceReconnect) {
+        // Fail-soft: surface the 203 instead of hanging forever. ConnectionLifecycle
+        // is the only entity allowed to drive reconnects; if it never wired the
+        // callback there is nothing safe we can do here.
+        this.logger?.error(
+          '[trueconf] 203 received but no forceReconnect callback wired; surfacing original response',
+        )
+        return response
+      }
+      await this.forceReconnect('203_credentials_expired')
+      await this.waitAuthenticated()
+      return this.sendRequestInternal(method, payload)
+    }
+
+    return response
+  }
+
+  private sendRequestInternal(method: string, payload: Record<string, unknown>): Promise<TrueConfResponse> {
     const id = this.idCounter.next()
     const request: TrueConfRequest = { type: 1, id, method, payload }
     const tracked = this.matcher.track(id)
@@ -286,6 +462,10 @@ export class ConnectionLifecycle {
   private backoffMs = 1000
   private shuttingDown = false
   private reconnecting = false
+  private dnsRetryCount = 0
+  private reconnectInflight: Promise<void> | null = null
+  private suppressNextCloseReconnect = false
+  private static readonly DNS_MAX_RETRIES = 5
 
   constructor(
     private wsClient: WsClient,
@@ -295,16 +475,33 @@ export class ConnectionLifecycle {
   ) {}
 
   async start(): Promise<void> {
-    const tokenResponse = await acquireToken(this.config, { dispatcher: this.options?.dispatcher })
+    // Re-arm the auth barrier at the top of every start() so requests issued
+    // during the reconnect window queue on the new attempt rather than seeing
+    // the stale resolved promise from the previous session.
+    this.wsClient.resetAuthBarrier('lifecycle.start')
+    let tokenResponse: OAuthTokenResponse
+    try {
+      tokenResponse = await acquireToken(this.config, { dispatcher: this.options?.dispatcher })
+    } catch (err) {
+      this.wsClient.markAuthFailed(err instanceof Error ? err : new Error(String(err)))
+      throw err
+    }
     // Register lifecycle handlers BEFORE connect so a close event that fires
     // between auth completion and the first post-connect line still routes
     // through handleClose → scheduleReconnect.
     this.wsClient.onClose = (code, reason) => this.handleClose(code, reason)
     this.wsClient.onPong = () => { this.lastPongAt = Date.now() }
-    await this.wsClient.connect(this.config, tokenResponse.access_token)
+    try {
+      await this.wsClient.connect(this.config, tokenResponse.access_token)
+    } catch (err) {
+      this.wsClient.markAuthFailed(err instanceof Error ? err : new Error(String(err)))
+      throw err
+    }
 
     this.backoffMs = 1000
     this.reconnecting = false
+    this.dnsRetryCount = 0
+    this.wsClient.markAuthenticated()
     this.logger.info('[trueconf] Connected and authenticated')
     try {
       this.options?.onConnected?.()
@@ -318,9 +515,41 @@ export class ConnectionLifecycle {
   shutdown(): void {
     this.logger.info('[trueconf] Shutting down connection')
     this.shuttingDown = true
+    // Reject the auth barrier with an explicit reason so any pending
+    // waitAuthenticated() callers fail fast on shutdown instead of waiting
+    // out their per-call timeout.
+    this.wsClient.markAuthFailed(new Error('lifecycle shutting down'))
     this.stopTimers()
     this.cancelReconnect()
     this.wsClient.close()
+  }
+
+  // forceReconnect tears down the current connection and brings up a fresh
+  // one, used when sendRequest sees CREDENTIALS_EXPIRED (203). Sequencing is
+  // load-bearing: SYNC barrier-reject → SYNC suppress flag → SYNC cancel
+  // pending retry timer → close (async). The suppress flag prevents the
+  // close handler from racing us with its own scheduleReconnect.
+  async forceReconnect(reason: string): Promise<void> {
+    if (this.reconnectInflight) return this.reconnectInflight
+    this.logger.info(`[trueconf] Forced reconnect: ${reason}`)
+
+    this.wsClient.resetAuthBarrier(`forced reconnect: ${reason}`)
+    this.suppressNextCloseReconnect = true
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    this.wsClient.close()
+
+    this.reconnectInflight = (async () => {
+      try {
+        await this.start()
+      } finally {
+        this.reconnectInflight = null
+        this.suppressNextCloseReconnect = false
+      }
+    })()
+    return this.reconnectInflight
   }
 
   private startTimers(expiresAt: number): void {
@@ -351,6 +580,12 @@ export class ConnectionLifecycle {
       this.logger.warn(`[trueconf] onDisconnected callback failed: ${err instanceof Error ? err.message : String(err)}`)
     }
     if (this.shuttingDown || this.reconnecting) return
+    if (this.suppressNextCloseReconnect) {
+      // forceReconnect owns the next start() — do not race it with our own
+      // scheduleReconnect. One-shot: cleared by the inflight finally block.
+      this.suppressNextCloseReconnect = false
+      return
+    }
     this.logger.info(`[trueconf] Connection closed (code: ${code}, reason: "${reason}"), scheduling reconnect`)
     try {
       this.options?.onConnectionClosed?.(code, reason)
@@ -381,16 +616,47 @@ export class ConnectionLifecycle {
     this.wsClient.terminate()
   }
 
+  private isDnsError(err: unknown): boolean {
+    return err instanceof NetworkError && typeof err.code === 'string' && DNS_ERROR_CODES.has(err.code)
+  }
+
   private scheduleReconnect(): void {
     this.reconnectTimer = setTimeout(async () => {
       try {
         await this.start()
+        this.dnsRetryCount = 0
       } catch (err) {
         this.logger.warn(`[trueconf] Reconnect attempt failed: ${err instanceof Error ? err.message : String(err)}`)
-        this.backoffMs = Math.min(this.backoffMs * 2, 30_000)
+        if (this.isDnsError(err)) {
+          this.dnsRetryCount++
+          if (this.dnsRetryCount >= ConnectionLifecycle.DNS_MAX_RETRIES) {
+            this.logger.error(
+              `[trueconf] DNS resolve failed ${this.dnsRetryCount} times; check serverUrl. Giving up.`,
+            )
+            try { this.options?.onConnectionClosed?.(0, 'dns_unreachable') } catch { /* swallow */ }
+            // Reject the auth barrier so pending senders see the actionable
+            // dns_unreachable reason immediately instead of timing out silently.
+            // Use DNS_TERMINAL_CODE (paired with the transient DNS_ERROR_CODES
+            // set in types.ts) so consumers branching on `err instanceof
+            // NetworkError` can distinguish a terminal DNS failure from a
+            // retryable one without spinning further.
+            this.wsClient.markAuthFailed(
+              new NetworkError(
+                `dns_unreachable: gave up after ${this.dnsRetryCount} retries`,
+                'websocket',
+                undefined,
+                DNS_TERMINAL_CODE,
+              ),
+            )
+            this.wsClient.close()
+            return
+          }
+        }
+        this.backoffMs = Math.min(this.backoffMs * 2, 60_000)
         this.scheduleReconnect()
       }
-    }, this.backoffMs)
+    }, this.backoffMs + Math.random() * 1000)
+    this.reconnectTimer.unref?.()
   }
 
   private cancelReconnect(): void {

@@ -119,4 +119,45 @@ describe('resolveAccount with secret-ref password', () => {
     } as never)
     expect(account.tlsVerify).toBeUndefined()
   })
+
+  it('exposes clientId/clientSecret on ResolvedAccount when set on flat config', () => {
+    const account = resolveAccount({
+      serverUrl: 'tc.example.com',
+      username: 'bot@tc.example.com',
+      password: 'plain',
+      clientId: 'custom_oauth_client',
+      clientSecret: 'super-secret',
+    } as never)
+    expect(account.clientId).toBe('custom_oauth_client')
+    expect(account.clientSecret).toBe('super-secret')
+  })
+
+  it('exposes clientId/clientSecret for nested accounts', () => {
+    const account = resolveAccount(
+      {
+        accounts: {
+          office: {
+            serverUrl: 'tc.example.com',
+            username: 'bot@tc.example.com',
+            password: 'plain',
+            clientId: 'office_client',
+            clientSecret: 'office_secret',
+          },
+        },
+      } as never,
+      'office',
+    )
+    expect(account.clientId).toBe('office_client')
+    expect(account.clientSecret).toBe('office_secret')
+  })
+
+  it('leaves clientId/clientSecret undefined when omitted (acquireToken falls back to chat_bot)', () => {
+    const account = resolveAccount({
+      serverUrl: 'tc.example.com',
+      username: 'bot@tc.example.com',
+      password: 'plain',
+    } as never)
+    expect(account.clientId).toBeUndefined()
+    expect(account.clientSecret).toBeUndefined()
+  })
 })

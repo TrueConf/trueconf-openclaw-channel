@@ -62,6 +62,7 @@ export interface FakeServer {
   uploadFileRequests: FakeRequest[]
   sendFileRequests: FakeRequest[]
   getChatByIdRequests: FakeRequest[]
+  createP2PChatRequests: FakeRequest[]
   subscribeFileProgressRequests: FakeRequest[]
   unsubscribeFileProgressRequests: FakeRequest[]
   httpUploads: FakeHttpUpload[]
@@ -70,7 +71,7 @@ export interface FakeServer {
   clientAcks: number[]
   connections: Set<WebSocket>
   chats: ChatRegistry
-  configureFailures: (opts: { getChats?: number; getChatByID?: number; getChatByIDOmitErrorCode?: number }) => void
+  configureFailures: (opts: { getChats?: number; getChatByID?: number; getChatByIDOmitErrorCode?: number; getChatByIDErrorCode?: number }) => void
   pushInbound: (envelope: Json) => void
   pushFileProgress: (fileId: string, progress: number) => void
   pushEvent: (method: string, payload: Json) => void
@@ -111,6 +112,7 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
   const uploadFileRequests: FakeRequest[] = []
   const sendFileRequests: FakeRequest[] = []
   const getChatByIdRequests: FakeRequest[] = []
+  const createP2PChatRequests: FakeRequest[] = []
   const subscribeFileProgressRequests: FakeRequest[] = []
   const unsubscribeFileProgressRequests: FakeRequest[] = []
   const chatTypeOverrides = new Map<string, number>()
@@ -131,10 +133,15 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
   let getChatsFailures = 0
   let getChatByIDFailures = 0
   let getChatByIDOmitErrorCode = 0
-  function configureFailures(opts: { getChats?: number; getChatByID?: number; getChatByIDOmitErrorCode?: number }): void {
+  // Defaults to errorCode=1 (forced) to keep prior tests' semantics intact.
+  // python-sdk-alignment scenario 1 sets it to 203 (CREDENTIALS_EXPIRED) so
+  // WsClient triggers a forceReconnect on the next getChatByID.
+  let getChatByIDErrorCode = 1
+  function configureFailures(opts: { getChats?: number; getChatByID?: number; getChatByIDOmitErrorCode?: number; getChatByIDErrorCode?: number }): void {
     if (opts.getChats !== undefined) getChatsFailures = opts.getChats
     if (opts.getChatByID !== undefined) getChatByIDFailures = opts.getChatByID
     if (opts.getChatByIDOmitErrorCode !== undefined) getChatByIDOmitErrorCode = opts.getChatByIDOmitErrorCode
+    if (opts.getChatByIDErrorCode !== undefined) getChatByIDErrorCode = opts.getChatByIDErrorCode
   }
 
   const httpUploads: FakeHttpUpload[] = []
@@ -256,6 +263,7 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
         return
       }
       if (method === 'createP2PChat') {
+        createP2PChatRequests.push({ id, method, payload })
         const userId = String(payload.userId ?? '')
         send(ws, { type: 2, id, payload: { errorCode: 0, chatId: `chat_${userId}` } })
         return
@@ -310,7 +318,7 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
         getChatByIdRequests.push({ id, method, payload })
         if (getChatByIDFailures > 0) {
           getChatByIDFailures -= 1
-          send(ws, { type: 2, id, payload: { errorCode: 1, errorDescription: 'forced' } })
+          send(ws, { type: 2, id, payload: { errorCode: getChatByIDErrorCode, errorDescription: 'forced' } })
           return
         }
         const chatId = String(payload.chatId ?? '')
@@ -343,6 +351,7 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
     uploadFileRequests,
     sendFileRequests,
     getChatByIdRequests,
+    createP2PChatRequests,
     subscribeFileProgressRequests,
     unsubscribeFileProgressRequests,
     httpUploads,

@@ -18,9 +18,11 @@ import {
   handleOutboundAttachmentToChat,
   responseErrorCode,
 } from './outbound'
-import { handleInboundMessage, prepareInboundAttachment, unlinkTempFile, normalizeForCompare, rememberBotMessage, __resetCoalesceBufferForTesting } from './inbound'
+import { handleInboundMessage, prepareInboundAttachment, unlinkTempFile, normalizeForCompare, rememberBotMessage, getMaxFileSize, MAX_FILE_SIZE_HARD_LIMIT_BYTES, __resetCoalesceBufferForTesting } from './inbound'
+import { FileUploadLimits } from './limits'
+import { PerChatSendQueue } from './send-queue'
+import { BoundedSeen, handleSdkPushEvent } from './push-events'
 import type { InboundContext } from './inbound'
-import { buildAck } from './types'
 import type { ResolvedChatKind } from './types'
 import {
   listAccountIds as listAccountIdsImpl,
@@ -33,7 +35,8 @@ import {
 } from './config'
 import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './always-respond'
 import { WsClient, ConnectionLifecycle } from './ws-client'
-import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage } from './types'
+import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage, InboundExtraContext, InboundMediaContext } from './types'
+import { widenExtraContext } from './types'
 
 // Most recent inbound conversation per account. Used only for the self-send
 // redirect: when an agent tool call lands with ctx.to == bot's own identity,
@@ -66,6 +69,21 @@ export function loadCaFromAccount(account: ResolvedAccount): Buffer | undefined 
       `Fix permissions / re-run setup to re-TOFU, or remove caPath from config to fall back to system trust.`,
     )
   }
+}
+
+export interface AccountEntry {
+  lifecycle: ConnectionLifecycle
+  wsClient: WsClient
+  dispatcher?: Dispatcher
+  unsubscribers?: Array<() => void>
+  // Per-account state. limits/sendQueue must NOT be channel-wide:
+  //  - FileUploadLimits is mutated by per-account `getFileUploadLimits` server
+  //    pushes, so different accounts can have different runtime caps.
+  //  - PerChatSendQueue serializes outbound per-chatId. ChatIds are unique per
+  //    server, so two accounts on different servers must have independent
+  //    queues — otherwise unrelated outbounds would block each other.
+  limits: FileUploadLimits
+  sendQueue: PerChatSendQueue
 }
 
 // Tears down a single account entry: stops its lifecycle and closes the
@@ -139,7 +157,7 @@ const pluginRuntimeStore = createPluginRuntimeStore<PluginRuntime>("TrueConf run
 
 export function createRuntimeStore() {
   return {
-    accounts: new Map<string, { lifecycle: ConnectionLifecycle; wsClient: WsClient; dispatcher?: Dispatcher; unsubscribers?: Array<() => void> }>(),
+    accounts: new Map<string, AccountEntry>(),
     logger: null as Logger | null,
     runtime: null as unknown,
     fullConfig: null as unknown,
@@ -164,7 +182,81 @@ export function createRuntimeStore() {
   }
 }
 
+export type RuntimeStore = ReturnType<typeof createRuntimeStore>
+
 const store = createRuntimeStore()
+
+// Clears all per-(accountId, chatId) cache entries. Called from
+// `handleSdkPushEvent('removeChat', ...)`: once the server announces the chat
+// is gone, every registry that keys off chatId would otherwise leak entries
+// indefinitely (next message in a re-created chat with the same id would
+// reuse stale chatType / lastInboundRoute / direct-chat mapping).
+export function invalidateChatState(
+  store: RuntimeStore,
+  accountId: string,
+  chatId: string,
+): void {
+  const accountPrefix = `${accountId}\u0000`
+  for (const [key, value] of store.directChatsByStableUserId) {
+    if (value === chatId && key.startsWith(accountPrefix)) {
+      store.directChatsByStableUserId.delete(key)
+    }
+  }
+  const lastRoute = store.lastInboundRouteByAccount.get(accountId)
+  if (lastRoute && lastRoute.kind === 'group' && lastRoute.chatId === chatId) {
+    store.lastInboundRouteByAccount.delete(accountId)
+  }
+  store.chatTypeByChatId.delete(chatId)
+  store.inflightChatTypeLookups.delete(chatId)
+  store.recentBotMsgIdsByChat.delete(chatId)
+}
+
+// Lazy-closure adapter for the WsClient `forceReconnect` option. WsClient is
+// constructed BEFORE `lifecycle` exists (chicken-and-egg: lifecycle holds
+// wsClient). The closure resolves `lifecycle` at call time via the supplied
+// getter, so the binding becomes valid before any 203 response can arrive.
+//
+// If the closure fires before `lifecycle` is set (truly impossible in practice
+// because requests gate on the auth barrier, but defensive), the call is
+// dropped — surfacing the original error is preferable to throwing in a code
+// path WsClient cannot recover from.
+export function makeForceReconnectAdapter(
+  getLifecycle: () => { forceReconnect: (reason: string) => Promise<void> } | null,
+): (reason: string) => Promise<void> {
+  return async (reason: string) => {
+    const lifecycle = getLifecycle()
+    if (!lifecycle) return
+    await lifecycle.forceReconnect(reason)
+  }
+}
+
+// Wires the SDK push handler onto WsClient.onPush. Returns the unsubscribe
+// returned by onPush so the account-shutdown path can drop the listener.
+//
+// This handler runs alongside (NOT instead of) the always-respond resolver
+// listener — both subscribe via `wsClient.onPush(...)` and WsClient fans out
+// to every registered listener for each push event.
+export function registerSdkPushHandler(args: {
+  wsClient: WsClient
+  store: RuntimeStore
+  accountId: string
+  limits: FileUploadLimits
+  logger: Logger
+}): () => void {
+  const { wsClient, store, accountId, limits, logger } = args
+  // Per-account dedup: one BoundedSeen per registerSdkPushHandler call so an
+  // unknown method evicted on account A cannot silently re-flood the log on
+  // account B (and vice versa).
+  const seenUnknownMethods = new BoundedSeen()
+  return wsClient.onPush((method, payload) => {
+    handleSdkPushEvent(method, payload, {
+      limits,
+      invalidateChatState: (chatId) => invalidateChatState(store, accountId, chatId),
+      logger,
+      seenUnknownMethods,
+    })
+  })
+}
 
 function clearAccountChats(accountId: string): void {
   const prefix = `${accountId}\u0000`
@@ -262,7 +354,7 @@ export const channelPlugin = {
           logger.info(
             `[trueconf] sendText: target=${to} is bot identity; redirecting to last inbound group ${route.chatId}`,
           )
-          const groupResult = await sendTextToChat(entry.wsClient, route.chatId, cleanText, logger)
+          const groupResult = await sendTextToChat(entry.wsClient, route.chatId, cleanText, logger, entry.sendQueue)
           if (groupResult.ok && groupResult.messageId) {
             rememberBotMessage(store.recentBotMsgIdsByChat, groupResult.chatId, groupResult.messageId)
           }
@@ -275,6 +367,7 @@ export const channelPlugin = {
           fallbackUserId: route.userId,
           directChatStore: store,
           accountId,
+          sendQueue: entry.sendQueue,
         })
         if (directResult.ok && directResult.messageId) {
           rememberBotMessage(store.recentBotMsgIdsByChat, directResult.chatId, directResult.messageId)
@@ -286,6 +379,7 @@ export const channelPlugin = {
         fallbackUserId: to,
         directChatStore: store,
         accountId,
+        sendQueue: entry.sendQueue,
       })
       if (result.ok && result.messageId) {
         rememberBotMessage(store.recentBotMsgIdsByChat, result.chatId, result.messageId)
@@ -328,6 +422,8 @@ export const channelPlugin = {
         channelConfig: store.channelConfig,
         logger,
         dispatcher: entry.dispatcher,
+        limits: entry.limits,
+        sendQueue: entry.sendQueue,
       }
       if (botUserIdMedia && normalizeForCompare(botUserIdMedia) === normalizeForCompare(normalizedTo)) {
         const route = store.lastInboundRouteByAccount.get(accountId ?? '')
@@ -389,6 +485,8 @@ export const channelPlugin = {
           channelConfig: store.channelConfig,
           logger,
           dispatcher: entry.dispatcher,
+          limits: entry.limits,
+          sendQueue: entry.sendQueue,
         },
       )
 
@@ -425,9 +523,9 @@ export const channelPlugin = {
       // Two separate TLS trust surfaces: the `ws` library accepts `ca: Buffer`
       // directly; the built-in HTTP client (undici-backed) needs a Dispatcher
       // built with that CA. If caPath is unset, both stay undefined and the
-      // runtime uses the system trust store — same behavior as before Part 2.
-      // loadCaFromAccount throws when caPath is set but unreadable so we never
-      // silently downgrade pinned trust to the system store.
+      // runtime uses the system trust store. loadCaFromAccount throws when
+      // caPath is set but unreadable so we never silently downgrade pinned
+      // trust to the system store.
       let ca: Buffer | undefined
       try {
         ca = loadCaFromAccount(resolved)
@@ -444,7 +542,21 @@ export const channelPlugin = {
           ? new UndiciAgent({ connect: { ca } })
           : undefined
 
-      const wsClient = new WsClient({ ca, tlsVerify })
+      // Per-account state. Construct BEFORE wsClient/lifecycle so the
+      // forceReconnect closure and the SDK push handler can capture them.
+      const limits = new FileUploadLimits(getMaxFileSize(channelConfig), logger)
+      const sendQueue = new PerChatSendQueue()
+
+      // Lazy-bound lifecycle reference: the wsClient receives `forceReconnect`
+      // as a closure that resolves the lifecycle at call time. WsClient is
+      // constructed first because `lifecycle` needs it; the closure stays safe
+      // because requests gate on the auth barrier that lifecycle.start() flips.
+      let lifecycleRef: ConnectionLifecycle | null = null
+      const wsClient = new WsClient({
+        ca,
+        tlsVerify,
+        forceReconnect: makeForceReconnectAdapter(() => lifecycleRef),
+      })
       wsClient.logger = logger
 
       const wireAdapter: WireAdapter = {
@@ -456,10 +568,10 @@ export const channelPlugin = {
             throw new Error(`getChats: unexpected response (errorCode=${errorCode})`)
           }
           // TrueConf returns the chat list as a bare array in `payload`
-          // (`{ type: 2, id, payload: [chat0, chat1, ...] }`). The previous
-          // implementation read `payload.chats`, which is the shape used by
-          // some other endpoints — but never by `getChats`. Accept both forms
-          // so older / mocked servers that wrap the list still work.
+          // (`{ type: 2, id, payload: [chat0, chat1, ...] }`). Accept the
+          // wrapped `payload.chats` shape too so older / mocked / proxied
+          // servers that follow the convention used by some other endpoints
+          // still work.
           const p = resp.payload as unknown
           type ChatRow = { chatId: string; title: string; chatType: number }
           if (Array.isArray(p)) return p as ChatRow[]
@@ -468,9 +580,9 @@ export const channelPlugin = {
         },
         getChatByID: async (chatId) => {
           const resp = await wsClient.sendRequest('getChatByID', { chatId })
-          // Match resolveChatType (inbound.ts): missing errorCode === success.
-          // Some TrueConf servers omit errorCode on success — treating undefined
-          // as failure made every push lookup silently skip on those servers.
+          // Some TrueConf servers omit errorCode on success; treat undefined
+          // as success to match resolveChatType (inbound.ts) and avoid
+          // skipping every push lookup against those servers.
           const errorCode = responseErrorCode(resp)
           if (errorCode !== undefined && errorCode !== 0) return null
           return { chatType: Number(resp.payload?.chatType), title: String(resp.payload?.title ?? '') }
@@ -491,6 +603,8 @@ export const channelPlugin = {
           password: resolved.password,
           useTls: resolved.useTls ?? true,
           port: resolved.port,
+          clientId: resolved.clientId,
+          clientSecret: resolved.clientSecret,
         },
         logger,
         {
@@ -500,6 +614,7 @@ export const channelPlugin = {
           dispatcher,
         },
       )
+      lifecycleRef = lifecycle
 
       // Hoisted so the dep bag isn't rebuilt per turn. The DM branch layers
       // `store` on top because handleOutboundAttachment needs the direct-chat
@@ -510,6 +625,8 @@ export const channelPlugin = {
         channelConfig,
         logger,
         dispatcher,
+        limits,
+        sendQueue,
       }
 
       // Routes via the SDK's text/media split so a media-only payload reaches
@@ -523,11 +640,12 @@ export const channelPlugin = {
           text: reply.text,
           sendText: async (chunk) => {
             const result = inbound.isGroup
-              ? await sendTextToChat(wsClient, inbound.chatId, chunk, logger)
+              ? await sendTextToChat(wsClient, inbound.chatId, chunk, logger, sendQueue)
               : await sendText(wsClient, inbound.peerId, chunk, logger, {
                   fallbackUserId: inbound.peerId,
                   directChatStore: store,
                   accountId,
+                  sendQueue,
                 })
             if (!result.ok) {
               logger.warn(`[trueconf] deliver: text chunk send failed (peer=${inbound.peerId}, isGroup=${inbound.isGroup})`)
@@ -578,7 +696,12 @@ export const channelPlugin = {
         )
 
         let rawBody = inboundMsg.text
-        let extraContext: Record<string, unknown> | undefined
+        // Inbound's per-envelope hints (TrueConfEnvelopeType for FORWARDED /
+        // LOCATION / SURVEY) come in via inboundMsg.extraContext and must
+        // survive the merge below — shadowing them with attachment-only fields
+        // would lose forwarded / location metadata when both shapes co-exist
+        // (e.g., forwarded message with attachment).
+        let mediaExtraContext: InboundMediaContext | undefined
         let tempPath: string | null = null
 
         if (inboundMsg.attachmentContent) {
@@ -589,6 +712,8 @@ export const channelPlugin = {
             store,
             channelConfig: store.channelConfig!,
             logger,
+            sendQueue,
+            dispatcher,
           })
           if (!prep.ok) return
           // Preserve the real caption when the inbound was coalesced from a
@@ -598,7 +723,7 @@ export const channelPlugin = {
           const looksSynthesized =
             inboundMsg.text.startsWith('[File:') || inboundMsg.text.startsWith('[Image:')
           rawBody = looksSynthesized ? placeholder : inboundMsg.text
-          extraContext = {
+          mediaExtraContext = {
             MediaPath: prep.tempPath,
             MediaType: prep.mimeType,
             MediaPaths: [prep.tempPath],
@@ -607,9 +732,41 @@ export const channelPlugin = {
           tempPath = prep.tempPath
         }
 
-        const isCommand = !extraContext && ((store.runtime as {
+        // Merge inbound-side envelope hint (forwarded/location/survey) with
+        // attachment-side media context. Either, both, or neither may be
+        // present; the merged shape is captured by InboundExtraContext.
+        const baseExtra = inboundMsg.extraContext
+        let extraContext: InboundExtraContext | undefined
+        if (baseExtra && mediaExtraContext) {
+          extraContext = { ...baseExtra, ...mediaExtraContext }
+        } else if (baseExtra) {
+          extraContext = baseExtra
+        } else if (mediaExtraContext) {
+          extraContext = mediaExtraContext
+        }
+        const hasExtra = extraContext !== undefined
+
+        // Suppress slash-command interpretation for any envelope-flavoured
+        // message: ATTACHMENT replaces the body with `[File: name]`, FORWARDED
+        // synthesises a forward header, LOCATION/SURVEY synthesise a
+        // descriptive placeholder. None of those should be parsed as
+        // gateway-control commands by the runtime.
+        const isCommand = !hasExtra && ((store.runtime as {
           channel?: { commands?: { isControlCommandMessage?: (t: string) => boolean } }
         })?.channel?.commands?.isControlCommandMessage?.(inboundMsg.text) ?? false)
+
+        // The dispatcher reports failures along three paths: sync throw,
+        // onRecordError (session record failed → file is orphaned), and
+        // onDispatchError (reply send failed → file is at minimum suspect).
+        // Idempotent cleanup unifies all three so a callback-routed failure
+        // doesn't silently leak the temp file.
+        let tempCleaned = false
+        const cleanupTemp = async () => {
+          if (tempPath && !tempCleaned) {
+            tempCleaned = true
+            await unlinkTempFile(tempPath, logger)
+          }
+        }
 
         try {
           await dispatchInboundDirectDmWithRuntime({
@@ -633,18 +790,20 @@ export const channelPlugin = {
             timestamp: inboundMsg.timestamp,
             commandBody: isCommand ? inboundMsg.text : undefined,
             commandAuthorized: isCommand ? true : undefined,
-            extraContext,
+            extraContext: widenExtraContext(extraContext),
             deliver: deliver(inboundMsg),
             onRecordError: (err: unknown) => {
               logger.error(`[trueconf] Record error: ${err instanceof Error ? err.message : String(err)}`)
+              void cleanupTemp()
             },
             onDispatchError: (err: unknown, info: { kind: string }) => {
               logger.error(`[trueconf] Dispatch error (${info.kind}): ${err instanceof Error ? err.message : String(err)}`)
+              void cleanupTemp()
             },
           })
         } catch (err) {
           logger.error(`[trueconf] dispatchInboundDirectDm failed: ${err instanceof Error ? err.message : String(err)}`)
-          if (tempPath) await unlinkTempFile(tempPath, logger)
+          await cleanupTemp()
         }
       }
 
@@ -658,7 +817,6 @@ export const channelPlugin = {
           wsClient,
           botIdentityCandidates: [wsClient.botUserId ?? '', resolved.username ?? ''],
           accountId,
-          sendAck: (id) => wsClient.send(buildAck(id)),
           dispatch,
           logger,
           directChats: store.directChatsByStableUserId,
@@ -681,8 +839,26 @@ export const channelPlugin = {
           logger.warn(`[trueconf] always-respond: re-auth rebuild failed: ${err instanceof Error ? err.message : String(err)}`)
         })
       })
+      // SDK-push handler runs ALONGSIDE the always-respond push listener:
+      // both subscribe via onPush and WsClient fans out to every listener.
+      // Routes server-side getFileUploadLimits / removeChat / editMessage /
+      // removeMessage / clearHistory pushes to the right handlers.
+      const unsubscribeSdkPush = registerSdkPushHandler({
+        wsClient,
+        store,
+        accountId,
+        limits,
+        logger,
+      })
 
-      store.accounts.set(accountId, { lifecycle, wsClient, dispatcher, unsubscribers: [unsubscribePush, unsubscribeAuth] })
+      store.accounts.set(accountId, {
+        lifecycle,
+        wsClient,
+        dispatcher,
+        unsubscribers: [unsubscribePush, unsubscribeAuth, unsubscribeSdkPush],
+        limits,
+        sendQueue,
+      })
 
       try {
         await lifecycle.start()
@@ -734,7 +910,8 @@ export function registerFull(api: OpenClawPluginApi): void {
 function validateStartupConfig(channelConfig: TrueConfChannelConfig, logger: Logger): void {
   const max = (channelConfig as { maxFileSize?: unknown }).maxFileSize
   if (max !== undefined) {
-    const valid = typeof max === 'number' && Number.isFinite(max) && max > 0 && max <= 2 * 1024 * 1024 * 1024
+    const valid =
+      typeof max === 'number' && Number.isFinite(max) && max > 0 && max <= MAX_FILE_SIZE_HARD_LIMIT_BYTES
     if (!valid) logger.warn(`[trueconf] Invalid maxFileSize: ${JSON.stringify(max)}. Using fallback 50 MB.`)
   }
 

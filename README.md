@@ -367,7 +367,7 @@ This channel is wire-compatible with [python-trueconf-bot](https://github.com/tr
 | DNS failures (`ENOTFOUND`, `EAI_AGAIN`, …) | 5 retries (≈ 31 s) then fail-fast | Retried indefinitely | Inside an OpenClaw runtime, an unresolvable hostname is almost always a typo in `serverUrl`; surfacing it loudly is more useful than retrying forever. |
 | Token expiry (`errorCode: 203`) on any RPC | Transport-level reconnect with fresh OAuth + transparent retry of the original request | User-level pattern via `examples/update_token.py` | Plugins should not require example boilerplate to stay connected. |
 
-The `setChatMutationHandler` callback (edit / remove / clearHistory events) is intentionally not exposed in v1.2.0; it is planned for a follow-up release.
+The `setChatMutationHandler` callback (edit / remove / clearHistory events) is not currently exposed; the underlying push events are parsed and logged but not dispatched.
 
 ## Troubleshooting
 

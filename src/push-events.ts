@@ -2,14 +2,11 @@ import type { FileUploadLimits } from './limits'
 import type { Logger } from './types'
 
 /**
- * Discriminated union of chat-mutation push events. INTERNAL — declared here so
- * the parsed-and-dropped handlers below can share a vocabulary with the future
- * phase-1 callback API. Not exported in v1.2.0; phase-1 PR will export it and
- * wire `setChatMutationHandler(...)` on the channel.
- *
- * Keeping the shape pinned now means phase-1 only has to add a callback field
- * to `PushEventContext` and replace the `logger.info` summaries with a
- * dispatch — handler validation contracts stay identical.
+ * Discriminated union of chat-mutation push events. Internal vocabulary for
+ * the parsed-and-dropped handlers below: each handler validates the wire
+ * shape, builds the variant, and logs a summary instead of dispatching it.
+ * Kept pinned so a future callback dispatcher can adopt the same shape
+ * without churning handler validation contracts.
  */
 type ChatMutationEvent =
   | { kind: 'messageEdited'; chatId: string; timestamp: number; newContent: { text: string; parseMode?: string } }
@@ -136,8 +133,8 @@ function handleEditMessage(payload: unknown, ctx: PushEventContext): true {
     ctx.logger.warn(`[trueconf] editMessage: invalid payload shape, ignoring`)
     return true
   }
-  // Construct the ChatMutationEvent variant a phase-1 callback would receive.
-  // We log a summary and drop it here — phase-1 PR will swap the drop for a dispatch.
+  // Build the canonical event variant once so the logger summary and any
+  // future dispatcher see identical fields.
   const event: ChatMutationEvent = {
     kind: 'messageEdited',
     chatId,

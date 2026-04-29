@@ -522,9 +522,9 @@ export const channelPlugin = {
       // Two separate TLS trust surfaces: the `ws` library accepts `ca: Buffer`
       // directly; the built-in HTTP client (undici-backed) needs a Dispatcher
       // built with that CA. If caPath is unset, both stay undefined and the
-      // runtime uses the system trust store — same behavior as before Part 2.
-      // loadCaFromAccount throws when caPath is set but unreadable so we never
-      // silently downgrade pinned trust to the system store.
+      // runtime uses the system trust store. loadCaFromAccount throws when
+      // caPath is set but unreadable so we never silently downgrade pinned
+      // trust to the system store.
       let ca: Buffer | undefined
       try {
         ca = loadCaFromAccount(resolved)
@@ -567,10 +567,10 @@ export const channelPlugin = {
             throw new Error(`getChats: unexpected response (errorCode=${errorCode})`)
           }
           // TrueConf returns the chat list as a bare array in `payload`
-          // (`{ type: 2, id, payload: [chat0, chat1, ...] }`). The previous
-          // implementation read `payload.chats`, which is the shape used by
-          // some other endpoints — but never by `getChats`. Accept both forms
-          // so older / mocked servers that wrap the list still work.
+          // (`{ type: 2, id, payload: [chat0, chat1, ...] }`). Accept the
+          // wrapped `payload.chats` shape too so older / mocked / proxied
+          // servers that follow the convention used by some other endpoints
+          // still work.
           const p = resp.payload as unknown
           type ChatRow = { chatId: string; title: string; chatType: number }
           if (Array.isArray(p)) return p as ChatRow[]
@@ -579,9 +579,9 @@ export const channelPlugin = {
         },
         getChatByID: async (chatId) => {
           const resp = await wsClient.sendRequest('getChatByID', { chatId })
-          // Match resolveChatType (inbound.ts): missing errorCode === success.
-          // Some TrueConf servers omit errorCode on success — treating undefined
-          // as failure made every push lookup silently skip on those servers.
+          // Some TrueConf servers omit errorCode on success; treat undefined
+          // as success to match resolveChatType (inbound.ts) and avoid
+          // skipping every push lookup against those servers.
           const errorCode = responseErrorCode(resp)
           if (errorCode !== undefined && errorCode !== 0) return null
           return { chatType: Number(resp.payload?.chatType), title: String(resp.payload?.title ?? '') }

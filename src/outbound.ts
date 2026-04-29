@@ -85,9 +85,12 @@ export function isReconnectableSendError(err: unknown): boolean {
 }
 
 /**
- * @deprecated Use `client.sendRequest(...)` directly. Transport-level recovery
- * (auth barrier, 203 retry, DNS fail-fast) now lives in `WsClient.sendRequest`
- * since v1.2.0. This wrapper will be removed in a follow-up cleanup PR.
+ * Wraps `client.sendRequest(...)` with bounded retry on reconnectable transport
+ * errors. WsClient.sendRequest already handles auth barrier, 203 retry, and
+ * DNS fail-fast at the transport layer; this wrapper adds caller-level retry
+ * across full reconnect cycles, which file-upload paths rely on (uploadFile,
+ * sendFile, createP2PChat). Prefer `client.sendRequest` directly for plain
+ * one-shot requests where transport-level recovery is sufficient.
  */
 export async function sendRequestWithReconnectRetry(
   client: WsClient,
@@ -222,8 +225,6 @@ async function sendMessageRequest(
   })
 }
 
-// Test-only re-exports so tests can call internals without exposing them as
-// part of the public surface.
 export const __test__sendMessageRequest = sendMessageRequest
 
 async function recreateChat(
@@ -593,15 +594,15 @@ function buildSendFilePayload(chatId: string, upload: PreparedUpload): Record<st
   return payload
 }
 
-// Test-only re-export.
 export const __test__buildSendFilePayload = buildSendFilePayload
 
 // If `upload.inlineCaption` exceeds the caption limit, send it first as a
-// separate `sendMessage` and then attach the file without caption (Q1=B
-// product decision: caption-as-message + sendFile without caption). The orphan
-// case (caption sent, sendFile fails) is unavoidable; we log explicitly so ops
-// can detect it. Returns either a mutated `upload` (caption stripped) or a
-// structured failure routed back through the caller's `fail()` helper.
+// standalone `sendMessage` and then attach the file without caption. TrueConf's
+// `sendFile` truncates over-limit captions server-side, so splitting the
+// caption out preserves the user-visible content. The orphan case (caption
+// sent, sendFile fails) is unavoidable; we log explicitly so ops can detect
+// it. Returns either a mutated `upload` (caption stripped) or a structured
+// failure routed back through the caller's `fail()` helper.
 async function maybeSendCaptionSeparately(
   client: WsClient,
   chatId: string,

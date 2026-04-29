@@ -120,9 +120,10 @@ interface Deferred {
 export interface WsClientOptions {
   ca?: Buffer
   tlsVerify?: boolean
-  // Injected by ConnectionLifecycle (see channel.ts wire-up). When sendRequest
-  // sees errorCode=203 CREDENTIALS_EXPIRED it calls back here to drive a full
-  // close → fresh-token reconnect, then retries the original request once.
+  // Optional reconnect adapter. When sendRequest sees errorCode=203
+  // CREDENTIALS_EXPIRED it calls back here to drive a full close → fresh-token
+  // reconnect, then retries the original request once. Without an adapter
+  // wired, the 203 response surfaces to the caller as-is.
   forceReconnect?: (reason: string) => Promise<void>
 }
 

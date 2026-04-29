@@ -364,7 +364,7 @@ Probe видит `authorized: true`, мастер не задаёт trust-воп
 | Ошибки DNS (`ENOTFOUND`, `EAI_AGAIN`, …) | 5 попыток (≈ 31 с), затем fail-fast | Повторяет бесконечно | Внутри OpenClaw runtime неразрешимый хост почти всегда = опечатка в `serverUrl`; явно показать ошибку полезнее, чем retry'ить вечно. |
 | Истечение токена (`errorCode: 203`) на любом RPC | Transport-level реконнект со свежим OAuth + прозрачный retry исходного запроса | User-level паттерн `examples/update_token.py` | Плагин не должен требовать example-кода, чтобы оставаться online. |
 
-Callback `setChatMutationHandler` (события edit / remove / clearHistory) намеренно не экспонируется в v1.2.0 — добавится в follow-up релизе.
+Callback `setChatMutationHandler` (события edit / remove / clearHistory) сейчас не экспонируется — push-события парсятся и логируются, но не диспатчатся наверх.
 
 ## Устранение неполадок
 

@@ -663,10 +663,17 @@ const isCliEntry = (() => {
 if (isCliEntry) {
   try {
     await runSetup()
-    process.exit(0)
+    // Letting the loop drain naturally instead of calling process.exit(0)
+    // dodges nodejs/node#56645 — on Windows + Node 23+/24.x, an abrupt
+    // process.exit() after a fetch() races libuv's handle teardown and
+    // crashes with `assertion failed !(handle->flags & UV_HANDLE_CLOSING)`
+    // in src/win/async.c. Setting exitCode preserves the shell-status
+    // contract; the validateOAuthCredentials dispatcher cleanup keeps the
+    // pending-handle set empty so the process exits within milliseconds.
+    process.exitCode = 0
   } catch (err) {
     const detail = err instanceof Error ? (err.stack ?? err.message) : String(err)
     process.stderr.write(`trueconf-setup failed: ${detail}\n`)
-    process.exit(1)
+    process.exitCode = 1
   }
 }

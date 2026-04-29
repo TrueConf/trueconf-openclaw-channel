@@ -10,7 +10,7 @@
 import { readFileSync, writeFileSync, renameSync, chmodSync, existsSync, mkdirSync, copyFileSync, unlinkSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createJiti } from 'jiti'
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..')
@@ -78,7 +78,10 @@ async function promptLanguage(prompter, t) {
 }
 
 async function loadProbe() {
-  const mod = await import(join(REPO_ROOT, 'src/probe.mjs'))
+  // pathToFileURL is required on Windows: ESM dynamic import rejects raw
+  // drive-letter paths like `C:\...\probe.mjs` with ERR_UNSUPPORTED_ESM_URL_SCHEME.
+  // POSIX paths happen to work either way, so the conversion is universal.
+  const mod = await import(pathToFileURL(join(REPO_ROOT, 'src/probe.mjs')).href)
   return {
     probeTls: mod.probeTls,
     downloadCAChain: mod.downloadCAChain,
@@ -557,7 +560,7 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
     locale,
   )
 
-  const { validateOAuthCredentials } = injectedProbe ?? (await import(join(REPO_ROOT, 'src/probe.mjs')))
+  const { validateOAuthCredentials } = injectedProbe ?? (await import(pathToFileURL(join(REPO_ROOT, 'src/probe.mjs')).href))
   let oauthOk = false
   let oauthError = null
   let currentPassword = password

@@ -597,6 +597,8 @@ export const channelPlugin = {
           password: resolved.password,
           useTls: resolved.useTls ?? true,
           port: resolved.port,
+          clientId: resolved.clientId,
+          clientSecret: resolved.clientSecret,
         },
         logger,
         {

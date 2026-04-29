@@ -25,6 +25,8 @@ export type TrueConfChannelSection = Partial<Pick<TrueConfAccountConfig,
   | 'password'
   | 'useTls'
   | 'port'
+  | 'clientId'
+  | 'clientSecret'
   | 'caPath'
   | 'tlsVerify'
   | 'setupLocale'
@@ -199,6 +201,8 @@ export interface ResolvedAccount {
   password?: string
   useTls?: boolean
   port?: number
+  clientId?: string
+  clientSecret?: string
   caPath?: string
   tlsVerify?: boolean
   setupLocale?: SetupLocale

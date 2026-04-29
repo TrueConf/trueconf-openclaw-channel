@@ -115,21 +115,46 @@ interface FakeWsServer {
   pushToActive: (msg: object) => void
   // Force-close the active client connection (server side) without an error.
   closeActive: () => void
+  // Force a TCP-level termination on the active client connection. Mirrors a
+  // proxy/server-side reset: client sees ws code=1006 with no close-frame.
+  terminateActive: () => void
   // Number of acks received on the wire (auto-ack assertions).
   acksSeen: () => Array<number>
   // Most-recently connected socket reference (for assertions on which socket was acked).
   activeSocket: () => WsServerSocket | null
+  // How many WS connections have been accepted lifetime — for reconnect assertions.
+  connectionCount: () => number
 }
 
 async function startFakeWsServer(): Promise<FakeWsServer> {
   const acks: number[] = []
   let activeSocket: WsServerSocket | null = null
+  let connectionCount = 0
   let onAuth: (id: number, ws: WsServerSocket) => void = (id, ws) => {
     ws.send(JSON.stringify({ type: 2, id, payload: { errorCode: 0, userId: 'bot@example.com' } }))
   }
   let onRequest: (msg: { id: number; method: string; payload?: unknown }, ws: WsServerSocket) => void = () => {}
 
   const http = createServer()
+  // Minimal OAuth endpoint so ConnectionLifecycle.start() can complete its
+  // acquireToken step without hitting the real TrueConf bridge.
+  http.on('request', (req, res) => {
+    if (req.url === '/bridge/api/client/v1/oauth/token' && req.method === 'POST') {
+      let body = ''
+      req.on('data', (chunk) => { body += chunk.toString() })
+      req.on('end', () => {
+        res.statusCode = 200
+        res.setHeader('content-type', 'application/json')
+        res.end(JSON.stringify({
+          access_token: 'fake-token',
+          expires_at: Math.floor(Date.now() / 1000) + 7200,
+        }))
+      })
+      return
+    }
+    res.statusCode = 404
+    res.end('not found')
+  })
   const wss = new WebSocketServer({
     server: http,
     path: '/websocket/chat_bot/',
@@ -138,6 +163,7 @@ async function startFakeWsServer(): Promise<FakeWsServer> {
 
   wss.on('connection', (ws) => {
     activeSocket = ws
+    connectionCount++
     ws.on('message', (data) => {
       let msg: { type?: number; id?: number; method?: string; payload?: unknown }
       try {
@@ -172,8 +198,10 @@ async function startFakeWsServer(): Promise<FakeWsServer> {
     onRequest: (h) => { onRequest = h },
     pushToActive: (msg) => { if (activeSocket && activeSocket.readyState === WsServerSocket.OPEN) activeSocket.send(JSON.stringify(msg)) },
     closeActive: () => { if (activeSocket) activeSocket.close() },
+    terminateActive: () => { if (activeSocket) activeSocket.terminate() },
     acksSeen: () => [...acks],
     activeSocket: () => activeSocket,
+    connectionCount: () => connectionCount,
   }
 }
 
@@ -594,4 +622,216 @@ describe('ConnectionLifecycle.forceReconnect — race-safe sequencing', () => {
     await Promise.all([a, b])
     expect(concurrentStartCalls).toBe(1)
   })
+})
+
+describe('ConnectionLifecycle.handleClose — reconnect path on 1006', () => {
+  it('handleClose(1006, "") schedules reconnect that invokes start()', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new WsClient()
+      const config = { serverUrl: '127.0.0.1', username: 'bot', password: 'secret', useTls: false, port: 4309 } satisfies TrueConfAccountConfig
+      const lifecycle = new ConnectionLifecycle(client, config, silentLogger)
+
+      const startSpy = vi.spyOn(lifecycle, 'start').mockResolvedValue()
+
+      // ws.on('close') routes the close event into onClose → lifecycle.handleClose.
+      // Drive the private method directly because that's where the reconnect
+      // chain begins in production.
+      ;(lifecycle as unknown as { handleClose: (c: number, r: string) => void }).handleClose(1006, '')
+
+      expect(startSpy).not.toHaveBeenCalled()
+
+      // scheduleReconnect arms 1000–2000ms (backoffMs=1000 + jitter ≤1000).
+      await vi.advanceTimersByTimeAsync(2_500)
+
+      expect(startSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('ConnectionLifecycle integration — server-side TCP-terminate triggers reconnect', () => {
+  let server: FakeWsServer | null = null
+
+  beforeEach(async () => {
+    server = await startFakeWsServer()
+  })
+
+  afterEach(async () => {
+    // Forcibly terminate any socket the lifecycle may have re-opened mid-
+    // shutdown — otherwise server.close() awaits a still-OPEN connection and
+    // the hook hits its 10s default timeout.
+    if (server) {
+      server.terminateActive()
+      await server.close()
+    }
+    server = null
+  }, 20_000)
+
+  it('1006 mid-life from server.terminateActive() → handleClose → reconnect → re-auth', async () => {
+    let connectedCount = 0
+    let disconnectedCount = 0
+    const client = new WsClient()
+    client.logger = silentLogger
+    const config = makeConfig(server!.port)
+    const lifecycle = new ConnectionLifecycle(client, config, silentLogger, {
+      onConnected: () => { connectedCount++ },
+      onDisconnected: () => { disconnectedCount++ },
+    })
+
+    try {
+      // First successful start() — runs real acquireToken (against fake OAuth)
+      // and real client.connect() (against fake WS server).
+      await lifecycle.start()
+      expect(connectedCount).toBe(1)
+      expect(server!.connectionCount()).toBe(1)
+
+      // Simulate the colleague's symptom: server forcibly TCP-terminates the
+      // active socket. Client receives ws code=1006 with no close-frame.
+      server!.terminateActive()
+
+      // Wait long enough for the close event to propagate AND for the initial
+      // reconnect backoff (1000–2000ms with jitter) plus the re-auth round-trip
+      // to complete. 4 seconds is generous but not flaky.
+      await new Promise<void>((resolve) => setTimeout(resolve, 4_000))
+
+      // Reconnect must have happened: a second connection accepted by the fake
+      // server, and onConnected fired again.
+      expect(server!.connectionCount()).toBe(2)
+      expect(connectedCount).toBe(2)
+      expect(disconnectedCount).toBeGreaterThanOrEqual(1)
+    } finally {
+      lifecycle.shutdown()
+    }
+  }, 10_000)
+
+  it('inbound-then-terminate race: 1006 right after server-pushed message — reconnect still happens', async () => {
+    // Mirrors colleague's exact reported sequence: user writes → bot reads
+    // (server pushes type=1) → connection drops 1006. The race we worry about:
+    // an in-flight onInboundMessage callback running concurrently with the
+    // close event must not block or sabotage handleClose → scheduleReconnect.
+    let connectedCount = 0
+    let inboundReceived = 0
+    const client = new WsClient()
+    client.logger = silentLogger
+    client.onInboundMessage = () => { inboundReceived++ }
+    const config = makeConfig(server!.port)
+    const lifecycle = new ConnectionLifecycle(client, config, silentLogger, {
+      onConnected: () => { connectedCount++ },
+    })
+
+    try {
+      await lifecycle.start()
+      expect(connectedCount).toBe(1)
+
+      // Push inbound and terminate in the same tick — exercises the race.
+      server!.pushToActive({ type: 1, id: 9001, method: 'sendMessage', payload: { chatId: 'c', envelope: { type: 200, content: 'hi' } } })
+      server!.terminateActive()
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 4_000))
+
+      expect(inboundReceived).toBe(1)
+      expect(server!.connectionCount()).toBe(2)
+      expect(connectedCount).toBe(2)
+    } finally {
+      lifecycle.shutdown()
+    }
+  }, 10_000)
+
+  it('onConnectionClosed callback throws synchronously — reconnect still proceeds', async () => {
+    let connectedCount = 0
+    let closedCallCount = 0
+    const client = new WsClient()
+    client.logger = silentLogger
+    const config = makeConfig(server!.port)
+    const lifecycle = new ConnectionLifecycle(client, config, silentLogger, {
+      onConnected: () => { connectedCount++ },
+      onConnectionClosed: () => {
+        closedCallCount++
+        throw new Error('synthetic sync callback failure')
+      },
+    })
+
+    try {
+      await lifecycle.start()
+      expect(connectedCount).toBe(1)
+
+      server!.terminateActive()
+      await new Promise<void>((resolve) => setTimeout(resolve, 4_000))
+
+      // The throw was caught by handleClose's try/catch; scheduleReconnect ran;
+      // re-auth completed. If the throw escaped, reconnect would never fire.
+      expect(closedCallCount).toBeGreaterThanOrEqual(1)
+      expect(server!.connectionCount()).toBe(2)
+      expect(connectedCount).toBe(2)
+    } finally {
+      lifecycle.shutdown()
+    }
+  }, 10_000)
+
+  it('onConnectionClosed callback returns rejected Promise — reconnect still proceeds (no unhandledRejection break)', async () => {
+    // Top suspect for the colleague's bug: handleClose calls callback without
+    // await, so a returned rejected Promise becomes an unhandledRejection.
+    // In OpenClaw's runtime that may surface as a process-level fault; in
+    // isolation here we verify the lifecycle itself stays healthy.
+    let connectedCount = 0
+    let closedCallCount = 0
+    const unhandledHandler = (_reason: unknown) => { /* swallow for the test window */ }
+    process.on('unhandledRejection', unhandledHandler)
+
+    const client = new WsClient()
+    client.logger = silentLogger
+    const config = makeConfig(server!.port)
+    const lifecycle = new ConnectionLifecycle(client, config, silentLogger, {
+      onConnected: () => { connectedCount++ },
+      // eslint-disable-next-line @typescript-eslint/require-await
+      onConnectionClosed: (() => {
+        closedCallCount++
+        return Promise.reject(new Error('synthetic async callback failure'))
+      }) as unknown as (code: number, reason: string) => void,
+    })
+
+    try {
+      await lifecycle.start()
+      expect(connectedCount).toBe(1)
+
+      server!.terminateActive()
+      await new Promise<void>((resolve) => setTimeout(resolve, 4_000))
+
+      expect(closedCallCount).toBeGreaterThanOrEqual(1)
+      expect(server!.connectionCount()).toBe(2)
+      expect(connectedCount).toBe(2)
+    } finally {
+      process.off('unhandledRejection', unhandledHandler)
+      lifecycle.shutdown()
+    }
+  }, 10_000)
+
+  it('three sequential server-terminates each trigger a clean reconnect (backoff resets after success)', async () => {
+    let connectedCount = 0
+    const client = new WsClient()
+    client.logger = silentLogger
+    const config = makeConfig(server!.port)
+    const lifecycle = new ConnectionLifecycle(client, config, silentLogger, {
+      onConnected: () => { connectedCount++ },
+    })
+
+    try {
+      await lifecycle.start()
+      expect(connectedCount).toBe(1)
+
+      for (let cycle = 2; cycle <= 4; cycle++) {
+        server!.terminateActive()
+        // Each reconnect waits backoffMs+jitter (1000-2000ms) — successful
+        // re-auth resets backoffMs to 1000, so the cycle stays bounded.
+        await new Promise<void>((resolve) => setTimeout(resolve, 4_000))
+        expect(connectedCount).toBe(cycle)
+        expect(server!.connectionCount()).toBe(cycle)
+      }
+    } finally {
+      lifecycle.shutdown()
+    }
+  }, 20_000)
+
 })

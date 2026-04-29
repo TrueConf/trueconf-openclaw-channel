@@ -676,4 +676,17 @@ if (isCliEntry) {
     process.stderr.write(`trueconf-setup failed: ${detail}\n`)
     process.exitCode = 1
   }
+  // Watchdog: if some future regression leaks an event-loop handle (clack
+  // stdin in raw mode, a sharp libvips worker, an unref-missed timer), the
+  // wizard would otherwise look successful and then freeze the terminal
+  // forever. .unref() so the timer never keeps the loop alive itself —
+  // it fires only when the loop is hung past 10s.
+  setTimeout(() => {
+    process.stderr.write(
+      'trueconf-setup: finished but the event loop is still busy after 10s — ' +
+      'a leaked handle is keeping the process alive. Please report with OS and ' +
+      'Node version. Forcing exit now.\n',
+    )
+    process.exit(process.exitCode ?? 0)
+  }, 10_000).unref()
 }

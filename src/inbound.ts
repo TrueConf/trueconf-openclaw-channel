@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { basename, resolve as pathResolve, sep as pathSep, join as pathJoin } from 'node:path'
 import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web'
 import { getMediaDir, kindFromMime, type MediaKind } from 'openclaw/plugin-sdk/media-runtime'
-import { fetch, type Response } from 'undici'
+import { fetch, type Dispatcher, type Response } from 'undici'
 import { EnvelopeType, FileReadyState, TrueConfChatType } from './types'
 import type {
   TrueConfRequest,
@@ -456,6 +456,7 @@ export async function downloadFile(
   destPath: string,
   maxBytes: number,
   logger: Logger,
+  dispatcher?: Dispatcher,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   let parsedUrl: URL
   try {
@@ -470,7 +471,11 @@ export async function downloadFile(
   let response: Response
   try {
     logger.info(`[trueconf] downloadFile: fetching ${downloadUrl}`)
-    response = await fetch(downloadUrl)
+    // The account-level dispatcher carries the same TLS trust the operator
+    // configured for OAuth and WS (caPath / tlsVerify:false). Without it,
+    // self-signed-server deployments connect over OAuth/WS but fail on
+    // inbound media — see TLS-trust invariant in AGENTS.md.
+    response = await fetch(downloadUrl, dispatcher ? { dispatcher } : undefined)
   } catch (err) {
     const cause = err instanceof Error ? (err as Error & { cause?: unknown }).cause : undefined
     const causeMsg = cause instanceof Error ? cause.message : cause != null ? String(cause) : ''
@@ -640,8 +645,12 @@ export async function prepareInboundAttachment(params: {
   // chunks per chatId. Owning the queue at the account level keeps replies
   // from one account from blocking on another's outbound burst.
   sendQueue: PerChatSendQueue
+  // Per-account undici dispatcher built from the operator's CA / tlsVerify.
+  // OAuth and WS already use it; we thread it into the inbound download path
+  // so caPath / tlsVerify:false deployments can also fetch inbound media.
+  dispatcher?: Dispatcher
 }): Promise<InboundAttachmentReady | { ok: false }> {
-  const { inboundMsg, wsClient, accountId, store, channelConfig, logger, sendQueue } = params
+  const { inboundMsg, wsClient, accountId, store, channelConfig, logger, sendQueue, dispatcher } = params
   const attachment = inboundMsg.attachmentContent
   if (!attachment) {
     logger.error('[trueconf] prepareInboundAttachment called without attachmentContent')
@@ -756,7 +765,13 @@ export async function prepareInboundAttachment(params: {
     logger.info(`[trueconf] attachment tempPath: ${tempPath}`)
     await ensureAttachmentDirExists(logger)
 
-    const dlResult = await downloadFile(rewriteUrlForAccount(finalInfo.downloadUrl), tempPath, maxBytes, logger)
+    const dlResult = await downloadFile(
+      rewriteUrlForAccount(finalInfo.downloadUrl),
+      tempPath,
+      maxBytes,
+      logger,
+      dispatcher,
+    )
     if (!dlResult.ok) {
       logger.warn(`[trueconf] downloadFile failed: ${dlResult.error}`)
       return fail(

@@ -707,6 +707,7 @@ export const channelPlugin = {
             channelConfig: store.channelConfig!,
             logger,
             sendQueue,
+            dispatcher,
           })
           if (!prep.ok) return
           // Preserve the real caption when the inbound was coalesced from a

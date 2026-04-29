@@ -257,7 +257,7 @@ export async function handleInboundMessage(
   } else if (envelope.type === EnvelopeType.FORWARDED_MESSAGE) {
     const c = envelope.content as { text?: unknown; parseMode?: unknown } | undefined
     if (!c || typeof c.text !== 'string') {
-      ctx.logger.warn('[trueconf] FORWARDED_MESSAGE без text; dropping')
+      ctx.logger.warn('[trueconf] FORWARDED_MESSAGE missing text; dropping')
       return
     }
     const parseMode = typeof c.parseMode === 'string'
@@ -278,7 +278,7 @@ export async function handleInboundMessage(
       | { latitude?: unknown; longitude?: unknown; description?: unknown }
       | undefined
     if (!loc || typeof loc.latitude !== 'number' || typeof loc.longitude !== 'number') {
-      ctx.logger.warn('[trueconf] LOCATION без lat/lng; dropping')
+      ctx.logger.warn('[trueconf] LOCATION missing lat/lng; dropping')
       return
     }
     const description = typeof loc.description === 'string' && loc.description.length > 0
@@ -294,7 +294,7 @@ export async function handleInboundMessage(
   } else if (envelope.type === EnvelopeType.SURVEY) {
     const survey = envelope.content as { title?: unknown } | undefined
     if (!survey || typeof survey.title !== 'string') {
-      ctx.logger.warn('[trueconf] SURVEY без title; dropping')
+      ctx.logger.warn('[trueconf] SURVEY missing title; dropping')
       return
     }
     syntheticText = `[Опрос: «${survey.title}»]`

@@ -7,6 +7,7 @@ import {
   ErrorCode,
   NetworkError,
   DNS_ERROR_CODES,
+  DNS_TERMINAL_CODE,
 } from './types'
 import type {
   TrueConfAccountConfig,
@@ -635,18 +636,16 @@ export class ConnectionLifecycle {
             try { this.options?.onConnectionClosed?.(0, 'dns_unreachable') } catch { /* swallow */ }
             // Reject the auth barrier so pending senders see the actionable
             // dns_unreachable reason immediately instead of timing out silently.
-            // Wrap as NetworkError (phase='websocket', code='DNS_GIVEUP') so
-            // consumers branching on `err instanceof NetworkError` can
-            // distinguish a terminal DNS failure from a transient one (the
-            // transient codes ENOTFOUND/EAI_* still map through DNS_ERROR_CODES;
-            // DNS_GIVEUP is intentionally NOT in that set so isDnsError treats
-            // it as terminal, not retryable).
+            // Use DNS_TERMINAL_CODE (paired with the transient DNS_ERROR_CODES
+            // set in types.ts) so consumers branching on `err instanceof
+            // NetworkError` can distinguish a terminal DNS failure from a
+            // retryable one without spinning further.
             this.wsClient.markAuthFailed(
               new NetworkError(
                 `dns_unreachable: gave up after ${this.dnsRetryCount} retries`,
                 'websocket',
                 undefined,
-                'DNS_GIVEUP',
+                DNS_TERMINAL_CODE,
               ),
             )
             this.wsClient.close()

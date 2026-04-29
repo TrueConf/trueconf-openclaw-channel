@@ -36,6 +36,7 @@ import {
 import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './always-respond'
 import { WsClient, ConnectionLifecycle } from './ws-client'
 import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage, InboundExtraContext, InboundMediaContext } from './types'
+import { widenExtraContext } from './types'
 
 // Most recent inbound conversation per account. Used only for the self-send
 // redirect: when an agent tool call lands with ctx.to == bot's own identity,
@@ -757,8 +758,8 @@ export const channelPlugin = {
         // The dispatcher reports failures along three paths: sync throw,
         // onRecordError (session record failed → file is orphaned), and
         // onDispatchError (reply send failed → file is at minimum suspect).
-        // Previously only the sync-throw path unlinked, leaking temp files on
-        // every callback-routed failure. Idempotent cleanup unifies all three.
+        // Idempotent cleanup unifies all three so a callback-routed failure
+        // doesn't silently leak the temp file.
         let tempCleaned = false
         const cleanupTemp = async () => {
           if (tempPath && !tempCleaned) {
@@ -789,9 +790,7 @@ export const channelPlugin = {
             timestamp: inboundMsg.timestamp,
             commandBody: isCommand ? inboundMsg.text : undefined,
             commandAuthorized: isCommand ? true : undefined,
-            // SDK accepts a Record bag here; the structured InboundExtraContext
-            // is narrower and lacks the index signature, so widen at the call.
-            extraContext: extraContext as unknown as Record<string, unknown> | undefined,
+            extraContext: widenExtraContext(extraContext),
             deliver: deliver(inboundMsg),
             onRecordError: (err: unknown) => {
               logger.error(`[trueconf] Record error: ${err instanceof Error ? err.message : String(err)}`)

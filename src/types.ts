@@ -144,7 +144,9 @@ export interface OAuthTokenResponse {
 // TrueConfEnvelopeType so consumers narrow without unsafe casts; required
 // side-fields ('location' / 'survey') are bundled into the variant they
 // belong to, making illegal states (e.g. type='location' without coords)
-// unrepresentable.
+// unrepresentable. PascalCase keys (here and in InboundMediaContext) are
+// the OpenClaw extraContext wire contract — they reach downstream consumers
+// as-is, so the casing is intentional.
 export type InboundEnvelopeHint =
   | { TrueConfEnvelopeType: 'forwarded' }
   | { TrueConfEnvelopeType: 'location'; location: { latitude: number; longitude: number; description: string | null } }
@@ -167,6 +169,16 @@ export type InboundExtraContext =
   | InboundEnvelopeHint
   | InboundMediaContext
   | (InboundEnvelopeHint & InboundMediaContext)
+
+// Widens the structured InboundExtraContext to the Record<string, unknown>
+// the SDK dispatcher accepts. The widening is the single seam between the
+// typed inbound layer and the bag-typed dispatch boundary; concentrating it
+// here keeps the unsafe cast grep-able instead of inlined at each call.
+export function widenExtraContext(
+  e: InboundExtraContext | undefined,
+): Record<string, unknown> | undefined {
+  return e as Record<string, unknown> | undefined
+}
 
 export interface InboundMessage {
   channel: string
@@ -283,6 +295,11 @@ export class NetworkError extends Error {
 }
 
 export const DNS_ERROR_CODES: ReadonlySet<string> = new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_NODATA', 'EAI_NONAME'])
+
+// Terminal counterpart to DNS_ERROR_CODES: emitted on the NetworkError after
+// retry exhaustion. Intentionally NOT a member of DNS_ERROR_CODES so
+// isDnsError() classifies it as terminal (no further reconnect spin).
+export const DNS_TERMINAL_CODE = 'DNS_GIVEUP' as const
 
 export function buildAck(serverRequestId: number): TrueConfResponse {
   return { type: 2, id: serverRequestId }

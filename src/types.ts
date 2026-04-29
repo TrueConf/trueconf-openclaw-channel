@@ -140,6 +140,34 @@ export interface OAuthTokenResponse {
   expires_at: number
 }
 
+// Hint attached to non-PLAIN inbound messages. Discriminated by
+// TrueConfEnvelopeType so consumers narrow without unsafe casts; required
+// side-fields ('location' / 'survey') are bundled into the variant they
+// belong to, making illegal states (e.g. type='location' without coords)
+// unrepresentable.
+export type InboundEnvelopeHint =
+  | { TrueConfEnvelopeType: 'forwarded' }
+  | { TrueConfEnvelopeType: 'location'; location: { latitude: number; longitude: number; description: string | null } }
+  | { TrueConfEnvelopeType: 'survey'; survey: unknown }
+
+// Media file paths threaded into extraContext when the inbound carried an
+// attachment. The arrays are the bulk-media API form; the singular
+// MediaPath/MediaType are kept for SDK consumers that read one entry.
+export interface InboundMediaContext {
+  MediaPath: string
+  MediaType: string
+  MediaPaths: string[]
+  MediaTypes: string[]
+}
+
+// extraContext is built across two layers: inbound.ts attaches the envelope
+// hint when the message is non-PLAIN; channel.ts spreads media fields when
+// an attachment was downloaded. Either, both, or none may be present.
+export type InboundExtraContext =
+  | InboundEnvelopeHint
+  | InboundMediaContext
+  | (InboundEnvelopeHint & InboundMediaContext)
+
 export interface InboundMessage {
   channel: string
   accountId: string
@@ -154,7 +182,7 @@ export interface InboundMessage {
   attachmentContent?: AttachmentContent
   replyMessageId?: string
   parseMode?: 'text' | 'markdown' | 'html'
-  extraContext?: Record<string, unknown>
+  extraContext?: InboundExtraContext
 }
 
 export type InboundDispatchFn = (msg: InboundMessage) => void | Promise<void>

@@ -15,6 +15,7 @@ import type {
   Logger,
   TrueConfChannelConfig,
   InboundMessage,
+  InboundEnvelopeHint,
   FileInfo,
   ResolvedChatKind,
   AttachmentContent,
@@ -245,7 +246,7 @@ export async function handleInboundMessage(
   let plainText: string | null = null
   let plainParseMode: 'text' | 'markdown' | 'html' | undefined
   let syntheticText: string | null = null
-  let extraContext: Record<string, unknown> | undefined
+  let extraContext: InboundEnvelopeHint | undefined
   let attachment: AttachmentContent | null = null
 
   if (envelope.type === EnvelopeType.PLAIN_MESSAGE) {

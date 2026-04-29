@@ -35,7 +35,7 @@ import {
 } from './config'
 import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './always-respond'
 import { WsClient, ConnectionLifecycle } from './ws-client'
-import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage } from './types'
+import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage, InboundExtraContext, InboundMediaContext } from './types'
 
 // Most recent inbound conversation per account. Used only for the self-send
 // redirect: when an agent tool call lands with ctx.to == bot's own identity,
@@ -700,7 +700,7 @@ export const channelPlugin = {
         // survive the merge below — shadowing them with attachment-only fields
         // would lose forwarded / location metadata when both shapes co-exist
         // (e.g., forwarded message with attachment).
-        let mediaExtraContext: Record<string, unknown> | undefined
+        let mediaExtraContext: InboundMediaContext | undefined
         let tempPath: string | null = null
 
         if (inboundMsg.attachmentContent) {
@@ -731,14 +731,19 @@ export const channelPlugin = {
           tempPath = prep.tempPath
         }
 
-        // Merge inbound-side extraContext (forwarded/location/survey hints)
-        // with the attachment-side extraContext: attachment fields win on
-        // collision (current behavior preserved for media keys), but the
-        // envelope-type hint stays visible in the dispatched extraContext.
-        const baseExtra = inboundMsg.extraContext ?? {}
-        const mediaExtra = mediaExtraContext ?? {}
-        const hasExtra = Object.keys(baseExtra).length > 0 || Object.keys(mediaExtra).length > 0
-        const extraContext = hasExtra ? { ...baseExtra, ...mediaExtra } : undefined
+        // Merge inbound-side envelope hint (forwarded/location/survey) with
+        // attachment-side media context. Either, both, or neither may be
+        // present; the merged shape is captured by InboundExtraContext.
+        const baseExtra = inboundMsg.extraContext
+        let extraContext: InboundExtraContext | undefined
+        if (baseExtra && mediaExtraContext) {
+          extraContext = { ...baseExtra, ...mediaExtraContext }
+        } else if (baseExtra) {
+          extraContext = baseExtra
+        } else if (mediaExtraContext) {
+          extraContext = mediaExtraContext
+        }
+        const hasExtra = extraContext !== undefined
 
         // Suppress slash-command interpretation for any envelope-flavoured
         // message: ATTACHMENT replaces the body with `[File: name]`, FORWARDED
@@ -784,7 +789,9 @@ export const channelPlugin = {
             timestamp: inboundMsg.timestamp,
             commandBody: isCommand ? inboundMsg.text : undefined,
             commandAuthorized: isCommand ? true : undefined,
-            extraContext,
+            // SDK accepts a Record bag here; the structured InboundExtraContext
+            // is narrower and lacks the index signature, so widen at the call.
+            extraContext: extraContext as unknown as Record<string, unknown> | undefined,
             deliver: deliver(inboundMsg),
             onRecordError: (err: unknown) => {
               logger.error(`[trueconf] Record error: ${err instanceof Error ? err.message : String(err)}`)

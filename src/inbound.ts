@@ -632,7 +632,8 @@ export interface InboundAttachmentReady {
 // Download the inbound attachment and prepare extraContext for dispatch. Error
 // replies are sent here; on failure returns { ok: false } and the caller
 // skips dispatch. On success the caller must dispatch AND is responsible for
-// unlinking `tempPath` if dispatch itself throws.
+// unlinking `tempPath` on any dispatch failure path: sync throw,
+// onRecordError, or onDispatchError.
 export async function prepareInboundAttachment(params: {
   inboundMsg: InboundMessage
   wsClient: WsClient

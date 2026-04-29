@@ -744,6 +744,19 @@ export const channelPlugin = {
           channel?: { commands?: { isControlCommandMessage?: (t: string) => boolean } }
         })?.channel?.commands?.isControlCommandMessage?.(inboundMsg.text) ?? false)
 
+        // The dispatcher reports failures along three paths: sync throw,
+        // onRecordError (session record failed → file is orphaned), and
+        // onDispatchError (reply send failed → file is at minimum suspect).
+        // Previously only the sync-throw path unlinked, leaking temp files on
+        // every callback-routed failure. Idempotent cleanup unifies all three.
+        let tempCleaned = false
+        const cleanupTemp = async () => {
+          if (tempPath && !tempCleaned) {
+            tempCleaned = true
+            await unlinkTempFile(tempPath, logger)
+          }
+        }
+
         try {
           await dispatchInboundDirectDmWithRuntime({
             cfg: store.fullConfig as Parameters<typeof dispatchInboundDirectDmWithRuntime>[0]['cfg'],
@@ -770,14 +783,16 @@ export const channelPlugin = {
             deliver: deliver(inboundMsg),
             onRecordError: (err: unknown) => {
               logger.error(`[trueconf] Record error: ${err instanceof Error ? err.message : String(err)}`)
+              void cleanupTemp()
             },
             onDispatchError: (err: unknown, info: { kind: string }) => {
               logger.error(`[trueconf] Dispatch error (${info.kind}): ${err instanceof Error ? err.message : String(err)}`)
+              void cleanupTemp()
             },
           })
         } catch (err) {
           logger.error(`[trueconf] dispatchInboundDirectDm failed: ${err instanceof Error ? err.message : String(err)}`)
-          if (tempPath) await unlinkTempFile(tempPath, logger)
+          await cleanupTemp()
         }
       }
 

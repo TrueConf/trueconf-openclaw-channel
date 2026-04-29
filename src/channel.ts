@@ -18,7 +18,7 @@ import {
   handleOutboundAttachmentToChat,
   responseErrorCode,
 } from './outbound'
-import { handleInboundMessage, prepareInboundAttachment, unlinkTempFile, normalizeForCompare, rememberBotMessage, getMaxFileSize, __resetCoalesceBufferForTesting } from './inbound'
+import { handleInboundMessage, prepareInboundAttachment, unlinkTempFile, normalizeForCompare, rememberBotMessage, getMaxFileSize, MAX_FILE_SIZE_HARD_LIMIT_BYTES, __resetCoalesceBufferForTesting } from './inbound'
 import { FileUploadLimits } from './limits'
 import { PerChatSendQueue } from './send-queue'
 import { handleSdkPushEvent } from './push-events'
@@ -881,7 +881,8 @@ export function registerFull(api: OpenClawPluginApi): void {
 function validateStartupConfig(channelConfig: TrueConfChannelConfig, logger: Logger): void {
   const max = (channelConfig as { maxFileSize?: unknown }).maxFileSize
   if (max !== undefined) {
-    const valid = typeof max === 'number' && Number.isFinite(max) && max > 0 && max <= 2 * 1024 * 1024 * 1024
+    const valid =
+      typeof max === 'number' && Number.isFinite(max) && max > 0 && max <= MAX_FILE_SIZE_HARD_LIMIT_BYTES
     if (!valid) logger.warn(`[trueconf] Invalid maxFileSize: ${JSON.stringify(max)}. Using fallback 50 MB.`)
   }
 

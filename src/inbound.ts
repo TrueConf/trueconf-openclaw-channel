@@ -25,6 +25,7 @@ import { resolveAccount } from './config'
 import { PerChatSendQueue } from './send-queue'
 
 const DEFAULT_MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
+export const MAX_FILE_SIZE_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
 const COALESCE_WINDOW_MS = 300
 const RECENT_BOT_MSG_PER_CHAT_CAP = 50
 const bytesToMB = (n: number): number => (n > 0 ? Math.ceil(n / (1024 * 1024)) : 0)
@@ -522,7 +523,14 @@ export async function downloadFile(
 
 export function getMaxFileSize(cfg: TrueConfChannelConfig): number {
   const raw = (cfg as unknown as { maxFileSize?: unknown }).maxFileSize
-  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return raw
+  if (
+    typeof raw === 'number' &&
+    Number.isFinite(raw) &&
+    raw > 0 &&
+    raw <= MAX_FILE_SIZE_HARD_LIMIT_BYTES
+  ) {
+    return raw
+  }
   return DEFAULT_MAX_FILE_SIZE_BYTES
 }
 

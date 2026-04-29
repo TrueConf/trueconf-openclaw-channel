@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   __resetCoalesceBufferForTesting,
+  getMaxFileSize,
   handleInboundMessage,
+  MAX_FILE_SIZE_HARD_LIMIT_BYTES,
   type InboundContext,
 } from '../../src/inbound'
 import { EnvelopeType, TrueConfChatType, type InboundMessage, type TrueConfRequest } from '../../src/types'
@@ -304,5 +306,34 @@ describe('handleInboundMessage — envelope routing 201/203/204', () => {
 
     // No ws-level send was triggered from inbound (auto-ack is now in WsClient).
     expect(h.wsClient.send).not.toHaveBeenCalled()
+  })
+})
+
+describe('getMaxFileSize — bounds', () => {
+  const DEFAULT_50MB = 50 * 1024 * 1024
+
+  it('accepts a value within the 2 GiB hard limit', () => {
+    expect(getMaxFileSize({ maxFileSize: 100 * 1024 * 1024 } as never)).toBe(100 * 1024 * 1024)
+  })
+
+  it('accepts the hard limit boundary exactly', () => {
+    expect(getMaxFileSize({ maxFileSize: MAX_FILE_SIZE_HARD_LIMIT_BYTES } as never)).toBe(
+      MAX_FILE_SIZE_HARD_LIMIT_BYTES,
+    )
+  })
+
+  it('falls back to default when value exceeds 2 GiB', () => {
+    // The reviewer's concrete case: maxFileSize: 1_000_000_000_000 (≈ 1 TB) used to slip through.
+    expect(getMaxFileSize({ maxFileSize: 1_000_000_000_000 } as never)).toBe(DEFAULT_50MB)
+    expect(getMaxFileSize({ maxFileSize: MAX_FILE_SIZE_HARD_LIMIT_BYTES + 1 } as never)).toBe(DEFAULT_50MB)
+  })
+
+  it('falls back to default for non-positive, non-finite, or non-number values', () => {
+    expect(getMaxFileSize({ maxFileSize: 0 } as never)).toBe(DEFAULT_50MB)
+    expect(getMaxFileSize({ maxFileSize: -5 } as never)).toBe(DEFAULT_50MB)
+    expect(getMaxFileSize({ maxFileSize: Number.POSITIVE_INFINITY } as never)).toBe(DEFAULT_50MB)
+    expect(getMaxFileSize({ maxFileSize: Number.NaN } as never)).toBe(DEFAULT_50MB)
+    expect(getMaxFileSize({ maxFileSize: '500' } as never)).toBe(DEFAULT_50MB)
+    expect(getMaxFileSize({} as never)).toBe(DEFAULT_50MB)
   })
 })

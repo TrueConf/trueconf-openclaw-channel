@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { FileUploadLimits } from '../../src/limits'
-import { handleSdkPushEvent } from '../../src/push-events'
+import { BoundedSeen, handleSdkPushEvent } from '../../src/push-events'
 
 interface TestCtx {
   logger: { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> }
@@ -10,6 +10,7 @@ interface TestCtx {
     logger: { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> }
     limits: FileUploadLimits
     invalidateChatState: ReturnType<typeof vi.fn>
+    seenUnknownMethods: BoundedSeen
   }
 }
 
@@ -25,6 +26,7 @@ const makeCtx = (): TestCtx => {
       logger,
       limits: limits as unknown as FileUploadLimits,
       invalidateChatState,
+      seenUnknownMethods: new BoundedSeen(),
     },
   }
 }
@@ -152,59 +154,49 @@ describe('handleSdkPushEvent', () => {
   })
 
   describe('unknown methods (BoundedSeen LRU)', () => {
-    // Use unique method-name prefixes per test to keep the module-scoped LRU
-    // cache from leaking state across cases. Each test's namespace is disjoint
-    // from the others, so prior test additions don't flip these expectations.
     it('returns false for unknown method', () => {
       const t = makeCtx()
-      const handled = handleSdkPushEvent('dedup-A-unique-method', {}, t.ctx)
+      const handled = handleSdkPushEvent('unique-method', {}, t.ctx)
       expect(handled).toBe(false)
     })
 
     it('logs info exactly once for the same unknown method called 100 times', () => {
       const t = makeCtx()
       for (let i = 0; i < 100; i++) {
-        handleSdkPushEvent('dedup-B-flibbertigibbet', {}, t.ctx)
+        handleSdkPushEvent('flibbertigibbet', {}, t.ctx)
       }
       expect(t.logger.info).toHaveBeenCalledTimes(1)
     })
 
     it('LRU eviction: 33 unique methods cause oldest to be re-loggable', () => {
       const t = makeCtx()
-      // Pre-wash: dispatch 32 unique throwaway methods to fill the module-scoped
-      // seenUnknownMethods cache to capacity. This flushes any prior pollution
-      // (e.g. dedup-A-* / dedup-B-* / lru-C-* from previously-run tests in this
-      // file or future tests added before this one) so the cache holds ONLY
-      // prewash-* keys when the actual test logic begins. Without this, the
-      // arithmetic below is order-dependent.
-      for (let i = 0; i < 32; i++) {
-        handleSdkPushEvent(`prewash-${i}`, {}, t.ctx)
-      }
-      // Reset mock counters AFTER pre-wash so subsequent expect(...).toHaveBeenCalledTimes(N)
-      // counts only the methods this test explicitly pushes.
-      vi.clearAllMocks()
-
-      // Cache state at this point: [prewash-0..31] (FIFO order).
-      // Push 33 unique lru-C-method-* entries:
-      //   - lru-C-method-0  evicts prewash-0  → cache: [prewash-1..31, lru-C-method-0]
-      //   - lru-C-method-1  evicts prewash-1  → cache: [prewash-2..31, lru-C-method-0..1]
-      //   - ...
-      //   - lru-C-method-31 evicts prewash-31 → cache: [lru-C-method-0..31]
-      //   - lru-C-method-32 evicts lru-C-method-0 → cache: [lru-C-method-1..32]
-      // So lru-C-method-0 is evicted at the end; lru-C-method-32 is most recent.
+      // Cache starts empty (per-account, not module-scoped). Push 33 unique
+      // method-* entries through a 32-slot LRU:
+      //   - method-0..31 fill cache → [method-0..31] FIFO
+      //   - method-32 evicts method-0 → cache: [method-1..32]
       for (let i = 0; i < 33; i++) {
-        handleSdkPushEvent(`lru-C-method-${i}`, {}, t.ctx)
+        handleSdkPushEvent(`method-${i}`, {}, t.ctx)
       }
       expect(t.logger.info).toHaveBeenCalledTimes(33) // each unique = one info
 
-      // lru-C-method-0 was just evicted; re-pushing it logs again.
-      handleSdkPushEvent('lru-C-method-0', {}, t.ctx)
+      // method-0 was evicted; re-pushing it logs again.
+      handleSdkPushEvent('method-0', {}, t.ctx)
       expect(t.logger.info).toHaveBeenCalledTimes(34)
 
-      // lru-C-method-32 was the most recent insertion before the re-add of
-      // lru-C-method-0 (which evicted lru-C-method-1). It's still in cache → no new log.
-      handleSdkPushEvent('lru-C-method-32', {}, t.ctx)
+      // method-32 was the most recent insertion before re-adding method-0
+      // (which evicted method-1). Still in cache → no new log.
+      handleSdkPushEvent('method-32', {}, t.ctx)
       expect(t.logger.info).toHaveBeenCalledTimes(34)
+    })
+
+    it('two contexts (e.g. two accounts) maintain independent LRU state', () => {
+      const a = makeCtx()
+      const b = makeCtx()
+      handleSdkPushEvent('shared-method', {}, a.ctx)
+      handleSdkPushEvent('shared-method', {}, a.ctx) // dedup'd in a
+      handleSdkPushEvent('shared-method', {}, b.ctx) // first time in b
+      expect(a.logger.info).toHaveBeenCalledTimes(1)
+      expect(b.logger.info).toHaveBeenCalledTimes(1)
     })
   })
 })

@@ -16,10 +16,20 @@ type ChatMutationEvent =
   | { kind: 'messageRemoved'; chatId: string; messageId: string; removedBy?: { id: string; type: number } }
   | { kind: 'chatHistoryCleared'; chatId: string; forAll: boolean }
 
+// Capacity of the unknown-method LRU per account. 32 covers the realistic
+// catalog of TrueConf-side method names a single connection sees in normal
+// operation — well above the ~10 documented type=1 methods, with headroom for
+// SDK additions before eviction starts re-logging.
+export const UNKNOWN_METHOD_LRU_CAPACITY = 32
+
 export interface PushEventContext {
   readonly limits: FileUploadLimits
   readonly invalidateChatState: (chatId: string) => void
   readonly logger: Logger
+  // Per-account dedup cache. Owned by the caller (channel.ts wires one
+  // BoundedSeen per registerSdkPushHandler) so unknown-method logs from one
+  // account never silence the same method on another.
+  readonly seenUnknownMethods: BoundedSeen
 }
 
 /**
@@ -29,11 +39,11 @@ export interface PushEventContext {
  * repeatedly. FIFO eviction once `capacity` is reached — re-adding an evicted
  * entry treats it as new and re-logs once.
  */
-class BoundedSeen {
+export class BoundedSeen {
   private readonly set = new Set<string>()
   private readonly fifo: string[] = []
 
-  constructor(private readonly capacity: number = 32) {}
+  constructor(private readonly capacity: number = UNKNOWN_METHOD_LRU_CAPACITY) {}
 
   /** true if `key` was already present, false if it was just added. */
   hasOrAdd(key: string): boolean {
@@ -47,8 +57,6 @@ class BoundedSeen {
     return false
   }
 }
-
-const seenUnknownMethods = new BoundedSeen(32)
 
 /**
  * Routes a server-pushed type=1 event to the correct handler.
@@ -202,6 +210,6 @@ function handleClearHistory(payload: unknown, ctx: PushEventContext): true {
 }
 
 function handleUnknown(method: string, ctx: PushEventContext): void {
-  if (seenUnknownMethods.hasOrAdd(method)) return
+  if (ctx.seenUnknownMethods.hasOrAdd(method)) return
   ctx.logger.info(`[trueconf] unknown push method: ${method}`)
 }

@@ -21,7 +21,7 @@ import {
 import { handleInboundMessage, prepareInboundAttachment, unlinkTempFile, normalizeForCompare, rememberBotMessage, getMaxFileSize, MAX_FILE_SIZE_HARD_LIMIT_BYTES, __resetCoalesceBufferForTesting } from './inbound'
 import { FileUploadLimits } from './limits'
 import { PerChatSendQueue } from './send-queue'
-import { handleSdkPushEvent } from './push-events'
+import { BoundedSeen, handleSdkPushEvent } from './push-events'
 import type { InboundContext } from './inbound'
 import type { ResolvedChatKind } from './types'
 import {
@@ -243,11 +243,16 @@ export function registerSdkPushHandler(args: {
   logger: Logger
 }): () => void {
   const { wsClient, store, accountId, limits, logger } = args
+  // Per-account dedup: one BoundedSeen per registerSdkPushHandler call so an
+  // unknown method evicted on account A cannot silently re-flood the log on
+  // account B (and vice versa).
+  const seenUnknownMethods = new BoundedSeen()
   return wsClient.onPush((method, payload) => {
     handleSdkPushEvent(method, payload, {
       limits,
       invalidateChatState: (chatId) => invalidateChatState(store, accountId, chatId),
       logger,
+      seenUnknownMethods,
     })
   })
 }

@@ -2,8 +2,10 @@
   "id": "trueconf",
   "label": "TrueConf",
   "blurb": "Connect OpenClaw to TrueConf Server corporate messenger.",
-  "version": "1.2.1",
-  "channels": ["trueconf"],
+  "version": "1.2.3",
+  "channels": [
+    "trueconf"
+  ],
   "minOpenClawVersion": "2026.3.22",
   "channelConfigs": {
     "trueconf": {
@@ -13,77 +15,161 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "serverUrl": { "type": "string", "minLength": 1 },
-          "username": { "type": "string", "minLength": 1 },
+          "serverUrl": {
+            "type": "string",
+            "minLength": 1
+          },
+          "username": {
+            "type": "string",
+            "minLength": 1
+          },
           "password": {
             "anyOf": [
-              { "type": "string", "minLength": 1 },
+              {
+                "type": "string",
+                "minLength": 1
+              },
               {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["useEnv"],
+                "required": [
+                  "useEnv"
+                ],
                 "properties": {
-                  "useEnv": { "type": "string", "minLength": 1 }
+                  "useEnv": {
+                    "type": "string",
+                    "minLength": 1
+                  }
                 }
               }
             ]
           },
-          "useTls": { "type": "boolean" },
-          "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-          "clientId": { "type": "string" },
-          "clientSecret": { "type": "string" },
-          "caPath": { "type": "string", "minLength": 1 },
-          "enabled": { "type": "boolean" },
+          "useTls": {
+            "type": "boolean"
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "clientId": {
+            "type": "string"
+          },
+          "clientSecret": {
+            "type": "string"
+          },
+          "caPath": {
+            "type": "string",
+            "minLength": 1
+          },
+          "enabled": {
+            "type": "boolean"
+          },
           "accounts": {
             "type": "object",
             "additionalProperties": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "serverUrl": { "type": "string", "minLength": 1 },
-                "username": { "type": "string", "minLength": 1 },
+                "serverUrl": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "username": {
+                  "type": "string",
+                  "minLength": 1
+                },
                 "password": {
                   "anyOf": [
-                    { "type": "string", "minLength": 1 },
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
                     {
                       "type": "object",
                       "additionalProperties": false,
-                      "required": ["useEnv"],
+                      "required": [
+                        "useEnv"
+                      ],
                       "properties": {
-                        "useEnv": { "type": "string", "minLength": 1 }
+                        "useEnv": {
+                          "type": "string",
+                          "minLength": 1
+                        }
                       }
                     }
                   ]
                 },
-                "useTls": { "type": "boolean" },
-                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-                "clientId": { "type": "string" },
-                "clientSecret": { "type": "string" },
-                "caPath": { "type": "string", "minLength": 1 },
-                "tlsVerify": { "type": "boolean" },
-                "setupLocale": { "type": "string", "enum": ["en", "ru"] },
-                "enabled": { "type": "boolean" }
+                "useTls": {
+                  "type": "boolean"
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "clientId": {
+                  "type": "string"
+                },
+                "clientSecret": {
+                  "type": "string"
+                },
+                "caPath": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tlsVerify": {
+                  "type": "boolean"
+                },
+                "setupLocale": {
+                  "type": "string",
+                  "enum": [
+                    "en",
+                    "ru"
+                  ]
+                },
+                "enabled": {
+                  "type": "boolean"
+                }
               }
             }
           },
           "dmPolicy": {
             "type": "string",
-            "enum": ["open", "pairing", "allowlist", "closed", "disabled"]
+            "enum": [
+              "open",
+              "pairing",
+              "allowlist",
+              "closed",
+              "disabled"
+            ]
           },
           "allowFrom": {
             "type": "array",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           },
           "maxFileSize": {
             "type": "number",
             "minimum": 1,
             "maximum": 2147483648
           },
-          "tlsVerify": { "type": "boolean" },
-          "setupLocale": { "type": "string", "enum": ["en", "ru"] },
+          "tlsVerify": {
+            "type": "boolean"
+          },
+          "setupLocale": {
+            "type": "string",
+            "enum": [
+              "en",
+              "ru"
+            ]
+          },
           "groupAlwaysRespondIn": {
             "type": "array",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           }
         }
       }

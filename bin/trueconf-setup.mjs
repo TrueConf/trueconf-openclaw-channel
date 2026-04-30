@@ -184,6 +184,33 @@ function cleanupStaleEntries(cfg) {
   return { cfg, cleaned: false }
 }
 
+// Auto-registers pluginHostDir in cfg.plugins.load.paths. Stale entries that
+// fail realpathSync (ENOENT) are treated as non-matching, not as no-ops —
+// otherwise a deleted-but-not-cleaned-up path would silently block the
+// re-registration. Skipped when plugins.installs.trueconf is set (npm-install
+// path already wires discovery).
+export function registerLoadPathIfMissing(cfg, pluginHostDir) {
+  if (cfg.plugins?.installs?.trueconf !== undefined) return { cfg, changed: false }
+
+  const targetReal = realpathSync(pluginHostDir)
+  const existingPaths = cfg.plugins?.load?.paths ?? []
+  const alreadyRegistered = existingPaths.some((entry) => {
+    try { return realpathSync(entry) === targetReal } catch { return false }
+  })
+  if (alreadyRegistered) return { cfg, changed: false }
+
+  return {
+    cfg: {
+      ...cfg,
+      plugins: {
+        ...cfg.plugins,
+        load: { ...cfg.plugins?.load, paths: [...existingPaths, targetReal] },
+      },
+    },
+    changed: true,
+  }
+}
+
 function writeJsonConfigAtomic(configPath, cfg) {
   mkdirSync(dirname(configPath), { recursive: true })
   const tmpPath = `${configPath}.tmp-${process.pid}-${Date.now()}`
@@ -481,13 +508,15 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
     // any error throwsa runHeadlessFinalize emits; default 'en' is fine.
     const nextCfg = await runHeadlessFinalize(cfg)
     const { cfg: cleaned } = cleanupStaleEntries(nextCfg)
+    const { cfg: withLoadPath, changed: loadPathChanged } = registerLoadPathIfMissing(cleaned, REPO_ROOT)
+    if (loadPathChanged) console.info(`[trueconf-setup] Registered plugin host at ${realpathSync(REPO_ROOT)}`)
     // Backup only after finalize succeeds — otherwise repeated CI failures
     // accumulate orphan .bak.* files in ~/.openclaw/.
     const { backupPath, error: backupErr } = backupConfigIfExists(configPath)
     if (backupErr) {
       process.stderr.write(`[trueconf-setup] warning: backup failed (${backupErr.message}); proceeding without it\n`)
     }
-    writeJsonConfigAtomic(configPath, cleaned)
+    writeJsonConfigAtomic(configPath, withLoadPath)
     return { backupPath, mode: 'headless' }
   }
 
@@ -623,6 +652,8 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
   }
 
   const { cfg: cleanedFinal, cleaned } = cleanupStaleEntries(finalCfg)
+  const { cfg: withLoadPath, changed: loadPathChanged } = registerLoadPathIfMissing(cleanedFinal, REPO_ROOT)
+  if (loadPathChanged) console.info(`[trueconf-setup] Registered plugin host at ${realpathSync(REPO_ROOT)}`)
   const { backupPath, error: backupErr } = backupConfigIfExists(configPath)
   if (backupErr) {
     await prompter.note(
@@ -630,7 +661,7 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
       'Backup warning',
     )
   }
-  writeJsonConfigAtomic(configPath, cleanedFinal)
+  writeJsonConfigAtomic(configPath, withLoadPath)
 
   if (cleaned) {
     await prompter.note(t('bin.cleanup.removed', locale), t('bin.cleanup.title', locale))

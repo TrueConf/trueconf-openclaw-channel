@@ -18,6 +18,16 @@ import type {
   OpenClawConfig,
   WizardPrompter,
 } from 'openclaw/plugin-sdk/setup'
+import type {
+  CertSummary,
+  ProbeTlsParams,
+  ProbeTlsResult,
+  ValidateCaAgainstServerParams,
+  ValidateCaAgainstServerResult,
+  ValidateOAuthCredentialsParams,
+  ValidateOAuthCredentialsResult,
+  ValidatedCaBytes,
+} from './probe.d.mts'
 import type { Locale } from './i18n'
 
 // Bin and the inline-wizard runtime both extend WizardPrompter with a
@@ -30,35 +40,15 @@ type SetupPrompter = WizardPrompter & {
 
 type TFn = (key: string, locale: Locale, vars?: Record<string, string | number>) => string
 
+// Probe surface contract — matches src/probe.mjs (typed via src/probe.d.mts).
+// Importing the source-of-truth types instead of hand-rolling them keeps the
+// probe stub seams in tests/unit/setup-adapter.test.ts honest: a future probe
+// signature change surfaces as a TypeScript error here, not a runtime mismatch.
 interface ProbeModule {
-  probeTls: (params: { host: string; port?: number }) => Promise<{
-    reachable: boolean
-    useTls: boolean
-    port: number
-    caUntrusted: boolean
-    error?: string
-    cert?: unknown
-  }>
-  parseCertFromPem: (bytes: Buffer | Uint8Array) => {
-    subject: string | null
-    issuerCN: string | null
-    fingerprint: string | null
-  } | null
-  validateCaAgainstServer: (params: { caBytes: Buffer | Uint8Array; host: string; port?: number }) => Promise<{
-    ok: boolean
-    kind?: string
-    serverCert?: { issuerCN?: string | null; fingerprint?: string | null }
-    error?: string
-  }>
-  validateOAuthCredentials: (params: {
-    serverUrl: string
-    username: string
-    password: string
-    useTls?: boolean
-    port?: number
-    ca?: Buffer | Uint8Array
-    tlsVerify?: boolean
-  }) => Promise<{ ok: true } | { ok: false; category: string; error: string }>
+  probeTls: (params: ProbeTlsParams) => Promise<ProbeTlsResult>
+  parseCertFromPem: (bytes: Buffer | Uint8Array) => CertSummary | null
+  validateCaAgainstServer: (params: ValidateCaAgainstServerParams) => Promise<ValidateCaAgainstServerResult>
+  validateOAuthCredentials: (params: ValidateOAuthCredentialsParams) => Promise<ValidateOAuthCredentialsResult>
 }
 
 // === Wizard prompt helpers ===
@@ -76,31 +66,32 @@ export async function promptInteractiveInputs(
   locale: Locale,
 ): Promise<OpenClawConfig> {
   let cfg = currentCfg
-  for (const input of (wizard as unknown as { textInputs: Array<Record<string, unknown>> }).textInputs) {
-    const cv = input.currentValue as ((p: { cfg: OpenClawConfig; accountId: string }) => unknown) | undefined
-    const current = cv ? cv({ cfg, accountId: 'default' }) : undefined
+  for (const input of wizard.textInputs ?? []) {
+    const current = input.currentValue
+      ? input.currentValue({ cfg, accountId: 'default', credentialValues: {} })
+      : undefined
     if (!input.required && (current === undefined || current === '')) continue
 
-    const placeholder = (input.placeholder as string | undefined) ?? (typeof current === 'string' ? current : '')
+    const placeholder = input.placeholder ?? (typeof current === 'string' ? current : '')
     const raw = await prompter.text({
-      message: input.message as string,
+      message: input.message,
       placeholder,
       initialValue: typeof current === 'string' ? current : undefined,
     })
     const value = typeof raw === 'string' ? raw.trim() : ''
     if (value === '' && !input.applyEmptyValue && current !== undefined) continue
     if (value === '' && input.required) {
-      throw new Error(t('bin.fieldRequired', locale, { message: input.message as string }))
+      throw new Error(t('bin.fieldRequired', locale, { message: input.message }))
     }
     if (input.validate) {
-      const validateFn = input.validate as (p: { value: string; cfg: OpenClawConfig; accountId: string }) => string | null | undefined
-      const err = validateFn({ value, cfg, accountId: 'default' })
-      if (err) throw new Error(`${input.message as string}: ${err}`)
+      const err = input.validate({ value, cfg, accountId: 'default', credentialValues: {} })
+      if (err) throw new Error(`${input.message}: ${err}`)
     }
-    const normalizeFn = input.normalizeValue as ((p: { value: string; cfg: OpenClawConfig; accountId: string }) => string) | undefined
-    const normalized = normalizeFn ? normalizeFn({ value, cfg, accountId: 'default' }) : value
-    const applySetFn = input.applySet as (p: { cfg: OpenClawConfig; value: string; accountId: string }) => OpenClawConfig
-    cfg = applySetFn({ cfg, value: normalized, accountId: 'default' })
+    const normalized = input.normalizeValue
+      ? input.normalizeValue({ value, cfg, accountId: 'default', credentialValues: {} })
+      : value
+    if (!input.applySet) throw new Error(`textInput ${String(input.inputKey)}.applySet missing — wizard descriptor invariant broken`)
+    cfg = await input.applySet({ cfg, value: normalized, accountId: 'default' })
   }
   return cfg
 }
@@ -112,40 +103,40 @@ export async function promptPassword(
   t: TFn,
   locale: Locale,
 ): Promise<{ cfg: OpenClawConfig; credentialValues: Record<string, string> }> {
-  const credential = (wizard as unknown as { credentials: Array<Record<string, unknown>> }).credentials[0]
-  const inspectFn = credential.inspect as (p: { cfg: OpenClawConfig; accountId: string }) => {
-    envValue?: string
-    hasConfiguredValue?: boolean
-  }
-  const state = inspectFn({ cfg, accountId: 'default' })
-  const allowEnvFn = credential.allowEnv as ((p: { cfg: OpenClawConfig; accountId: string }) => boolean) | undefined
-  const allowEnv = allowEnvFn ? allowEnvFn({ cfg, accountId: 'default' }) : false
+  const credential = wizard.credentials[0]
+  const state = credential.inspect({ cfg, accountId: 'default' })
+  const allowEnv = credential.allowEnv ? credential.allowEnv({ cfg, accountId: 'default' }) : false
 
   if (allowEnv && state.envValue) {
     const useEnv = await prompter.confirm({
-      message: (credential.envPrompt as string | undefined) ?? t('bin.useEnvVar', locale, { var: credential.preferredEnvVar as string }),
+      message: credential.envPrompt ?? t('bin.useEnvVar', locale, { var: credential.preferredEnvVar ?? '' }),
       initialValue: true,
     })
-    if (useEnv) {
-      const applyUseEnvFn = credential.applyUseEnv as (p: { cfg: OpenClawConfig; accountId: string }) => Promise<OpenClawConfig> | OpenClawConfig
-      const nextCfg = await applyUseEnvFn({ cfg, accountId: 'default' })
-      return { cfg: nextCfg, credentialValues: { [credential.inputKey as string]: state.envValue } }
+    if (useEnv && credential.applyUseEnv) {
+      const nextCfg = await credential.applyUseEnv({ cfg, accountId: 'default' })
+      return { cfg: nextCfg, credentialValues: { [credential.inputKey]: state.envValue } }
     }
   }
 
   if (state.hasConfiguredValue) {
     const keep = await prompter.confirm({
-      message: (credential.keepPrompt as string | undefined) ?? t('bin.passwordKeep', locale),
+      message: credential.keepPrompt ?? t('bin.passwordKeep', locale),
       initialValue: true,
     })
     if (keep) return { cfg, credentialValues: {} }
   }
 
-  const pwd = await prompter.password({ message: (credential.inputPrompt as string | undefined) ?? t('bin.passwordPrompt', locale) })
+  const pwd = await prompter.password({ message: credential.inputPrompt ?? t('bin.passwordPrompt', locale) })
   if (typeof pwd !== 'string' || pwd === '') throw new Error(t('bin.passwordEmpty', locale))
-  const applySetFn = credential.applySet as (p: { cfg: OpenClawConfig; value: string; accountId: string }) => OpenClawConfig
-  const nextCfg = applySetFn({ cfg, value: pwd, accountId: 'default' })
-  return { cfg: nextCfg, credentialValues: { [credential.inputKey as string]: pwd } }
+  if (!credential.applySet) throw new Error('credential.applySet missing — wizard descriptor invariant broken')
+  const nextCfg = await credential.applySet({
+    cfg,
+    accountId: 'default',
+    credentialValues: {},
+    value: pwd,
+    resolvedValue: pwd,
+  })
+  return { cfg: nextCfg, credentialValues: { [credential.inputKey]: pwd } }
 }
 
 export async function promptProbePreview(
@@ -462,9 +453,18 @@ export async function runWizardAndFinalize(args: RunWizardAndFinalizeArgs): Prom
     // tlsVerify:false drops the CA bytes — passing both is a contradictory
     // signal to validateOAuthCredentials and the operator already opted out
     // of pinning when they picked insecure mode.
+    // caBytes here originates either from the live `validateCaAgainstServer`
+    // chain (already-validated) OR from `readFileSync(caPath)` in the
+    // skip-probe short-circuit (operator pinned useTls + port + caPath in
+    // their cfg — explicit trust contract, no live validation gate). The
+    // ValidatedCaBytes brand exists to enforce the TOCTOU invariant for the
+    // FIRST path; the SECOND path is the documented operator-trust escape
+    // hatch (mirrors src/channel-setup.ts:31 `markValidated`). Cast through
+    // unknown is the project-wide pattern for that escape.
+    const ca = tlsVerify === false || !caBytes ? undefined : (caBytes as unknown as ValidatedCaBytes)
     const result = await probeModule.validateOAuthCredentials({
       serverUrl, username, password: currentPassword, useTls, port,
-      ca: tlsVerify === false ? undefined : caBytes,
+      ca,
       tlsVerify,
     })
     if (result.ok) { oauthOk = true; break }

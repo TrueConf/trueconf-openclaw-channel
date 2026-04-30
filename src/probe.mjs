@@ -210,69 +210,78 @@ export async function validateOAuthCredentials({
   // undici Dispatcher, not a `node:https` Agent. Build an undici Agent that
   // trusts the caller-supplied CA bytes (or skips verification for the
   // operator-acknowledged insecure mode) when operating over TLS.
+  //
+  // We always own a Dispatcher here — even when no TLS overrides are needed —
+  // so the function can drain its keep-alive pool in finally. Without that,
+  // libuv on Windows asserts !(handle->flags & UV_HANDLE_CLOSING) at
+  // src/win/async.c when the wizard's CLI exits right after this call returns
+  // (Node bug nodejs/node#56645, unfixed through 24.13.1).
   const connect = {}
   if (ca && useTls) connect.ca = ca
   if (tlsVerify === false && useTls) connect.rejectUnauthorized = false
-  const dispatcher = useTls && (ca || tlsVerify === false)
-    ? new UndiciAgent({ connect })
-    : undefined
+  const dispatcher = new UndiciAgent({ connect })
 
-  let response
   try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        client_id: 'chat_bot',
-        client_secret: '',
-        grant_type: 'password',
-        username,
-        password,
-      }),
-      ...(dispatcher && { dispatcher }),
-      signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
-    })
-  } catch (err) {
-    // `fetch failed` from undici is a generic wrapper; the real reason (DNS,
-    // ECONNREFUSED, self-signed cert, etc.) lives in err.cause. Unwrap one
-    // level so diagnostics aren't a black box.
-    const causeMsg = err instanceof Error && err.cause instanceof Error ? err.cause.message : null
-    const causeCode = err instanceof Error && err.cause && typeof err.cause === 'object' && 'code' in err.cause
-      ? String(err.cause.code)
-      : null
-    const outerMsg = err instanceof Error ? err.message : String(err)
-    const msg = causeMsg ? `${outerMsg} (${causeCode ? `${causeCode}: ` : ''}${causeMsg})` : outerMsg
+    let response
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: 'chat_bot',
+          client_secret: '',
+          grant_type: 'password',
+          username,
+          password,
+        }),
+        dispatcher,
+        signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
+      })
+    } catch (err) {
+      // `fetch failed` from undici is a generic wrapper; the real reason (DNS,
+      // ECONNREFUSED, self-signed cert, etc.) lives in err.cause. Unwrap one
+      // level so diagnostics aren't a black box.
+      const causeMsg = err instanceof Error && err.cause instanceof Error ? err.cause.message : null
+      const causeCode = err instanceof Error && err.cause && typeof err.cause === 'object' && 'code' in err.cause
+        ? String(err.cause.code)
+        : null
+      const outerMsg = err instanceof Error ? err.message : String(err)
+      const msg = causeMsg ? `${outerMsg} (${causeCode ? `${causeCode}: ` : ''}${causeMsg})` : outerMsg
 
-    // Covers the common OpenSSL error codes Node surfaces for cert problems:
-    // SELF_SIGNED_CERT_IN_CHAIN, DEPTH_ZERO_SELF_SIGNED_CERT,
-    // UNABLE_TO_VERIFY_LEAF_SIGNATURE, UNABLE_TO_GET_ISSUER_CERT_LOCALLY,
-    // CERT_HAS_EXPIRED, ERR_TLS_CERT_ALTNAME_INVALID, plus general
-    // "certificate"/"TLS" wording in the outer message.
-    const tlsCodePattern = /^(SELF_SIGNED|DEPTH_ZERO|UNABLE_TO_VERIFY|UNABLE_TO_GET_ISSUER|CERT_|ERR_TLS_)/
-    if (msg.includes('certificate') || msg.includes('TLS') || (causeCode && tlsCodePattern.test(causeCode))) {
-      return { ok: false, category: 'tls', error: msg }
-    }
-    if (err instanceof Error && (err.name === 'TimeoutError' || outerMsg.includes('aborted due to timeout'))) {
-      return {
-        ok: false,
-        category: 'network',
-        error: `OAuth request did not complete within ${OAUTH_TIMEOUT_MS / 1000}s (server: ${hostport})`,
+      // Covers the common OpenSSL error codes Node surfaces for cert problems:
+      // SELF_SIGNED_CERT_IN_CHAIN, DEPTH_ZERO_SELF_SIGNED_CERT,
+      // UNABLE_TO_VERIFY_LEAF_SIGNATURE, UNABLE_TO_GET_ISSUER_CERT_LOCALLY,
+      // CERT_HAS_EXPIRED, ERR_TLS_CERT_ALTNAME_INVALID, plus general
+      // "certificate"/"TLS" wording in the outer message.
+      const tlsCodePattern = /^(SELF_SIGNED|DEPTH_ZERO|UNABLE_TO_VERIFY|UNABLE_TO_GET_ISSUER|CERT_|ERR_TLS_)/
+      if (msg.includes('certificate') || msg.includes('TLS') || (causeCode && tlsCodePattern.test(causeCode))) {
+        return { ok: false, category: 'tls', error: msg }
       }
+      if (err instanceof Error && (err.name === 'TimeoutError' || outerMsg.includes('aborted due to timeout'))) {
+        return {
+          ok: false,
+          category: 'network',
+          error: `OAuth request did not complete within ${OAUTH_TIMEOUT_MS / 1000}s (server: ${hostport})`,
+        }
+      }
+      return { ok: false, category: 'network', error: msg }
     }
-    return { ok: false, category: 'network', error: msg }
-  }
 
-  if (response.ok) return { ok: true }
-  if (response.status === 401) {
-    return { ok: false, category: 'invalid-credentials', error: '401 Unauthorized' }
+    if (response.ok) return { ok: true }
+    if (response.status === 401) {
+      return { ok: false, category: 'invalid-credentials', error: '401 Unauthorized' }
+    }
+    if (response.status === 404) {
+      return { ok: false, category: 'token-endpoint-missing', error: `${response.status} ${response.statusText}` }
+    }
+    if (response.status >= 500 && response.status < 600) {
+      return { ok: false, category: 'server-error', error: `${response.status} ${response.statusText}` }
+    }
+    return { ok: false, category: 'unknown', error: `${response.status} ${response.statusText}` }
+  } finally {
+    // Best-effort: a dispatcher cleanup error must not mask the OAuth result.
+    try { await dispatcher.close() } catch { /* ignore */ }
   }
-  if (response.status === 404) {
-    return { ok: false, category: 'token-endpoint-missing', error: `${response.status} ${response.statusText}` }
-  }
-  if (response.status >= 500 && response.status < 600) {
-    return { ok: false, category: 'server-error', error: `${response.status} ${response.statusText}` }
-  }
-  return { ok: false, category: 'unknown', error: `${response.status} ${response.statusText}` }
 }
 
 export function summarizeCert(cert) {

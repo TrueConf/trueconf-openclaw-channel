@@ -663,10 +663,30 @@ const isCliEntry = (() => {
 if (isCliEntry) {
   try {
     await runSetup()
-    process.exit(0)
+    // Letting the loop drain naturally instead of calling process.exit(0)
+    // dodges nodejs/node#56645 — on Windows + Node 23+/24.x, an abrupt
+    // process.exit() after a fetch() races libuv's handle teardown and
+    // crashes with `assertion failed !(handle->flags & UV_HANDLE_CLOSING)`
+    // in src/win/async.c. Setting exitCode preserves the shell-status
+    // contract; the validateOAuthCredentials dispatcher cleanup keeps the
+    // pending-handle set empty so the process exits within milliseconds.
+    process.exitCode = 0
   } catch (err) {
     const detail = err instanceof Error ? (err.stack ?? err.message) : String(err)
     process.stderr.write(`trueconf-setup failed: ${detail}\n`)
-    process.exit(1)
+    process.exitCode = 1
   }
+  // Watchdog: if some future regression leaks an event-loop handle (clack
+  // stdin in raw mode, a sharp libvips worker, an unref-missed timer), the
+  // wizard would otherwise look successful and then freeze the terminal
+  // forever. .unref() so the timer never keeps the loop alive itself —
+  // it fires only when the loop is hung past 10s.
+  setTimeout(() => {
+    process.stderr.write(
+      'trueconf-setup: finished but the event loop is still busy after 10s — ' +
+      'a leaked handle is keeping the process alive. Please report with OS and ' +
+      'Node version. Forcing exit now.\n',
+    )
+    process.exit(process.exitCode ?? 0)
+  }, 10_000).unref()
 }

@@ -523,6 +523,54 @@ describe('validateOAuthCredentials — status codes', () => {
     expect(seenDispatcher).toBeDefined()
     expect(typeof seenDispatcher.dispatch).toBe('function')
   })
+
+  it('closes the dispatcher after a successful OAuth call', async () => {
+    // The CLI calls process.exit(0) right after this function returns. On
+    // Windows, libuv asserts `!(handle->flags & UV_HANDLE_CLOSING)` in
+    // src/win/async.c if the undici Agent's keep-alive sockets are still
+    // open during loop teardown. Draining the pool here is what keeps the
+    // wizard from crashing on the success banner.
+    const ca = Buffer.from('-----BEGIN CERTIFICATE-----\nMIIBAA==\n-----END CERTIFICATE-----\n', 'utf8')
+    let closeSpy
+    vi.mocked(undiciFetch).mockImplementationOnce(async (_url, init) => {
+      closeSpy = vi.spyOn(init.dispatcher, 'close')
+      return new Response('{"access_token":"xyz"}', { status: 200 })
+    })
+    const result = await validateOAuthCredentials({
+      serverUrl: 'tc.example.com',
+      username: 'bot',
+      password: 'ok',
+      useTls: true,
+      port: 443,
+      ca,
+    })
+    expect(result.ok).toBe(true)
+    expect(closeSpy).toHaveBeenCalled()
+  })
+
+  it('closes the dispatcher when fetch throws', async () => {
+    // Same Windows libuv invariant on the error path: a TLS/network failure
+    // must not leave keep-alive sockets behind. try/finally in the
+    // implementation, asserted here.
+    const ca = Buffer.from('-----BEGIN CERTIFICATE-----\nMIIBAA==\n-----END CERTIFICATE-----\n', 'utf8')
+    let closeSpy
+    vi.mocked(undiciFetch).mockImplementationOnce(async (_url, init) => {
+      closeSpy = vi.spyOn(init.dispatcher, 'close')
+      const inner = new Error('connect ECONNREFUSED')
+      inner.code = 'ECONNREFUSED'
+      throw new TypeError('fetch failed', { cause: inner })
+    })
+    const result = await validateOAuthCredentials({
+      serverUrl: 'tc.example.com',
+      username: 'bot',
+      password: 'x',
+      useTls: true,
+      port: 443,
+      ca,
+    })
+    expect(result.ok).toBe(false)
+    expect(closeSpy).toHaveBeenCalled()
+  })
 })
 
 import { parseDn } from '../../src/probe.mjs'

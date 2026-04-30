@@ -1,4 +1,4 @@
-import { loadOutboundMediaFromUrl } from 'openclaw/plugin-sdk/mattermost'
+import { loadOutboundMediaFromUrl } from './load-media'
 import { kindFromMime, type MediaKind } from 'openclaw/plugin-sdk/media-runtime'
 import sharp from 'sharp'
 import type { Dispatcher } from 'undici'

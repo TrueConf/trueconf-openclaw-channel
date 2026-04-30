@@ -8,17 +8,13 @@ vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
 // loopback addresses; bypass it for these tests since we're exercising the
 // deliver routing logic, not the remote-fetch policy. Returns a fixed buffer
 // regardless of the URL the deliver hands down.
-vi.mock('openclaw/plugin-sdk/mattermost', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('openclaw/plugin-sdk/mattermost')>()
-  return {
-    ...actual,
-    loadOutboundMediaFromUrl: vi.fn().mockResolvedValue({
-      buffer: Buffer.from('FAKE-MEDIA-BYTES'),
-      contentType: 'application/octet-stream',
-      fileName: 'fake.bin',
-    }),
-  }
-})
+vi.mock('../../src/load-media', () => ({
+  loadOutboundMediaFromUrl: vi.fn().mockResolvedValue({
+    buffer: Buffer.from('FAKE-MEDIA-BYTES'),
+    contentType: 'application/octet-stream',
+    fileName: 'fake.bin',
+  }),
+}))
 
 import { dispatchInboundDirectDmWithRuntime } from 'openclaw/plugin-sdk/channel-inbound'
 import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'

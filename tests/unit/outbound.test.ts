@@ -6,7 +6,7 @@ import type { Logger, TrueConfChannelConfig, TrueConfResponse } from '../../src/
 // Mock the SDK module before importing outbound: outbound.ts pulls
 // `loadOutboundMediaFromUrl` at top level, so we need the mock in place
 // before any test imports it.
-vi.mock('openclaw/plugin-sdk/mattermost', () => ({
+vi.mock('../../src/load-media', () => ({
   loadOutboundMediaFromUrl: vi.fn(),
 }))
 
@@ -27,7 +27,7 @@ vi.mock('sharp', () => ({
   }),
 }))
 
-import { loadOutboundMediaFromUrl } from 'openclaw/plugin-sdk/mattermost'
+import { loadOutboundMediaFromUrl } from '../../src/load-media'
 import {
   sendText,
   sendTextToChat,

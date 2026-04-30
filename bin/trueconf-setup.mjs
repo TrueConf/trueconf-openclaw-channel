@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync, renameSync, chmodSync, existsSync, mkdirSy
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { parseArgs } from 'node:util'
 import { createJiti } from 'jiti'
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..')
@@ -373,20 +374,48 @@ const isCliEntry = (() => {
   }
 })()
 if (isCliEntry) {
+  // Parse argv before runSetup so unknown flags / positionals fail loud with a
+  // usage hint instead of being silently ignored. Rejecting positionals plus
+  // strict mode catches `node bin/trueconf-setup.mjs /tmp/x.json` (forgot the
+  // --config prefix) and `--unknown-flag` typos. parseArgs is from node:util
+  // (stable since Node 18.3, well below our >=22.14 floor).
+  let values
   try {
-    await runSetup()
-    // Letting the loop drain naturally instead of calling process.exit(0)
-    // dodges nodejs/node#56645 — on Windows + Node 23+/24.x, an abrupt
-    // process.exit() after a fetch() races libuv's handle teardown and
-    // crashes with `assertion failed !(handle->flags & UV_HANDLE_CLOSING)`
-    // in src/win/async.c. Setting exitCode preserves the shell-status
-    // contract; the validateOAuthCredentials dispatcher cleanup keeps the
-    // pending-handle set empty so the process exits within milliseconds.
-    process.exitCode = 0
+    ;({ values } = parseArgs({
+      args: process.argv.slice(2),
+      options: {
+        config: { type: 'string' },
+      },
+      allowPositionals: false,
+      strict: true,
+    }))
   } catch (err) {
-    const detail = err instanceof Error ? (err.stack ?? err.message) : String(err)
-    process.stderr.write(`trueconf-setup failed: ${detail}\n`)
+    const msg = err instanceof Error ? err.message : String(err)
+    process.stderr.write(`trueconf-setup: ${msg}\n`)
+    process.stderr.write('Usage: trueconf-setup [--config <path>]\n')
     process.exitCode = 1
+    // Skip the runSetup try block when argv parsing failed; the watchdog
+    // below still installs to catch any late-leaked handle.
+    values = null
+  }
+  if (values !== null) {
+    try {
+      // values.config is undefined when --config is absent; runSetup falls
+      // back to ~/.openclaw/openclaw.json in that case (default preserved).
+      await runSetup({ configPath: values.config })
+      // Letting the loop drain naturally instead of calling process.exit(0)
+      // dodges nodejs/node#56645 — on Windows + Node 23+/24.x, an abrupt
+      // process.exit() after a fetch() races libuv's handle teardown and
+      // crashes with `assertion failed !(handle->flags & UV_HANDLE_CLOSING)`
+      // in src/win/async.c. Setting exitCode preserves the shell-status
+      // contract; the validateOAuthCredentials dispatcher cleanup keeps the
+      // pending-handle set empty so the process exits within milliseconds.
+      process.exitCode = 0
+    } catch (err) {
+      const detail = err instanceof Error ? (err.stack ?? err.message) : String(err)
+      process.stderr.write(`trueconf-setup failed: ${detail}\n`)
+      process.exitCode = 1
+    }
   }
   // Watchdog: if some future regression leaks an event-loop handle (clack
   // stdin in raw mode, a sharp libvips worker, an unref-missed timer), the

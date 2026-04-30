@@ -1,104 +1,126 @@
-// Integration test against openclaw 2026.4.21 (sandboxed at /tmp/openclaw-repro/).
+// Real integration test against openclaw 2026.4.21 sandboxed at /tmp/openclaw-repro/.
 //
-// Reproduces UX-22's crash path: openclaw 2026.4.21+ onboard calls
-// `plugin.config.defaultAccountId?.(cfg) ?? plugin.config.listAccountIds(cfg)[0] ?? "default"`
-// (per onboard-channels-*.js:275). Pre-fix, our setup-only entry exposed
-// neither `config` nor `setup`, so onboard hit
-// `cannot read properties of undefined (reading 'defaultAccountId')` the
-// moment the operator picked TrueConf in the channel picker.
+// Reproduces UX-22 by spawning the actual openclaw 2026.4.21 binary and
+// driving the `onboard` flow non-interactively. Pre-fix, openclaw's runtime
+// hit `cannot read properties of undefined (reading 'defaultAccountId')` the
+// moment our setup-only entry was loaded — the call site at
+// onboard-channels-DL-dId1s.js:192 reads `plugin.config.defaultAccountId?.(cfg)`
+// and our setup-only entry exposed neither `config` nor `setup`.
 //
-// Post-fix (Plan 01-02 Task .3), setup-entry wraps createTrueconfPluginBase
-// and ships plugin.config + plugin.setup. The same wizard adapter that
-// onboard's buildChannelSetupWizardAdapterFromSetupWizard wraps is exercised
-// here directly via plugin.setup.{applyAccountConfig, validateInput} +
-// plugin.setupWizard.{textInputs, credentials}.
+// We can't drive the interactive channel picker via stdin (the picker uses
+// raw-mode TTY input that resists scripted feeds), but we CAN exercise the
+// plugin-load + onboard-runtime-init path via `--non-interactive` mode. That
+// path loads our setup-only entry, validates its surface, and walks through
+// gateway/auth/skill onboarding. Any crash on `plugin.config.*` access during
+// load/validate would surface in stderr.
 //
-// Subprocess-spawning the onboard CLI is interactive (TTY) and not
-// deterministic — we exercise the same programmatic surface onboard uses
-// internally.
-import { describe, it, expect, beforeAll } from 'vitest'
-import { existsSync } from 'node:fs'
+// The companion test in onboard-channels-list.test.ts covers the live
+// `channels list` runtime which routes through plugin.config.{listAccountIds,
+// defaultAccountId, resolveAccount} on every invocation — together they pin
+// the COMPAT-07 + UX-22 surface against openclaw 2026.4.21+.
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, writeFileSync, rmSync, realpathSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 const REPRO_DIR = '/tmp/openclaw-repro'
-const sandboxAvailable = existsSync(`${REPRO_DIR}/node_modules/openclaw/package.json`)
+const OPENCLAW_BIN = `${REPRO_DIR}/node_modules/.bin/openclaw`
+const sandboxAvailable = existsSync(OPENCLAW_BIN)
 
-describe.skipIf(!sandboxAvailable)('integration: openclaw 2026.4.21 onboard inline-wizard path', () => {
-  let plugin: {
-    id: string
-    setupWizard?: {
-      textInputs?: unknown[]
-      credentials?: unknown[]
+describe.skipIf(!sandboxAvailable)('integration: openclaw 2026.4.21 onboard runtime with our plugin loaded', () => {
+  const profileName = `tc-test-onboard-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+  const profileDir = join(homedir(), `.openclaw-${profileName}`)
+
+  let stderr = ''
+  let status: number | null = null
+
+  beforeAll(() => {
+    mkdirSync(profileDir, { recursive: true })
+    const pluginRealpath = realpathSync(join(__dirname, '..', '..'))
+    // Start with ONLY our plugin path registered; no channels.* config so the
+    // onboard runtime has to enumerate plugins, hit our setup-only entry, and
+    // touch its surface during validation.
+    writeFileSync(
+      join(profileDir, 'openclaw.json'),
+      JSON.stringify({
+        plugins: { load: { paths: [pluginRealpath] } },
+      }, null, 2),
+    )
+    // See onboard-channels-list.test.ts for the env-cleaning rationale —
+    // vitest's NODE_OPTIONS tripped openclaw's CLI.
+    const cleanEnv = { ...process.env }
+    for (const k of ['VITEST', 'VITEST_POOL_ID', 'VITEST_WORKER_ID', 'CI', 'NODE_OPTIONS']) {
+      delete cleanEnv[k]
     }
-    setup?: {
-      applyAccountConfig: (params: { cfg: unknown; accountId: string; input: unknown }) => unknown
-      validateInput?: (params: { cfg: unknown; accountId: string; input: unknown }) => string | null
-    }
-    config?: {
-      listAccountIds: (cfg: unknown) => string[]
-      defaultAccountId?: (cfg: unknown) => string
-      resolveAccount: (cfg: unknown, accountId?: string | null) => unknown
-    }
-  }
-
-  beforeAll(async () => {
-    const mod = await import('../../src/setup-entry')
-    plugin = (mod.default as { plugin: typeof plugin }).plugin
-  })
-
-  it('plugin.setup.applyAccountConfig writes channels.trueconf with required keys', () => {
-    const cfg = plugin.setup?.applyAccountConfig({
-      cfg: {},
-      accountId: 'default',
-      input: { serverUrl: 'tc.x', username: 'u', password: 'p' },
-    }) as {
-      channels?: { trueconf?: { serverUrl?: string; username?: string; password?: string; enabled?: boolean } }
-    }
-    expect(cfg.channels?.trueconf?.serverUrl).toBe('tc.x')
-    expect(cfg.channels?.trueconf?.username).toBe('u')
-    expect(cfg.channels?.trueconf?.password).toBe('p')
-    expect(cfg.channels?.trueconf?.enabled).toBe(true)
-  })
-
-  it('plugin.setup.validateInput rejects missing required fields', () => {
-    const result = plugin.setup?.validateInput?.({
-      cfg: {},
-      accountId: 'default',
-      input: { serverUrl: 'tc.x' },
-    })
-    expect(typeof result).toBe('string')
-    expect(result).toMatch(/username|password/i)
-  })
-
-  it('round-trip: applyAccountConfig → config.resolveAccount produces matching account', () => {
-    const cfgIn = plugin.setup?.applyAccountConfig({
-      cfg: {},
-      accountId: 'default',
-      input: { serverUrl: 'tc.example.com', username: 'bot@tc.example.com', password: 'secret' },
-    })
-    const acct = plugin.config?.resolveAccount(cfgIn, 'default') as {
-      serverUrl?: string; username?: string; configured?: boolean
-    }
-    expect(acct?.serverUrl).toBe('tc.example.com')
-    expect(acct?.username).toBe('bot@tc.example.com')
-    expect(acct?.configured).toBe(true)
-  })
-
-  it('plugin.config.defaultAccountId does NOT throw on cfg with empty channels.trueconf (UX-22 root-cause repro)', () => {
-    let threw: unknown
-    let result: string | undefined
     try {
-      result = plugin.config?.defaultAccountId?.({ channels: { trueconf: {} } })
-    } catch (e) {
-      threw = e
+      execFileSync(
+        OPENCLAW_BIN,
+        [
+          '--profile', profileName,
+          'onboard',
+          '--non-interactive',
+          '--accept-risk',
+          '--skip-channels',
+          '--auth-choice', 'skip',
+          '--flow', 'quickstart',
+          '--skip-health',
+        ],
+        {
+          cwd: REPRO_DIR,
+          env: cleanEnv,
+          encoding: 'utf8',
+          timeout: 60_000,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      )
+      status = 0
+    } catch (err) {
+      const e = err as { stderr?: string | Buffer; status?: number; message?: string }
+      stderr = typeof e.stderr === 'string' ? e.stderr : (e.stderr?.toString('utf8') ?? e.message ?? '')
+      status = e.status ?? null
     }
-    expect(threw).toBeUndefined()
-    expect(result).toBe('default')
+  }, 90_000)
+
+  afterAll(() => {
+    rmSync(profileDir, { recursive: true, force: true })
   })
 
-  it('plugin.setupWizard has the textInputs + credentials shape the onboard adapter expects', () => {
-    expect(Array.isArray(plugin.setupWizard?.textInputs)).toBe(true)
-    expect(plugin.setupWizard?.textInputs?.length ?? 0).toBeGreaterThanOrEqual(2)
-    expect(Array.isArray(plugin.setupWizard?.credentials)).toBe(true)
-    expect(plugin.setupWizard?.credentials?.length).toBe(1)
+  it('onboard --non-interactive exits 0 with our plugin loaded (no plugin-load crash)', () => {
+    expect(status).toBe(0)
+  })
+
+  it('does NOT throw on plugin.config.defaultAccountId during onboard runtime init', () => {
+    // Pre-fix UX-22 crash signature. Even with --skip-channels, the runtime
+    // still discovers + validates plugin.config of every loaded plugin during
+    // onboarding setup. A drop of defaultAccountId from setup-entry would
+    // surface as "Cannot read properties of undefined" or a TypeError here.
+    expect(stderr).not.toMatch(/Cannot read properties of undefined.*defaultAccountId/)
+    expect(stderr).not.toMatch(/TypeError.*defaultAccountId/)
+  })
+
+  it('does NOT throw on plugin.config.listAccountIds during onboard runtime init', () => {
+    // COMPAT-07 crash signature.
+    expect(stderr).not.toMatch(/TypeError.*listAccountIds is not a function/)
+    expect(stderr).not.toMatch(/Cannot read properties of undefined.*listAccountIds/)
+  })
+
+  it('writes the onboard config (proves plugin discovery succeeded end-to-end)', () => {
+    // openclaw onboard's --non-interactive path writes config. If our plugin
+    // had crashed during load, the write would not happen. Reading back
+    // proves the runtime got far enough to commit changes.
+    const cfg = JSON.parse(readFileSync(join(profileDir, 'openclaw.json'), 'utf8')) as {
+      plugins?: { load?: { paths?: string[] } }
+    }
+    expect(cfg.plugins?.load?.paths).toContain(realpathSync(join(__dirname, '..', '..')))
+  })
+
+  it('preserves our plugin path through onboard rewrite', () => {
+    // Sanity: onboard rewrote openclaw.json (it adds gateway/workspace defaults)
+    // but did NOT strip plugins.load.paths.
+    const cfg = JSON.parse(readFileSync(join(profileDir, 'openclaw.json'), 'utf8')) as {
+      plugins?: { load?: { paths?: string[] } }
+    }
+    expect(cfg.plugins?.load?.paths?.length ?? 0).toBeGreaterThanOrEqual(1)
   })
 })

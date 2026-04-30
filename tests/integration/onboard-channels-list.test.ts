@@ -1,82 +1,115 @@
-// Integration test against openclaw 2026.4.21 (sandboxed at /tmp/openclaw-repro/).
+// Real integration test against openclaw 2026.4.21 sandboxed at /tmp/openclaw-repro/.
 //
-// Reproduces the COMPAT-07 surface: openclaw 2026.4.21+ routes `channels list`
-// through the setup-only entry expecting `plugin.config.{listAccountIds,
-// defaultAccountId, resolveAccount, ...}`. Pre-fix, our setup-only entry
-// returned `{id, meta, setupWizard}` — undefined plugin.config crashed with
-// `TypeError: listAccountIds is not a function` (call site in
-// helpers-*.js + agents-*.js per upstream 2026.4.21 source).
+// Reproduces the COMPAT-07 bug surface end-to-end by spawning the actual
+// openclaw 2026.4.21 binary and exercising `channels list`. Pre-fix, the
+// runtime crashed with `TypeError: listAccountIds is not a function` because
+// the call site at onboard-channels-DL-dId1s.js:192 + :604 reads
+// `plugin.config.listAccountIds` on the loaded plugin, and our setup-only
+// entry returned `{id, meta, setupWizard}` — undefined config.
 //
 // Post-fix (Plan 01-02 Task .3), setup-entry wraps createTrueconfPluginBase
-// → full ChannelPlugin shape ships through the setup-only entry. This test
-// pins the call surface so any future regression that drops a config method
-// fails CI, not a customer install.
+// → full ChannelPlugin shape ships through the setup-only entry path.
 //
-// Spawning `npx openclaw channels list` as a subprocess hangs on TTY prompts
-// and is brittle. We invoke the same programmatic surface the runtime uses.
-import { describe, it, expect, beforeAll } from 'vitest'
-import { existsSync } from 'node:fs'
+// This test invokes the real openclaw binary against an isolated profile
+// directory so the user's actual openclaw config is untouched. Channels list
+// is the single offline-safe code path (no gateway required) that exercises
+// plugin.config.{listAccountIds, defaultAccountId, resolveAccount, ...} via
+// the runtime's actual call graph.
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 const REPRO_DIR = '/tmp/openclaw-repro'
-const sandboxAvailable = existsSync(`${REPRO_DIR}/node_modules/openclaw/package.json`)
+const OPENCLAW_BIN = `${REPRO_DIR}/node_modules/.bin/openclaw`
+const sandboxAvailable = existsSync(OPENCLAW_BIN)
 
-describe.skipIf(!sandboxAvailable)('integration: openclaw 2026.4.21 channels list path', () => {
-  let plugin: {
-    id: string
-    config?: {
-      listAccountIds: (cfg: unknown) => string[]
-      defaultAccountId?: (cfg: unknown) => string
-      resolveAccount: (cfg: unknown, accountId?: string | null) => unknown
-      isConfigured: (account: unknown) => boolean
-      isEnabled: (account: unknown) => boolean
-      describeAccount: (account: unknown) => unknown
+describe.skipIf(!sandboxAvailable)('integration: openclaw 2026.4.21 channels list runtime', () => {
+  // openclaw 2026.4.21's --profile flag isolates state under ~/.openclaw-<name>;
+  // env vars OPENCLAW_CONFIG_PATH / OPENCLAW_STATE_DIR are documented but only
+  // honored when the profile dir already exists. Use --profile with a unique
+  // name and seed the dir directly. afterAll removes it. Random suffix avoids
+  // collisions when this test file runs in parallel with itself in dev.
+  const profileName = `tc-test-channels-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+  const profileDir = join(homedir(), `.openclaw-${profileName}`)
+
+  // openclaw boot + channels list inspection is ~15-25s on a warm cache; spawn
+  // once in beforeAll and run all assertions on the cached result. Saves ~40s
+  // vs spawning per-it().
+  let stdout = ''
+  let stderr = ''
+  let status: number | null = null
+
+  beforeAll(() => {
+    mkdirSync(profileDir, { recursive: true })
+    const pluginRealpath = realpathSync(join(__dirname, '..', '..'))
+    writeFileSync(
+      join(profileDir, 'openclaw.json'),
+      JSON.stringify({
+        plugins: { load: { paths: [pluginRealpath] } },
+        channels: {
+          trueconf: {
+            enabled: true,
+            serverUrl: 'tc.example.com',
+            username: 'integration-bot',
+            password: 'integration-secret',
+            useTls: true,
+            port: 443,
+          },
+        },
+      }, null, 2),
+    )
+    // Strip vitest worker env vars before invoking openclaw — openclaw's CLI
+    // detects test-runner contexts and short-circuits some output. We need a
+    // clean CLI invocation. Also strip CI=true (vitest sets it under some
+    // configurations) so openclaw treats this as a normal interactive-ish run.
+    const cleanEnv = { ...process.env }
+    for (const k of ['VITEST', 'VITEST_POOL_ID', 'VITEST_WORKER_ID', 'CI', 'NODE_OPTIONS']) {
+      delete cleanEnv[k]
     }
-  }
-
-  beforeAll(async () => {
-    const mod = await import('../../src/setup-entry')
-    plugin = (mod.default as { plugin: typeof plugin }).plugin
-  })
-
-  it('plugin.config.listAccountIds returns ["default"] without TypeError', () => {
-    const cfg = { channels: { trueconf: { serverUrl: 'tc.x', username: 'u', password: 'p' } } }
-    let result: string[] | undefined
-    let threw: unknown
     try {
-      result = plugin.config?.listAccountIds(cfg)
-    } catch (e) {
-      threw = e
+      stdout = execFileSync(OPENCLAW_BIN, ['--profile', profileName, 'channels', 'list'], {
+        cwd: REPRO_DIR,
+        env: cleanEnv,
+        encoding: 'utf8',
+        timeout: 60_000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      status = 0
+    } catch (err) {
+      const e = err as { stdout?: string | Buffer; stderr?: string | Buffer; status?: number; message?: string }
+      stdout = typeof e.stdout === 'string' ? e.stdout : (e.stdout?.toString('utf8') ?? '')
+      stderr = typeof e.stderr === 'string' ? e.stderr : (e.stderr?.toString('utf8') ?? e.message ?? '')
+      status = e.status ?? null
     }
-    expect(threw).toBeUndefined()
-    expect(result).toEqual(['default'])
+  }, 90_000)
+
+  afterAll(() => {
+    rmSync(profileDir, { recursive: true, force: true })
   })
 
-  it('plugin.config.defaultAccountId returns "default" on empty cfg without TypeError', () => {
-    let result: string | undefined
-    let threw: unknown
-    try {
-      result = plugin.config?.defaultAccountId?.({})
-    } catch (e) {
-      threw = e
-    }
-    expect(threw).toBeUndefined()
-    expect(result).toBe('default')
+  it('channels list exits 0', () => {
+    expect(status).toBe(0)
   })
 
-  it('plugin.config.resolveAccount returns serverUrl-bearing record on configured cfg', () => {
-    const cfg = { channels: { trueconf: { serverUrl: 'tc.x', username: 'u', password: 'p' } } }
-    const acct = plugin.config?.resolveAccount(cfg, 'default') as { serverUrl?: string; configured?: boolean }
-    expect(acct?.serverUrl).toBe('tc.x')
-    expect(acct?.configured).toBe(true)
+  it('does NOT throw TypeError: listAccountIds is not a function', () => {
+    // Call site at onboard-channels-DL-dId1s.js:604 reads plugin.config.listAccountIds(cfg).
+    // Pre-fix surface returned undefined config → TypeError. Post-fix: full ChannelPlugin shape.
+    expect(stderr).not.toMatch(/TypeError.*listAccountIds/)
+    expect(stderr).not.toMatch(/Cannot read properties of undefined.*listAccountIds/)
   })
 
-  it('plugin.config has all six methods of the 2026.4.21+ contract', () => {
-    const cfg = plugin.config as Record<string, unknown> | undefined
-    expect(typeof cfg?.listAccountIds).toBe('function')
-    expect(typeof cfg?.defaultAccountId).toBe('function')
-    expect(typeof cfg?.resolveAccount).toBe('function')
-    expect(typeof cfg?.isConfigured).toBe('function')
-    expect(typeof cfg?.isEnabled).toBe('function')
-    expect(typeof cfg?.describeAccount).toBe('function')
+  it('does NOT crash on plugin.config.defaultAccountId access', () => {
+    // Call site at onboard-channels-DL-dId1s.js:192 reads
+    // plugin.config.defaultAccountId?.(cfg). Optional-chained so undefined
+    // doesn't throw — but a wider undefined-config crash would surface here.
+    expect(stderr).not.toMatch(/Cannot read properties of undefined/)
+  })
+
+  it('lists the configured TrueConf account as configured + enabled', () => {
+    // openclaw channels list prints "- <Label> <accountId>: configured, enabled".
+    // Our plugin labels itself "TrueConf" and the only configured account is "default".
+    expect(stdout).toMatch(/TrueConf\s+default:\s*configured,\s*enabled/)
   })
 })

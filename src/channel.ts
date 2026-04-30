@@ -33,6 +33,8 @@ import {
   shouldAllowMessage,
   parseAlwaysRespondConfig,
 } from './config'
+import { trueconfSetupWizard } from './channel-setup'
+import { trueconfSetupAdapter } from './setup-shared'
 import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './always-respond'
 import { WsClient, ConnectionLifecycle } from './ws-client'
 import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage, InboundExtraContext, InboundMediaContext } from './types'
@@ -310,12 +312,24 @@ export const channelPlugin = {
 
   config: {
     listAccountIds: (cfg: unknown) => listAccountIdsImpl(getChannelConfig(cfg)),
+    // Required by openclaw 2026.4.21+ onboard at onboard-channels-*.js:275
+    // (`plugin.config.defaultAccountId?.(cfg) ?? plugin.config.listAccountIds(cfg)[0] ?? "default"`).
+    // Mirrors src/plugin-base.ts so setup-entry and channel.ts stay in lockstep.
+    defaultAccountId: (cfg: unknown) =>
+      listAccountIdsImpl(getChannelConfig(cfg))[0] ?? 'default',
     resolveAccount: (cfg: unknown, accountId?: string | null) =>
       resolveAccountImpl(getChannelConfig(cfg), accountId),
     isConfigured: (account: ResolvedAccount) => isConfiguredImpl(account),
     isEnabled: (account: ResolvedAccount) => isEnabledImpl(account),
     describeAccount: (account: ResolvedAccount) => describeAccountImpl(account),
   },
+
+  // setupWizard / setup duplicated here so the integrated onboard works in
+  // BOTH the setup-only entry path (src/setup-entry.ts loads the same factory)
+  // AND the full-runtime path (this module). createTrueconfPluginBase is the
+  // single source of truth for what the surface must look like.
+  setupWizard: trueconfSetupWizard,
+  setup: trueconfSetupAdapter,
 
   outbound: {
     deliveryMode: "direct" as const,

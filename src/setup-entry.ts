@@ -1,29 +1,27 @@
 /**
  * Setup-only loading point for the TrueConf channel wizard.
  *
- * OpenClaw's `plugins install` / `plugins setup` commands load this entry
- * (via the `openclaw.setupEntry` field in package.json) to drive the admin
- * wizard without pulling in the full channel runtime. All interactive
- * wiring lives in `src/channel-setup.ts`.
+ * OpenClaw's `plugins install` / `plugins setup` / `channels list` / `onboard`
+ * commands load this entry (via the `openclaw.setupEntry` field in
+ * package.json) to drive admin flows without pulling in the full channel
+ * runtime. From openclaw 2026.4.21+, these surfaces also call
+ * `plugin.config.{listAccountIds, defaultAccountId, resolveAccount,
+ * isConfigured, isEnabled, describeAccount}` and `plugin.setup.applyAccountConfig`
+ * — so the setup-only entry MUST ship the FULL ChannelPlugin shape, not just
+ * id+meta+setupWizard.
+ *
+ * Logic shared with src/channel.ts (full-runtime entry): both consume
+ * createTrueconfPluginBase(...) from src/plugin-base.ts to keep the surface
+ * identical across the two entry points.
  */
 import { defineSetupPluginEntry } from 'openclaw/plugin-sdk/core'
 import { trueconfSetupWizard } from './channel-setup'
+import { createTrueconfPluginBase } from './plugin-base'
+import { trueconfSetupAdapter } from './setup-shared'
 
-// Meta kept in sync with package.json → openclaw.channel and src/channel.ts.
-// Required because the SDK wizard runtime reads plugin.meta.label at render
-// time; an undefined meta would throw "Cannot read properties of undefined
-// (reading 'label')". Reference plugins (telegram/imessage/signal/discord)
-// all pass a full ChannelPlugin base — this is the minimal inline mirror.
-export default defineSetupPluginEntry({
-  id: 'trueconf',
-  meta: {
-    id: 'trueconf',
-    label: 'TrueConf',
-    selectionLabel: 'TrueConf Server',
-    docsPath: '/channels/trueconf',
-    blurb: 'Connect OpenClaw to TrueConf Server corporate messenger.',
-    order: 80,
-    aliases: ['tc'],
-  },
-  setupWizard: trueconfSetupWizard,
-})
+export default defineSetupPluginEntry(
+  createTrueconfPluginBase({
+    setupWizard: trueconfSetupWizard,
+    setup: trueconfSetupAdapter,
+  }),
+)

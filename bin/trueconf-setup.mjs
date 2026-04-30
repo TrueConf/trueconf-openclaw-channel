@@ -87,6 +87,7 @@ async function loadProbe() {
     downloadCAChain: mod.downloadCAChain,
     parseCertFromPem: mod.parseCertFromPem,
     validateCaAgainstServer: mod.validateCaAgainstServer,
+    validateOAuthCredentials: mod.validateOAuthCredentials,
   }
 }
 
@@ -142,24 +143,6 @@ function readJsonConfig(configPath) {
   if (!existsSync(configPath)) return {}
   const raw = readFileSync(configPath, 'utf8')
   return raw.trim() === '' ? {} : JSON.parse(raw)
-}
-
-// Reads the CA bundle into memory so probe.mjs can receive it as bytes.
-// Keeps probe.mjs free of filesystem reads for the security scanner.
-//
-// Throws loud on read failure: silently swallowing ENOENT here would
-// downgrade the operator's pinned-CA trust mode to system trust without
-// any indication, violating the "no silent fallbacks on readFileSync(caPath)"
-// invariant in AGENTS.md. Caller is responsible for handing tlsVerify=false
-// paths a `caPath` of undefined so this never fires for insecure mode.
-function readCaBuffer(caPath) {
-  if (!caPath) return undefined
-  try {
-    return readFileSync(caPath)
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err)
-    throw new Error(`CA file unreadable: ${caPath} (${reason})`)
-  }
 }
 
 function backupConfigIfExists(configPath) {
@@ -240,234 +223,13 @@ function hasExistingTrueconfChannel(cfg) {
   return Boolean(cfg.channels?.trueconf)
 }
 
-async function promptInteractiveInputs(prompter, wizard, currentCfg, t, locale) {
-  // Optional inputs with no existing value are skipped; probe step owns TLS/port.
-  let cfg = currentCfg
-  for (const input of wizard.textInputs) {
-    const current = input.currentValue ? input.currentValue({ cfg, accountId: 'default' }) : undefined
-    if (!input.required && (current === undefined || current === '')) continue
-
-    const placeholder = input.placeholder ?? (current ?? '')
-    const raw = await prompter.text({
-      message: input.message,
-      placeholder,
-      initialValue: current,
-    })
-    const value = typeof raw === 'string' ? raw.trim() : ''
-    if (value === '' && !input.applyEmptyValue && current !== undefined) continue
-    if (value === '' && input.required) throw new Error(t('bin.fieldRequired', locale, { message: input.message }))
-    if (input.validate) {
-      const err = input.validate({ value, cfg, accountId: 'default' })
-      if (err) throw new Error(`${input.message}: ${err}`)
-    }
-    const normalized = input.normalizeValue
-      ? input.normalizeValue({ value, cfg, accountId: 'default' })
-      : value
-    cfg = input.applySet({ cfg, value: normalized, accountId: 'default' })
-  }
-  return cfg
-}
-
-async function promptPassword(prompter, wizard, cfg, t, locale) {
-  const credential = wizard.credentials[0]
-  const state = credential.inspect({ cfg, accountId: 'default' })
-  const allowEnv = credential.allowEnv?.({ cfg, accountId: 'default' }) ?? false
-
-  if (allowEnv && state.envValue) {
-    const useEnv = await prompter.confirm({
-      message: credential.envPrompt ?? t('bin.useEnvVar', locale, { var: credential.preferredEnvVar }),
-      initialValue: true,
-    })
-    if (useEnv) {
-      const nextCfg = await credential.applyUseEnv({ cfg, accountId: 'default' })
-      return { cfg: nextCfg, credentialValues: { [credential.inputKey]: state.envValue } }
-    }
-  }
-
-  if (state.hasConfiguredValue) {
-    const keep = await prompter.confirm({
-      message: credential.keepPrompt ?? t('bin.passwordKeep', locale),
-      initialValue: true,
-    })
-    if (keep) return { cfg, credentialValues: {} }
-  }
-
-  const pwd = await prompter.password({ message: credential.inputPrompt ?? t('bin.passwordPrompt', locale) })
-  if (typeof pwd !== 'string' || pwd === '') throw new Error(t('bin.passwordEmpty', locale))
-  const nextCfg = credential.applySet({ cfg, value: pwd, accountId: 'default' })
-  return { cfg: nextCfg, credentialValues: { [credential.inputKey]: pwd } }
-}
-
-async function promptProbePreview(prompter, probeModule, serverUrl, currentUseTls, currentPort, currentCaPath, t, locale) {
-  // If user has pinned useTls + port in cfg, skip probe and respect choice.
-  // Preserve any existing cfg.caPath through the short-circuit so the pin
-  // is not silently dropped on re-run; useTls=false renders caPath moot
-  // (mutually exclusive trust modes), so clear it in that case.
-  if (currentUseTls !== undefined && currentPort !== undefined) {
-    return {
-      useTls: currentUseTls,
-      port: currentPort,
-      caPath: currentUseTls === false ? undefined : currentCaPath,
-      caBytes: undefined,
-      tlsVerify: undefined,
-    }
-  }
-
-  await prompter.note(t('probe.detecting', locale), t('probe.title', locale))
-  const probe = await probeModule.probeTls({ host: serverUrl, port: currentPort })
-
-  let useTls, port, caPath, caBytes, tlsVerify, reason
-  if (probe.reachable) {
-    useTls = currentUseTls ?? probe.useTls
-    port = currentPort ?? probe.port
-    if (probe.caUntrusted && useTls) {
-      const choice = await prompter.select({
-        message: t('select.whatToDo', locale),
-        options: [
-          { value: 'use-file', label: t('tls.untrusted.choice.use-file', locale) },
-          { value: 'insecure', label: t('tls.untrusted.choice.insecure', locale) },
-          { value: 'abort',    label: t('select.option.abortSetup', locale) },
-        ],
-      })
-      if (choice === 'abort') {
-        throw new Error(`User aborted: untrusted cert on ${serverUrl}`)
-      }
-      if (choice === 'use-file') {
-        const hint = [
-          t('tls.cafile.hint.intro', locale),
-          t('tls.cafile.hint.format', locale),
-          t('tls.cafile.hint.location', locale),
-        ].join('\n')
-        await prompter.note(hint, t('cafile.title', locale))
-        const raw = await prompter.text({ message: t('cafile.prompt', locale) })
-        if (typeof raw !== 'string' || raw.trim() === '') {
-          throw new Error(`User aborted: empty CA path`)
-        }
-        const expanded = raw.startsWith('~/') || raw === '~' ? raw.replace(/^~/, homedir()) : raw
-        const abs = resolve(expanded)
-        // Validate inline so non-PEM / wrong-CA surfaces as a localized error
-        // before the operator-supplied path can be saved through the OAuth
-        // save-anyway fallback. Bytes are reused below for the OAuth call —
-        // single read closes the TOCTOU window between validate and use.
-        let bytes
-        try {
-          bytes = readFileSync(abs)
-        } catch (err) {
-          throw new Error(t('tls.cafile.unreadable', locale, {
-            path: abs, reason: err instanceof Error ? err.message : String(err),
-          }))
-        }
-        const cert = probeModule.parseCertFromPem(bytes)
-        if (!cert) {
-          throw new Error(t('cafile.notPem', locale))
-        }
-        const v = await probeModule.validateCaAgainstServer({ caBytes: bytes, host: serverUrl, port })
-        if (!v.ok) {
-          if (v.kind === 'unreachable') {
-            throw new Error(t('cafile.unreachable', locale, { host: serverUrl, port, error: v.error }))
-          }
-          throw new Error(t('cafile.chainMismatch', locale, {
-            fileIssuer: cert.issuerCN ?? cert.subject ?? '?',
-            fileFp: cert.fingerprint ?? '?',
-            serverIssuer: v.serverCert?.issuerCN ?? '?',
-            serverFp: v.serverCert?.fingerprint ?? '?',
-            error: v.error,
-          }))
-        }
-        caPath = abs
-        caBytes = bytes
-      } else {
-        await prompter.note(t('tls.insecure.warning', locale), t('tls.untrusted.title', locale))
-        const confirmed = await prompter.confirm({
-          message: t('tls.insecure.confirm', locale),
-          initialValue: false,
-        })
-        if (!confirmed) throw new Error(`User aborted: untrusted cert on ${serverUrl}`)
-        tlsVerify = false
-      }
-    }
-    reason = probe.caUntrusted ? (tlsVerify === false ? 'tls-insecure' : 'tls-untrusted') : (useTls ? 'tls-valid' : 'bridge-open')
-  } else {
-    // Probe failure is a hint, not a gate: OAuth over a corporate proxy can
-    // still succeed even when a raw TLS probe is firewalled.
-    await prompter.note(
-      t('probe.skipped', locale, { error: probe.error ?? 'unknown' }),
-      t('probe.skippedTitle', locale),
-    )
-    useTls = currentUseTls ?? true
-    port = currentPort ?? 443
-    reason = 'fallback'
-  }
-
-  // Preview + let user override.
-  const scheme = useTls ? 'wss' : 'ws'
-  const isDefaultPort = (useTls && port === 443) || (!useTls && port === 80)
-  const hostPart = isDefaultPort ? serverUrl : `${serverUrl}:${port}`
-  const caClause = caPath ? t('probe.preview.reason.caClause', locale, { path: caPath }) : ''
-  const reasonLabels = {
-    'tls-valid': t('probe.preview.reason.tlsValid', locale, { port }),
-    'tls-untrusted': t('probe.preview.reason.tlsUntrusted', locale, { port, caClause }),
-    'tls-insecure': t('probe.preview.reason.tlsInsecure', locale, { port }),
-    'bridge-open': t('probe.preview.reason.bridgeOpen', locale, { port }),
-    'fallback': t('probe.preview.reason.fallback', locale, { port }),
-  }
-  await prompter.note(
-    `${scheme}://${hostPart}/websocket/chat_bot/\n(${reasonLabels[reason] ?? reason})`,
-    t('probe.preview.title', locale),
-  )
-
-  const accept = await prompter.confirm({
-    message: t('probe.preview.accept', locale),
-    initialValue: true,
-  })
-  if (accept) return { useTls, port, caPath, caBytes, tlsVerify }
-
-  // Manual override branch.
-  const manualTls = await prompter.confirm({ message: t('probe.preview.tlsToggle', locale), initialValue: useTls })
-  const manualPortDefault = manualTls ? 443 : 4309
-  const manualPortRaw = await prompter.text({
-    message: t('probe.preview.port', locale, { default: manualPortDefault }),
-    placeholder: String(manualPortDefault),
-  })
-  const manualPortTrimmed = typeof manualPortRaw === 'string' ? manualPortRaw.trim() : ''
-  const manualPort = manualPortTrimmed === '' ? manualPortDefault : Number.parseInt(manualPortTrimmed, 10)
-  if (!Number.isFinite(manualPort) || manualPort < 1 || manualPort > 65535) {
-    throw new Error(t('probe.preview.invalidPort', locale, { value: String(manualPortRaw) }))
-  }
-  return { useTls: manualTls, port: manualPort, caPath, caBytes, tlsVerify }
-}
-
-function patchChannelWithFinalValues(cfg, { serverUrl, username, password, useTls, port, caPath, tlsVerify, setupLocale }) {
-  // Shallow-patch channels.trueconf preserving any existing side-fields
-  // (dmPolicy, allowFrom, maxFileSize, etc.) that the user configured manually.
-  // Mutually exclusive trust modes: when tlsVerify === false the saved cfg
-  // must NOT carry a stale caPath — runtime would otherwise see two
-  // contradictory trust signals. We rebuild the spread without caPath in
-  // that case rather than relying on the consumer to ignore it.
-  const existing = cfg.channels?.trueconf ?? {}
-  const { caPath: _existingCaPath, tlsVerify: _existingTlsVerify, ...existingRest } = existing
-  const trueconf = {
-    ...existingRest,
-    enabled: true,
-    serverUrl,
-    username,
-    password,
-    useTls,
-    port,
-    ...(setupLocale && { setupLocale }),
-  }
-  if (tlsVerify === false) {
-    trueconf.tlsVerify = false
-  } else if (caPath) {
-    trueconf.caPath = caPath
-  }
-  return {
-    ...cfg,
-    channels: {
-      ...cfg.channels,
-      trueconf,
-    },
-  }
+// Wizard prompt helpers (promptInteractiveInputs / promptPassword /
+// promptProbePreview / patchChannelWithFinalValues / runWizardAndFinalize)
+// live in src/setup-shared.ts so the standalone bin AND the SDK setup
+// adapter's onboard inline-wizard share the same single source of truth.
+async function loadSetupShared() {
+  const mod = await jiti.import(join(REPO_ROOT, 'src/setup-shared.ts'))
+  return { runWizardAndFinalize: mod.runWizardAndFinalize }
 }
 
 function showFinalBanner(prompter, { backupPath, caPath, wizard, t, locale }) {
@@ -560,96 +322,15 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
     )
   }
 
-  const cfgWithInputs = await promptInteractiveInputs(prompter, wizard, cfg, t, locale)
-  const { cfg: cfgWithPassword, credentialValues } = await promptPassword(
-    prompter,
-    wizard,
-    cfgWithInputs,
-    t,
-    locale,
-  )
-
-  const tcFields = cfgWithPassword.channels?.trueconf ?? {}
-  const serverUrl = tcFields.serverUrl
-  const username = tcFields.username
-  const password = credentialValues.password ?? tcFields.password
-  if (!serverUrl || !username || !password) {
-    throw new Error('Invariant: serverUrl/username/password missing at finalize entry')
-  }
-
   const probeModule = injectedProbe ?? (await loadProbe())
-  const { useTls, port, caPath, caBytes, tlsVerify } = await promptProbePreview(
-    prompter,
-    probeModule,
-    serverUrl,
-    tcFields.useTls,
-    tcFields.port,
-    tcFields.caPath,
-    t,
-    locale,
-  )
-
-  const { validateOAuthCredentials } = injectedProbe ?? (await import(pathToFileURL(join(REPO_ROOT, 'src/probe.mjs')).href))
-  let oauthOk = false
-  let oauthError = null
-  let currentPassword = password
-
-  for (let attempt = 0; attempt < 3 && !oauthOk; attempt++) {
-    // tlsVerify:false drops the CA bytes — passing both is a contradictory
-    // signal to validateOAuthCredentials and the operator already opted out
-    // of pinning when they picked insecure mode.
-    const result = await validateOAuthCredentials({
-      serverUrl, username, password: currentPassword, useTls, port,
-      ca: tlsVerify === false ? undefined : (caBytes ?? readCaBuffer(caPath)),
-      tlsVerify,
-    })
-    if (result.ok) { oauthOk = true; break }
-    oauthError = result
-    if (result.category === 'invalid-credentials' && attempt < 2) {
-      await prompter.note(t('oauth.invalidPassword', locale, { attempt: attempt + 1 }), t('oauth.title', locale))
-      currentPassword = await prompter.password({ message: t('oauth.passwordRetry', locale) })
-      if (typeof currentPassword !== 'string' || currentPassword === '') {
-        throw new Error(t('bin.passwordEmpty', locale))
-      }
-      continue
-    }
-    break
-  }
-
-  let finalCfg
-  let savedWithoutValidation = false
-
-  if (oauthOk) {
-    finalCfg = patchChannelWithFinalValues(cfgWithPassword, {
-      serverUrl, username, password: currentPassword, useTls, port, caPath, tlsVerify, setupLocale: locale,
-    })
-  } else {
-    // Save-without-validation fallback — only for categories other than
-    // invalid-credentials (those already retried 3× above).
-    const errMsg = `${oauthError.category}: ${oauthError.error}`
-    if (oauthError.category === 'invalid-credentials') {
-      throw new Error(`OAuth failed (user="${username}", server="${serverUrl}"): ${errMsg}`)
-    }
-    await prompter.note(
-      t('bin.oauth.errorBody', locale, { error: errMsg }),
-      t('bin.oauth.errorTitle', locale),
-    )
-    // Default=true only for `network` (transient/intermittent). For `tls`
-    // and `server-error`, retry at gateway startup will hit the same wall,
-    // so default=false and require user to actively opt in.
-    const saveAnywayDefault = oauthError.category === 'network'
-    const saveAnyway = await prompter.confirm({
-      message: t('bin.oauth.saveAnyway', locale),
-      initialValue: saveAnywayDefault,
-    })
-    if (!saveAnyway) {
-      throw new Error(`OAuth failed (user="${username}", server="${serverUrl}"): ${errMsg}`)
-    }
-    finalCfg = patchChannelWithFinalValues(cfgWithPassword, {
-      serverUrl, username, password: currentPassword, useTls, port, caPath, tlsVerify, setupLocale: locale,
-    })
-    savedWithoutValidation = true
-  }
+  const { runWizardAndFinalize } = await loadSetupShared()
+  const { cfg: finalCfg, savedWithoutValidation, caPath } = await runWizardAndFinalize({
+    cfg, prompter, wizard, probeModule, locale, t,
+  })
+  // username pulled from finalCfg for the post-write `connected` banner;
+  // runWizardAndFinalize already validated serverUrl/username/password
+  // invariants before patching.
+  const username = finalCfg.channels?.trueconf?.username ?? ''
 
   const { cfg: cleanedFinal, cleaned } = cleanupStaleEntries(finalCfg)
   const { cfg: withLoadPath, changed: loadPathChanged } = registerLoadPathIfMissing(cleanedFinal, REPO_ROOT)

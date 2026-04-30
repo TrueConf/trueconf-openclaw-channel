@@ -168,11 +168,25 @@ export async function promptProbePreview(
   // useTls=false renders caPath moot (mutually exclusive trust modes), so
   // clear it in that case.
   if (currentUseTls !== undefined && currentPort !== undefined) {
+    const effectiveCaPath = currentUseTls === false ? undefined : currentCaPath
+    // Load caBytes here so the OAuth retry loop downstream can pin trust to
+    // the operator's stored CA. Throws loud on read failure — silent fallback
+    // would downgrade pinned-CA trust to system trust without indication
+    // (AGENTS.md "no silent fallbacks on readFileSync(caPath)" invariant).
+    let caBytes: Buffer | Uint8Array | undefined
+    if (effectiveCaPath) {
+      try {
+        caBytes = readFileSync(effectiveCaPath)
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err)
+        throw new Error(`CA file unreadable: ${effectiveCaPath} (${reason})`)
+      }
+    }
     return {
       useTls: currentUseTls,
       port: currentPort,
-      caPath: currentUseTls === false ? undefined : currentCaPath,
-      caBytes: undefined,
+      caPath: effectiveCaPath,
+      caBytes,
       tlsVerify: undefined,
     }
   }

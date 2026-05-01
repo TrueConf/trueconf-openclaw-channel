@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FileUploadLimits, TEXT_LIMIT, type ValidationResult } from '../../src/limits'
 import { PerChatSendQueue } from '../../src/send-queue'
+import { OutboundQueue, type WsClientLike } from '../../src/outbound-queue'
 import type { Logger, TrueConfChannelConfig, TrueConfResponse } from '../../src/types'
 
 // Mock the SDK module before importing outbound: outbound.ts pulls
@@ -70,12 +71,22 @@ function fail(errorCode: number, errorDescription = ''): TrueConfResponse {
   return { type: 2, id: 1, payload: { errorCode, errorDescription } }
 }
 
-interface FakeWsClient {
+interface FakeWsClient extends WsClientLike {
   sendRequest: ReturnType<typeof vi.fn>
+  onAuth: (listener: () => void) => () => void
 }
 
 function buildFakeClient(impl?: (method: string, payload: Record<string, unknown>) => Promise<TrueConfResponse>): FakeWsClient {
-  return { sendRequest: vi.fn(impl ?? (async () => ok())) }
+  return {
+    sendRequest: vi.fn(impl ?? (async () => ok())),
+    // OutboundQueue subscribes to auth events to trigger drain. Tests don't
+    // exercise reconnect flows here, so a no-op subscription is sufficient.
+    onAuth: () => () => {},
+  }
+}
+
+function buildOutboundQueue(client: FakeWsClient, logger: Logger = silentLogger): OutboundQueue {
+  return new OutboundQueue(client, logger)
 }
 
 function buildStore(): DirectChatStore {
@@ -90,16 +101,24 @@ function buildChannelConfig(): TrueConfChannelConfig {
   return { serverUrl: 'tc.example.com', username: 'bot', password: 'pw', useTls: true } as TrueConfChannelConfig
 }
 
-function buildAttachmentDeps(overrides: Partial<OutboundAttachmentDeps> = {}): OutboundAttachmentDeps {
+function buildAttachmentDeps(
+  overrides: Partial<OutboundAttachmentDeps> & { client?: FakeWsClient } = {},
+): OutboundAttachmentDeps {
+  // `client` is a test-only shorthand: build the OutboundQueue around this
+  // fake client. Not a field on OutboundAttachmentDeps; keeps existing tests
+  // succinct without leaking a wsClient dep field that the production type
+  // no longer carries.
+  const { client, ...depsOverrides } = overrides
+  const fakeClient = client ?? buildFakeClient()
   return {
-    wsClient: buildFakeClient() as never,
+    outboundQueue: overrides.outboundQueue ?? buildOutboundQueue(fakeClient),
     resolved: { serverUrl: 'tc.example.com', useTls: true, port: 443 },
     store: buildStore(),
     channelConfig: buildChannelConfig(),
     logger: silentLogger,
     limits: buildLimits(),
     sendQueue: new PerChatSendQueue(),
-    ...overrides,
+    ...depsOverrides,
   }
 }
 
@@ -136,13 +155,13 @@ describe('sanitizeMarkdownPreservingParagraphs', () => {
 describe('sendMessageRequest auto-split + sendQueue', () => {
   it('text < TEXT_LIMIT → single sendMessage call → returns one response', async () => {
     const client = buildFakeClient(async () => ok('m-1'))
+    const outboundQueue = buildOutboundQueue(client)
     const queue = new PerChatSendQueue()
 
     const responses = await __test__sendMessageRequest(
-      client as never,
+      outboundQueue,
       'chat-X',
       'short text',
-      silentLogger,
       queue,
     )
 
@@ -162,6 +181,7 @@ describe('sendMessageRequest auto-split + sendQueue', () => {
       if (call === 2) return fail(500, 'server error')
       return ok('m-3')
     })
+    const outboundQueue = buildOutboundQueue(client)
     const queue = new PerChatSendQueue()
 
     // Build a text large enough to produce >=3 chunks. TEXT_LIMIT default is 4096.
@@ -171,10 +191,9 @@ describe('sendMessageRequest auto-split + sendQueue', () => {
     const big = `${para}\n\n${para}\n\n${para}`
 
     const responses = await __test__sendMessageRequest(
-      client as never,
+      outboundQueue,
       'chat-X',
       big,
-      silentLogger,
       queue,
     )
 
@@ -191,10 +210,11 @@ describe('sendMessageRequest auto-split + sendQueue', () => {
       if (calls.length === 1) return dA.promise
       return ok('m-' + calls.length)
     })
+    const outboundQueue = buildOutboundQueue(client)
     const queue = new PerChatSendQueue()
 
-    const p1 = sendTextToChat(client as never, 'chat-X', 'first', silentLogger, queue)
-    const p2 = sendTextToChat(client as never, 'chat-X', 'second', silentLogger, queue)
+    const p1 = sendTextToChat(outboundQueue, 'chat-X', 'first', silentLogger, queue)
+    const p2 = sendTextToChat(outboundQueue, 'chat-X', 'second', silentLogger, queue)
 
     // Let microtasks settle so the first sendRequest fires.
     await Promise.resolve()
@@ -283,7 +303,7 @@ describe('handleOutboundAttachment caption flow', () => {
 
     try {
       const longCaption = 'x'.repeat(5000)
-      const deps = buildAttachmentDeps({ wsClient: client as never })
+      const deps = buildAttachmentDeps({ client })
       const result = await handleOutboundAttachment(
         { to: 'alice@srv', text: longCaption, mediaUrl: 'file:///tmp/doc.pdf', accountId: 'default' },
         deps,
@@ -330,7 +350,7 @@ describe('handleOutboundAttachment caption flow', () => {
       return ok('m-x')
     })
 
-    const deps = buildAttachmentDeps({ wsClient: client as never, limits })
+    const deps = buildAttachmentDeps({ client, limits })
     const result = await handleOutboundAttachment(
       { to: 'alice@srv', text: '', mediaUrl: 'file:///tmp/big.bin', accountId: 'default' },
       deps,
@@ -384,7 +404,7 @@ describe('handleOutboundAttachment caption flow', () => {
 
     try {
       const longCaption = 'x'.repeat(5000)
-      const deps = buildAttachmentDeps({ wsClient: client as never, logger: captureLogger })
+      const deps = buildAttachmentDeps({ client, logger: captureLogger })
       const result = await handleOutboundAttachment(
         { to: 'alice@srv', text: longCaption, mediaUrl: 'file:///tmp/doc.pdf', accountId: 'default' },
         deps,
@@ -413,8 +433,9 @@ describe('sanitizeMarkdown unchanged for caption use', () => {
 // Reference: ensure types compile.
 describe('OutboundAttachmentToChatDeps Pick keys include limits and sendQueue', () => {
   it('type compiles with limits and sendQueue', () => {
+    const client = buildFakeClient()
     const deps: OutboundAttachmentToChatDeps = {
-      wsClient: buildFakeClient() as never,
+      outboundQueue: buildOutboundQueue(client),
       resolved: { serverUrl: 'x', useTls: true, port: 443 },
       channelConfig: buildChannelConfig(),
       logger: silentLogger,
@@ -439,9 +460,9 @@ describe('sendText/sendTextToChat plumb queue', () => {
       if (call === 2) return ok('m-1')
       return ok('m-2')
     })
+    const outboundQueue = buildOutboundQueue(client)
     const queue = new PerChatSendQueue()
     const result = await sendText(
-      client as never,
       'alice@srv',
       'simple text',
       silentLogger,
@@ -450,6 +471,7 @@ describe('sendText/sendTextToChat plumb queue', () => {
         directChatStore: buildStore(),
         accountId: 'default',
         sendQueue: queue,
+        outboundQueue,
       },
     )
     expect(result.ok).toBe(true)
@@ -464,10 +486,11 @@ describe('sendText/sendTextToChat plumb queue', () => {
       if (call === 1) return ok('m-1')
       return fail(500, 'server error')
     })
+    const outboundQueue = buildOutboundQueue(client)
     const queue = new PerChatSendQueue()
     const para = 'a'.repeat(TEXT_LIMIT - 1)
     const big = `${para}\n\n${para}\n\n${para}`
-    const result = await sendTextToChat(client as never, 'chat-X', big, silentLogger, queue)
+    const result = await sendTextToChat(outboundQueue, 'chat-X', big, silentLogger, queue)
     expect(result.ok).toBe(false)
     expect(call).toBe(2)
   })
@@ -500,7 +523,7 @@ describe('handleOutboundAttachmentToChat happy path', () => {
     }) as typeof globalThis.fetch
     try {
       const deps: OutboundAttachmentToChatDeps = {
-        wsClient: client as never,
+        outboundQueue: buildOutboundQueue(client),
         resolved: { serverUrl: 'tc.example.com', useTls: true, port: 443 },
         channelConfig: buildChannelConfig(),
         logger: silentLogger,

@@ -281,6 +281,11 @@ export function buildAuthRequest(
 export type NetworkErrorPhase = 'oauth' | 'websocket' | 'ws-handshake' | 'ws-message' | 'unknown'
 
 export class NetworkError extends Error {
+  // Marks errors the OutboundQueue should park-and-retry rather than
+  // surface to callers. Set true on the WsClient throw sites whose recovery
+  // is "wait for next auth event"; default false everywhere else so a hard
+  // network/oauth failure stays observable.
+  readonly parkable: boolean
   constructor(
     message: string,
     readonly phase: NetworkErrorPhase = 'unknown',
@@ -288,9 +293,15 @@ export class NetworkError extends Error {
     readonly code?: string,
     readonly syscall?: string,
     readonly hostname?: string,
+    options: { parkable?: boolean } = {},
   ) {
     super(message)
     this.name = 'NetworkError'
+    this.parkable = options.parkable === true
+  }
+
+  static parkable(message: string, phase: NetworkErrorPhase = 'websocket'): NetworkError {
+    return new NetworkError(message, phase, undefined, undefined, undefined, undefined, { parkable: true })
   }
 }
 

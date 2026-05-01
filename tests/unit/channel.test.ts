@@ -244,3 +244,109 @@ describe('forceReconnect injection', () => {
     expect(fr).toHaveBeenCalledWith('203_credentials_expired')
   })
 })
+
+describe('startAccount onTerminalFailure → outboundQueue.failAll wiring', () => {
+  it('forwards terminal.cause to outboundQueue.failAll when ConnectionLifecycle fires onTerminalFailure', async () => {
+    vi.resetModules()
+
+    type LifecycleOptionsCapture = {
+      onTerminalFailure?: (terminal: { kind: string; cause: Error; retries?: number }) => void
+    }
+    const lifecycleOptions: { value: LifecycleOptionsCapture | null } = { value: null }
+    const failAllSpy = vi.fn()
+    const outboundQueueSpy = { submit: vi.fn(), failAll: failAllSpy }
+
+    vi.doMock('../../src/ws-client', async () => {
+      const actual = await vi.importActual<typeof import('../../src/ws-client')>('../../src/ws-client')
+      class FakeLifecycle {
+        constructor(_ws: unknown, _cfg: unknown, _logger: unknown, opts: LifecycleOptionsCapture) {
+          lifecycleOptions.value = opts
+        }
+        async start(): Promise<void> { /* never resolve so startAccount stays parked */ }
+        shutdown(): void {}
+        async forceReconnect(): Promise<void> {}
+      }
+      class FakeWsClient {
+        botUserId: string | null = null
+        logger: unknown = null
+        ca: Buffer | undefined = undefined
+        tlsVerify = true
+        onAuth(_l: () => void): () => void { return () => {} }
+        onPush(_l: unknown): () => void { return () => {} }
+        async sendRequest(): Promise<never> { throw new Error('not used in this test') }
+        markAuthenticated(): void {}
+        markAuthFailed(_e: Error): void {}
+        async waitAuthenticated(): Promise<void> {}
+        resetAuthBarrier(): void {}
+        close(): void {}
+        ping(): void {}
+        terminate(): void {}
+      }
+      return {
+        ...actual,
+        WsClient: FakeWsClient,
+        ConnectionLifecycle: FakeLifecycle,
+      }
+    })
+
+    vi.doMock('../../src/outbound-queue', async () => {
+      const actual = await vi.importActual<typeof import('../../src/outbound-queue')>('../../src/outbound-queue')
+      class FakeQueue {
+        submit = outboundQueueSpy.submit
+        failAll = outboundQueueSpy.failAll
+      }
+      return { ...actual, OutboundQueue: FakeQueue }
+    })
+
+    vi.doMock('openclaw/plugin-sdk/channel-inbound', () => ({
+      dispatchInboundDirectDmWithRuntime: vi.fn().mockResolvedValue({}),
+    }))
+
+    const { channelPlugin, registerFull, __resetForTesting } = await import('../../src/channel')
+    __resetForTesting()
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+    const api = {
+      logger,
+      runtime: {},
+      config: {
+        channels: {
+          trueconf: {
+            serverUrl: 'tc.example.com',
+            port: 4309,
+            useTls: false,
+            username: 'bot',
+            password: 'p',
+            dmPolicy: 'open',
+          },
+        },
+      },
+      on: () => {},
+    }
+    registerFull(api as never)
+    const ac = new AbortController()
+    void (channelPlugin.gateway.startAccount as (ctx: Record<string, unknown>) => Promise<void>)({
+      accountId: 'default',
+      setStatus: () => {},
+      abortSignal: ac.signal,
+    })
+    // startAccount registers handlers synchronously in its prelude before
+    // awaiting lifecycle.start. One microtask flush is enough to land options.
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(lifecycleOptions.value).not.toBeNull()
+    const cb = lifecycleOptions.value?.onTerminalFailure
+    expect(cb).toBeTypeOf('function')
+
+    const sentinelCause = new Error('sentinel-terminal-cause')
+    cb!({ kind: 'shutdown', cause: sentinelCause })
+
+    expect(failAllSpy).toHaveBeenCalledTimes(1)
+    expect(failAllSpy).toHaveBeenCalledWith(sentinelCause)
+
+    ac.abort()
+    vi.doUnmock('../../src/ws-client')
+    vi.doUnmock('../../src/outbound-queue')
+    vi.doUnmock('openclaw/plugin-sdk/channel-inbound')
+    vi.resetModules()
+  })
+})

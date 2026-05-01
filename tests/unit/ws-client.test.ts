@@ -874,3 +874,79 @@ describe('ConnectionLifecycle integration — server-side TCP-terminate triggers
   }, 20_000)
 
 })
+
+describe('LifecycleOptions.onTerminalFailure', () => {
+  const baseConfig = {
+    serverUrl: 'srv.example',
+    username: 'bot',
+    password: 'p',
+    useTls: false,
+    port: 4309,
+  } satisfies TrueConfAccountConfig
+
+  it('fires onTerminalFailure with kind=shutdown when shutdown() is called', () => {
+    const ws = new WsClient()
+    const onTerminalFailure = vi.fn()
+    const lifecycle = new ConnectionLifecycle(ws, baseConfig, silentLogger, {
+      onTerminalFailure,
+    })
+
+    // Stub close so we don't try to interact with a real socket.
+    vi.spyOn(ws, 'close').mockImplementation(() => {})
+
+    lifecycle.shutdown()
+
+    expect(onTerminalFailure).toHaveBeenCalledTimes(1)
+    const arg = onTerminalFailure.mock.calls[0][0]
+    expect(arg.kind).toBe('shutdown')
+    expect(arg.cause).toBeInstanceOf(Error)
+    expect(arg.cause.message).toBe('lifecycle shutting down')
+  })
+
+  it('fires onTerminalFailure with kind=dns_exhausted after DNS_MAX_RETRIES exhausted', async () => {
+    vi.useFakeTimers()
+    try {
+      const onTerminalFailure = vi.fn()
+      const client = new WsClient()
+      const config = { serverUrl: 'missing.example.com', username: 'bot', password: 'secret', useTls: true } satisfies TrueConfAccountConfig
+      const lifecycle = new ConnectionLifecycle(client, config, silentLogger, { onTerminalFailure })
+
+      // Force every start() to throw a DNS NetworkError so the lifecycle
+      // exhausts DNS_MAX_RETRIES and bails out via the terminal-failure path.
+      vi.spyOn(lifecycle, 'start').mockImplementation(async () => {
+        throw new NetworkError('getaddrinfo ENOTFOUND missing.example.com', 'oauth', undefined, 'ENOTFOUND', 'getaddrinfo', 'missing.example.com')
+      })
+      vi.spyOn(client, 'close').mockImplementation(() => {})
+
+      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+
+      for (let i = 0; i < 10; i++) {
+        await vi.advanceTimersByTimeAsync(120_000)
+      }
+
+      expect(onTerminalFailure).toHaveBeenCalledTimes(1)
+      const arg = onTerminalFailure.mock.calls[0][0]
+      expect(arg.kind).toBe('dns_exhausted')
+      expect(arg.retries).toBeGreaterThanOrEqual(5)
+      expect(arg.cause).toBeInstanceOf(NetworkError)
+      expect(arg.cause.message).toMatch(/dns_unreachable/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does NOT fire onTerminalFailure on a single transient WS close', async () => {
+    const ws = new WsClient()
+    const onTerminalFailure = vi.fn()
+    const lifecycle = new ConnectionLifecycle(ws, baseConfig, silentLogger, {
+      onTerminalFailure,
+    })
+    // Simulate a transient close event going through handleClose: this would
+    // schedule a reconnect, but must NOT fire onTerminalFailure (that's
+    // reserved for shutdown / DNS exhaustion).
+    ;(lifecycle as unknown as { handleClose: (c: number, r: string) => void }).handleClose(1006, '')
+    expect(onTerminalFailure).not.toHaveBeenCalled()
+    // Stop the chain so the test exits cleanly.
+    ;(lifecycle as unknown as { cancelReconnect: () => void }).cancelReconnect()
+  })
+})

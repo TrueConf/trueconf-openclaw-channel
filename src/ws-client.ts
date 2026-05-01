@@ -217,7 +217,7 @@ export class WsClient {
   resetAuthBarrier(reason: string = 'reset'): void {
     const old = this.authBarrier
     this.authBarrier = this.makeDeferred()
-    old.reject(new Error(`auth barrier reset: ${reason}`))
+    old.reject(NetworkError.parkable(`auth barrier reset: ${reason}`))
   }
 
   markAuthenticated(): void {
@@ -235,7 +235,7 @@ export class WsClient {
         this.authBarrier.promise,
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
-            reject(new Error(`waitAuthenticated timed out after ${timeoutMs}ms`))
+            reject(NetworkError.parkable(`waitAuthenticated timed out after ${timeoutMs}ms`))
           }, timeoutMs)
           timer.unref?.()
         }),
@@ -246,7 +246,7 @@ export class WsClient {
   }
 
   connect(config: TrueConfAccountConfig, token: string): Promise<void> {
-    this.matcher.rejectAll(new Error('New connection started'))
+    this.matcher.rejectAll(NetworkError.parkable('New connection started'))
     this.progressHandlers.clear()
     this.idCounter.reset()
     const ws = new WebSocket(
@@ -374,7 +374,9 @@ export class WsClient {
           this.logger?.info(`[trueconf] stale close from old socket (code=${code}); ignoring`)
           return
         }
-        this.matcher.rejectAll(new Error('WebSocket closed: ' + code + ' ' + (reason?.toString() ?? '')))
+        this.matcher.rejectAll(NetworkError.parkable(
+          'WebSocket closed: ' + code + ' ' + (reason?.toString() ?? ''),
+        ))
         this.progressHandlers.clear()
         this.onClose?.(code, reason?.toString() ?? '')
       })
@@ -424,7 +426,7 @@ export class WsClient {
 
   send(msg: object): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error('WebSocket is not connected')
+      throw NetworkError.parkable('WebSocket is not connected')
     }
     this.ws.send(JSON.stringify(msg))
   }
@@ -442,10 +444,20 @@ export class WsClient {
   }
 }
 
+// Discriminated union over the bounded set of terminal lifecycle outcomes.
+// Receivers branch on `kind` instead of parsing message strings; the original
+// Error survives on `cause` for logging.
+export type TerminalCause =
+  | { kind: 'shutdown'; cause: Error }
+  | { kind: 'dns_exhausted'; retries: number; cause: NetworkError }
+
 interface LifecycleOptions {
   onConnectionClosed?: (code: number, reason: string) => void
   onConnected?: () => void
   onDisconnected?: () => void
+  // Fires once on terminal lifecycle outcome (not on transient close events,
+  // which go through onConnectionClosed and reconnect).
+  onTerminalFailure?: (terminal: TerminalCause) => void
 }
 
 // Liveness is governed by WebSocket protocol ping/pong (opcode 0x9/0xA) on a
@@ -517,7 +529,13 @@ export class ConnectionLifecycle {
     // Reject the auth barrier with an explicit reason so any pending
     // waitAuthenticated() callers fail fast on shutdown instead of waiting
     // out their per-call timeout.
-    this.wsClient.markAuthFailed(new Error('lifecycle shutting down'))
+    const cause = new Error('lifecycle shutting down')
+    this.wsClient.markAuthFailed(cause)
+    try {
+      this.options?.onTerminalFailure?.({ kind: 'shutdown', cause })
+    } catch (err) {
+      this.logger.warn(`[trueconf] onTerminalFailure callback failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
     this.stopTimers()
     this.cancelReconnect()
     this.wsClient.close()
@@ -639,14 +657,18 @@ export class ConnectionLifecycle {
             // set in types.ts) so consumers branching on `err instanceof
             // NetworkError` can distinguish a terminal DNS failure from a
             // retryable one without spinning further.
-            this.wsClient.markAuthFailed(
-              new NetworkError(
-                `dns_unreachable: gave up after ${this.dnsRetryCount} retries`,
-                'websocket',
-                undefined,
-                DNS_TERMINAL_CODE,
-              ),
+            const cause = new NetworkError(
+              `dns_unreachable: gave up after ${this.dnsRetryCount} retries`,
+              'websocket',
+              undefined,
+              DNS_TERMINAL_CODE,
             )
+            this.wsClient.markAuthFailed(cause)
+            try {
+              this.options?.onTerminalFailure?.({ kind: 'dns_exhausted', retries: this.dnsRetryCount, cause })
+            } catch (err) {
+              this.logger.warn(`[trueconf] onTerminalFailure callback failed: ${err instanceof Error ? err.message : String(err)}`)
+            }
             this.wsClient.close()
             return
           }

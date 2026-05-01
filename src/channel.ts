@@ -37,6 +37,7 @@ import { trueconfSetupWizard } from './channel-setup'
 import { trueconfSetupAdapter } from './setup-shared'
 import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './always-respond'
 import { WsClient, ConnectionLifecycle } from './ws-client'
+import { OutboundQueue } from './outbound-queue'
 import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage, InboundExtraContext, InboundMediaContext } from './types'
 import { widenExtraContext } from './types'
 
@@ -86,6 +87,7 @@ export interface AccountEntry {
   //    queues — otherwise unrelated outbounds would block each other.
   limits: FileUploadLimits
   sendQueue: PerChatSendQueue
+  outboundQueue: OutboundQueue
 }
 
 // Tears down a single account entry: stops its lifecycle and closes the
@@ -368,7 +370,7 @@ export const channelPlugin = {
           logger.info(
             `[trueconf] sendText: target=${to} is bot identity; redirecting to last inbound group ${route.chatId}`,
           )
-          const groupResult = await sendTextToChat(entry.wsClient, route.chatId, cleanText, logger, entry.sendQueue)
+          const groupResult = await sendTextToChat(entry.outboundQueue, route.chatId, cleanText, logger, entry.sendQueue)
           if (groupResult.ok && groupResult.messageId) {
             rememberBotMessage(store.recentBotMsgIdsByChat, groupResult.chatId, groupResult.messageId)
           }
@@ -377,11 +379,12 @@ export const channelPlugin = {
         logger.info(
           `[trueconf] sendText: target=${to} is bot identity; redirecting to last inbound peer ${route.userId}`,
         )
-        const directResult = await sendText(entry.wsClient, route.userId, cleanText, logger, {
+        const directResult = await sendText(route.userId, cleanText, logger, {
           fallbackUserId: route.userId,
           directChatStore: store,
           accountId,
           sendQueue: entry.sendQueue,
+          outboundQueue: entry.outboundQueue,
         })
         if (directResult.ok && directResult.messageId) {
           rememberBotMessage(store.recentBotMsgIdsByChat, directResult.chatId, directResult.messageId)
@@ -389,11 +392,12 @@ export const channelPlugin = {
         return { channel: 'trueconf', messageId: directResult.ok ? (directResult.messageId ?? '') : '' }
       }
 
-      const result = await sendText(entry.wsClient, to, cleanText, logger, {
+      const result = await sendText(to, cleanText, logger, {
         fallbackUserId: to,
         directChatStore: store,
         accountId,
         sendQueue: entry.sendQueue,
+        outboundQueue: entry.outboundQueue,
       })
       if (result.ok && result.messageId) {
         rememberBotMessage(store.recentBotMsgIdsByChat, result.chatId, result.messageId)
@@ -431,7 +435,7 @@ export const channelPlugin = {
       const botUserIdMedia = entry.wsClient.botUserId
       const normalizedTo = (ctx.to ?? '').replace(/\/.*$/, '').trim()
       const commonDeps = {
-        wsClient: entry.wsClient,
+        outboundQueue: entry.outboundQueue,
         resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
         channelConfig: store.channelConfig,
         logger,
@@ -492,16 +496,7 @@ export const channelPlugin = {
           mediaLocalRoots: ctx.mediaLocalRoots,
           accountId,
         },
-        {
-          wsClient: entry.wsClient,
-          resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
-          store,
-          channelConfig: store.channelConfig,
-          logger,
-          dispatcher: entry.dispatcher,
-          limits: entry.limits,
-          sendQueue: entry.sendQueue,
-        },
+        { ...commonDeps, store },
       )
 
       if (result.ok) {
@@ -572,6 +567,7 @@ export const channelPlugin = {
         forceReconnect: makeForceReconnectAdapter(() => lifecycleRef),
       })
       wsClient.logger = logger
+      const outboundQueue = new OutboundQueue(wsClient, logger)
 
       const wireAdapter: WireAdapter = {
         get botUserId() { return wsClient.botUserId },
@@ -625,6 +621,7 @@ export const channelPlugin = {
           onConnectionClosed: () => clearAccountChats(accountId),
           onConnected: () => setStatus({ accountId, running: true, connected: true, lastStartAt: Date.now() }),
           onDisconnected: () => setStatus({ accountId, connected: false }),
+          onTerminalFailure: (terminal) => outboundQueue.failAll(terminal.cause),
           dispatcher,
         },
       )
@@ -634,7 +631,7 @@ export const channelPlugin = {
       // `store` on top because handleOutboundAttachment needs the direct-chat
       // cache; handleOutboundAttachmentToChat does not.
       const transport = {
-        wsClient,
+        outboundQueue,
         resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
         channelConfig,
         logger,
@@ -654,12 +651,13 @@ export const channelPlugin = {
           text: reply.text,
           sendText: async (chunk) => {
             const result = inbound.isGroup
-              ? await sendTextToChat(wsClient, inbound.chatId, chunk, logger, sendQueue)
-              : await sendText(wsClient, inbound.peerId, chunk, logger, {
+              ? await sendTextToChat(outboundQueue, inbound.chatId, chunk, logger, sendQueue)
+              : await sendText(inbound.peerId, chunk, logger, {
                   fallbackUserId: inbound.peerId,
                   directChatStore: store,
                   accountId,
                   sendQueue,
+                  outboundQueue,
                 })
             if (!result.ok) {
               logger.warn(`[trueconf] deliver: text chunk send failed (peer=${inbound.peerId}, isGroup=${inbound.isGroup})`)
@@ -727,6 +725,7 @@ export const channelPlugin = {
             channelConfig: store.channelConfig!,
             logger,
             sendQueue,
+            outboundQueue,
             dispatcher,
           })
           if (!prep.ok) return
@@ -872,6 +871,7 @@ export const channelPlugin = {
         unsubscribers: [unsubscribePush, unsubscribeAuth, unsubscribeSdkPush],
         limits,
         sendQueue,
+        outboundQueue,
       })
 
       try {

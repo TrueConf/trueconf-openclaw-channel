@@ -72,6 +72,7 @@ export interface FakeServer {
   connections: Set<WebSocket>
   chats: ChatRegistry
   configureFailures: (opts: { getChats?: number; getChatByID?: number; getChatByIDOmitErrorCode?: number; getChatByIDErrorCode?: number }) => void
+  delayAuthBy: (ms: number) => void
   pushInbound: (envelope: Json) => void
   pushFileProgress: (fileId: string, progress: number) => void
   pushEvent: (method: string, payload: Json) => void
@@ -149,6 +150,7 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
   let oauthResponse: FakeOAuthResponse = opts.oauthResponse ?? makeDefaultOAuthResponse()
   const clientAcks: number[] = []
   let pendingAuthFailures = opts.failAuthOnce ? 1 : 0
+  let authDelayMs = 0
   let nextServerRequestId = 10_000
   let nextUploadTaskId = 1
   let nextTemporalFileId = 1
@@ -259,6 +261,13 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
           send(ws, { type: 2, id, payload: { errorCode: 1, errorDescription: 'forced' } })
           return
         }
+        if (authDelayMs > 0) {
+          const delay = authDelayMs
+          setTimeout(() => {
+            send(ws, { type: 2, id, payload: { errorCode: 0, userId: botUserId } })
+          }, delay)
+          return
+        }
         send(ws, { type: 2, id, payload: { errorCode: 0, userId: botUserId } })
         return
       }
@@ -362,6 +371,7 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
     connections,
     chats,
     configureFailures,
+    delayAuthBy: (ms) => { authDelayMs = ms },
     setOauthResponse(value) { oauthResponse = value },
     setChatType(chatId, chatType) { chatTypeOverrides.set(chatId, chatType) },
     pushInbound(envelope) {

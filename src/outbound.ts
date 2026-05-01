@@ -4,7 +4,7 @@ import sharp from 'sharp'
 import type { Dispatcher } from 'undici'
 import { ErrorCode } from './types'
 import type { Logger, TrueConfChannelConfig, TrueConfResponse } from './types'
-import { WsClient, hostPort } from './ws-client'
+import { hostPort } from './ws-client'
 import {
   CAPTION_LIMIT,
   bytesToMB,
@@ -13,6 +13,7 @@ import {
   type FileUploadLimits,
 } from './limits'
 import type { PerChatSendQueue } from './send-queue'
+import type { OutboundQueue } from './outbound-queue'
 import { basename } from 'node:path'
 
 const PREVIEW_MAX_SIDE = 512
@@ -41,8 +42,6 @@ async function buildImagePreview(
     return null
   }
 }
-
-const DISCONNECTED_RETRY_DELAYS_MS = [1_000, 2_000] as const
 
 export interface DirectChatStore {
   directChatsByStableUserId: Map<string, string>
@@ -79,40 +78,14 @@ function upsertDirectChat(
   store.directChatsByStableUserId.set(directKey(accountId, stableUserId), chatId)
 }
 
+// Used by inbound.ts:subscribeAndAwaitReady to classify a direct
+// wsClient.sendRequest failure (bypasses OutboundQueue) as transient or
+// terminal. The OutboundQueue itself classifies via NetworkError.parkable —
+// outbound.ts callers no longer need this helper because all reconnect-class
+// errors are parked-then-drained inside the queue.
 export function isReconnectableSendError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err)
   return message.includes('WebSocket is not connected') || message.startsWith('WebSocket closed:')
-}
-
-/**
- * Wraps `client.sendRequest(...)` with bounded retry on reconnectable transport
- * errors. WsClient.sendRequest already handles auth barrier, 203 retry, and
- * DNS fail-fast at the transport layer; this wrapper adds caller-level retry
- * across full reconnect cycles, which file-upload paths rely on (uploadFile,
- * sendFile, createP2PChat). Prefer `client.sendRequest` directly for plain
- * one-shot requests where transport-level recovery is sufficient.
- */
-export async function sendRequestWithReconnectRetry(
-  client: WsClient,
-  method: string,
-  payload: Record<string, unknown>,
-  logger: Logger,
-): Promise<TrueConfResponse> {
-  let lastError: unknown = null
-  for (let attempt = 0; attempt <= DISCONNECTED_RETRY_DELAYS_MS.length; attempt++) {
-    if (attempt > 0) {
-      const delayMs = DISCONNECTED_RETRY_DELAYS_MS[attempt - 1]
-      logger.warn(`[trueconf] ${method} retrying after reconnect wait (${delayMs}ms)`)
-      await new Promise<void>((r) => setTimeout(r, delayMs))
-    }
-    try {
-      return await client.sendRequest(method, payload)
-    } catch (err) {
-      lastError = err
-      if (!isReconnectableSendError(err) || attempt === DISCONNECTED_RETRY_DELAYS_MS.length) throw err
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError))
 }
 
 export function responseErrorCode(response: TrueConfResponse): number | undefined {
@@ -120,8 +93,8 @@ export function responseErrorCode(response: TrueConfResponse): number | undefine
   return typeof code === 'number' ? code : undefined
 }
 
-async function createP2PChat(client: WsClient, userId: string, logger: Logger): Promise<string> {
-  const response = await sendRequestWithReconnectRetry(client, 'createP2PChat', { userId }, logger)
+async function createP2PChat(outboundQueue: OutboundQueue, userId: string): Promise<string> {
+  const response = await outboundQueue.submit('createP2PChat', { userId })
   const errorCode = responseErrorCode(response)
   if (errorCode !== undefined && errorCode !== 0) {
     const desc = response.payload?.errorDescription ?? ''
@@ -133,7 +106,7 @@ async function createP2PChat(client: WsClient, userId: string, logger: Logger): 
 }
 
 async function resolveDirectChat(
-  client: WsClient,
+  outboundQueue: OutboundQueue,
   stableUserIdInput: string,
   logger: Logger,
   options: { directChatStore: DirectChatStore; accountId: string },
@@ -143,7 +116,7 @@ async function resolveDirectChat(
     directKey(options.accountId, stableUserId),
   )
   if (existing) return { stableUserId, chatId: existing }
-  const chatId = normalizeChatId(await createP2PChat(client, stableUserId, logger))
+  const chatId = normalizeChatId(await createP2PChat(outboundQueue, stableUserId))
   upsertDirectChat(options.directChatStore, options.accountId, stableUserId, chatId)
   return { stableUserId, chatId }
 }
@@ -201,19 +174,20 @@ export function sanitizeMarkdownPreservingParagraphs(text: string): string {
 // and the loop halts on the first non-zero errorCode, returning the responses
 // gathered so far. The whole chunked send runs inside a single
 // `sendQueue.enqueue` so concurrent replies to the same chatId don't
-// interleave their chunks on the wire.
+// interleave their chunks on the wire. Routes through `outboundQueue.submit`
+// so a reconnect-class transport failure parks the chunk until auth
+// re-establishes (at-least-once delivery).
 async function sendMessageRequest(
-  client: WsClient,
+  outboundQueue: OutboundQueue,
   chatId: string,
   text: string,
-  _logger: Logger,
   sendQueue: PerChatSendQueue,
 ): Promise<TrueConfResponse[]> {
   return sendQueue.enqueue(chatId, async () => {
     const chunks = splitTextForSending(text)
     const responses: TrueConfResponse[] = []
     for (const chunk of chunks) {
-      const resp = await client.sendRequest('sendMessage', {
+      const resp = await outboundQueue.submit('sendMessage', {
         chatId,
         content: { text: chunk, parseMode: 'markdown' },
       })
@@ -228,14 +202,13 @@ async function sendMessageRequest(
 export const __test__sendMessageRequest = sendMessageRequest
 
 async function recreateChat(
-  client: WsClient,
+  outboundQueue: OutboundQueue,
   store: DirectChatStore,
   accountId: string,
   stableUserId: string,
-  logger: Logger,
 ): Promise<string> {
   store.directChatsByStableUserId.delete(directKey(accountId, stableUserId))
-  const chatId = normalizeChatId(await createP2PChat(client, stableUserId, logger))
+  const chatId = normalizeChatId(await createP2PChat(outboundQueue, stableUserId))
   upsertDirectChat(store, accountId, stableUserId, chatId)
   return chatId
 }
@@ -245,6 +218,7 @@ type SendTextOptions = {
   directChatStore: DirectChatStore
   accountId?: string
   sendQueue: PerChatSendQueue
+  outboundQueue: OutboundQueue
 }
 
 export type SendTextResult =
@@ -262,7 +236,7 @@ function lastResponse(responses: TrueConfResponse[]): TrueConfResponse | undefin
 // Direct chatId send: no P2P resolution, no 304-repair. Used for groups where
 // the chatId is authoritative and we can't recreate the chat.
 export async function sendTextToChat(
-  client: WsClient,
+  outboundQueue: OutboundQueue,
   chatId: string,
   text: string,
   logger: Logger,
@@ -271,7 +245,7 @@ export async function sendTextToChat(
   try {
     const cleanText = sanitizeMarkdownPreservingParagraphs(text)
     const safeChatId = normalizeChatId(chatId)
-    const responses = await sendMessageRequest(client, safeChatId, cleanText, logger, sendQueue)
+    const responses = await sendMessageRequest(outboundQueue, safeChatId, cleanText, sendQueue)
     const last = lastResponse(responses)
     if (!last) {
       logger.error(`[trueconf] sendTextToChat: no responses returned (chatId=${safeChatId})`)
@@ -293,7 +267,6 @@ export async function sendTextToChat(
 // Resolves stableUserId → chatId via registry, falls back to createP2PChat on
 // miss, and performs exactly one 304-repair cycle on a stale entry.
 export async function sendText(
-  client: WsClient,
   userId: string,
   text: string,
   logger: Logger,
@@ -305,12 +278,12 @@ export async function sendText(
     if (!options.accountId) {
       logger.warn('[trueconf] sendText: accountId missing, falling back to "default"')
     }
-    const resolved = await resolveDirectChat(client, options.fallbackUserId ?? userId, logger, {
+    const resolved = await resolveDirectChat(options.outboundQueue, options.fallbackUserId ?? userId, logger, {
       directChatStore: options.directChatStore,
       accountId,
     })
     let activeChatId = resolved.chatId
-    let responses = await sendMessageRequest(client, activeChatId, cleanText, logger, options.sendQueue)
+    let responses = await sendMessageRequest(options.outboundQueue, activeChatId, cleanText, options.sendQueue)
     let last = lastResponse(responses)
     let errorCode = last ? responseErrorCode(last) : undefined
     let repaired = false
@@ -320,8 +293,8 @@ export async function sendText(
         `[trueconf] sendText chat ${activeChatId} not found for ${resolved.stableUserId}; recreating P2P chat and retrying once`,
       )
       repaired = true
-      activeChatId = await recreateChat(client, options.directChatStore, accountId, resolved.stableUserId, logger)
-      responses = await sendMessageRequest(client, activeChatId, cleanText, logger, options.sendQueue)
+      activeChatId = await recreateChat(options.outboundQueue, options.directChatStore, accountId, resolved.stableUserId)
+      responses = await sendMessageRequest(options.outboundQueue, activeChatId, cleanText, options.sendQueue)
       last = lastResponse(responses)
       errorCode = last ? responseErrorCode(last) : undefined
     }
@@ -426,7 +399,6 @@ export type OutboundAttachmentReason =
   | 'tooLarge'
   | 'uploadFailed'
   | 'sendFailed'
-  | 'reconnect'
   | 'genericError'
 
 export interface OutboundAttachmentCtx {
@@ -438,7 +410,7 @@ export interface OutboundAttachmentCtx {
 }
 
 export interface OutboundAttachmentDeps {
-  wsClient: WsClient
+  outboundQueue: OutboundQueue
   resolved: { serverUrl: string; useTls: boolean; port?: number }
   store: DirectChatStore
   channelConfig: TrueConfChannelConfig
@@ -468,9 +440,9 @@ interface PreparedUploadFailure {
 // reports to the user.
 async function prepareAttachmentUpload(
   ctx: Pick<OutboundAttachmentCtx, 'mediaUrl' | 'mediaLocalRoots' | 'text'>,
-  deps: Pick<OutboundAttachmentDeps, 'wsClient' | 'resolved' | 'channelConfig' | 'logger' | 'dispatcher' | 'limits'>,
+  deps: Pick<OutboundAttachmentDeps, 'outboundQueue' | 'resolved' | 'channelConfig' | 'logger' | 'dispatcher' | 'limits'>,
 ): Promise<{ ok: true; upload: PreparedUpload } | { ok: false; failure: PreparedUploadFailure }> {
-  const { wsClient, resolved, logger, dispatcher, limits } = deps
+  const { outboundQueue, resolved, logger, dispatcher, limits } = deps
   const maxBytes = limits.getMaxBytes()
 
   if (!ctx.mediaUrl) {
@@ -536,17 +508,14 @@ async function prepareAttachmentUpload(
 
   let uploadResp: TrueConfResponse
   try {
-    uploadResp = await wsClient.sendRequest('uploadFile', { fileSize, fileName })
+    uploadResp = await outboundQueue.submit('uploadFile', { fileSize, fileName })
   } catch (err) {
-    const isReconnect = isReconnectableSendError(err)
     logger.warn(`[trueconf] sendMedia step 1/3 FAIL: ${err instanceof Error ? err.message : String(err)}`)
     return {
       ok: false,
       failure: {
-        reason: isReconnect ? 'reconnect' : 'uploadFailed',
-        userFacingText: isReconnect
-          ? 'Соединение прервалось — попробуйте ещё раз.'
-          : 'Не удалось загрузить файл — попробуйте ещё раз.',
+        reason: 'uploadFailed',
+        userFacingText: 'Не удалось загрузить файл — попробуйте ещё раз.',
       },
     }
   }
@@ -604,7 +573,7 @@ export const __test__buildSendFilePayload = buildSendFilePayload
 // it. Returns either a mutated `upload` (caption stripped) or a structured
 // failure routed back through the caller's `fail()` helper.
 async function maybeSendCaptionSeparately(
-  client: WsClient,
+  outboundQueue: OutboundQueue,
   chatId: string,
   upload: PreparedUpload,
   logger: Logger,
@@ -619,7 +588,7 @@ async function maybeSendCaptionSeparately(
   logger.warn(
     `[trueconf] caption too long: ${captionCheck.codePoints} > ${captionCheck.limit}; sending as separate message`,
   )
-  const captionResults = await sendMessageRequest(client, chatId, captionText, logger, sendQueue)
+  const captionResults = await sendMessageRequest(outboundQueue, chatId, captionText, sendQueue)
   const lastResult = captionResults[captionResults.length - 1]
   const captionErr = lastResult ? responseErrorCode(lastResult) : -1
   if (captionErr !== undefined && captionErr !== 0) {
@@ -639,7 +608,7 @@ export async function handleOutboundAttachment(
   ctx: OutboundAttachmentCtx,
   deps: OutboundAttachmentDeps,
 ): Promise<{ ok: true; messageId: string; chatId: string } | { ok: false; reason: OutboundAttachmentReason }> {
-  const { wsClient, logger, store, sendQueue } = deps
+  const { outboundQueue, logger, store, sendQueue } = deps
 
   let stableUserId: string
   try {
@@ -655,11 +624,12 @@ export async function handleOutboundAttachment(
   const accountId = normalizeAccountId(ctx.accountId ?? 'default')
 
   const fail = async (reason: OutboundAttachmentReason, text: string): Promise<{ ok: false; reason: OutboundAttachmentReason }> => {
-    await sendText(wsClient, stableUserId, text, logger, {
+    await sendText(stableUserId, text, logger, {
       fallbackUserId: stableUserId,
       directChatStore: store,
       accountId,
       sendQueue,
+      outboundQueue,
     })
     return { ok: false, reason }
   }
@@ -671,56 +641,50 @@ export async function handleOutboundAttachment(
 
     let activeChatId: string
     try {
-      activeChatId = (await resolveDirectChat(wsClient, stableUserId, logger, {
+      activeChatId = (await resolveDirectChat(outboundQueue, stableUserId, logger, {
         directChatStore: store,
         accountId,
       })).chatId
     } catch (err) {
-      const isReconnect = isReconnectableSendError(err)
       // Skip user reply: no chat to send to. Re-entering sendText here would
       // fire createP2PChat a second time on every persistent failure.
       logger.error(`[trueconf] sendMedia direct-chat resolve FAIL: ${err instanceof Error ? err.message : String(err)}`)
-      return { ok: false, reason: isReconnect ? 'reconnect' : 'sendFailed' }
+      return { ok: false, reason: 'sendFailed' }
     }
 
-    const captionGate = await maybeSendCaptionSeparately(wsClient, activeChatId, upload, logger, sendQueue)
+    const captionGate = await maybeSendCaptionSeparately(outboundQueue, activeChatId, upload, logger, sendQueue)
     if (!captionGate.ok) return fail(captionGate.failure.reason, captionGate.failure.userFacingText)
     upload = captionGate.upload
     const captionSentSeparately = captionGate.captionSentSeparately
 
     let sendResp: TrueConfResponse
     try {
-      sendResp = await sendRequestWithReconnectRetry(wsClient, 'sendFile', buildSendFilePayload(activeChatId, upload), logger)
+      sendResp = await outboundQueue.submit('sendFile', buildSendFilePayload(activeChatId, upload))
     } catch (err) {
-      const isReconnect = isReconnectableSendError(err)
-      logger.warn(`[trueconf] sendMedia step 3/3 FAIL after retries: ${err instanceof Error ? err.message : String(err)}`)
+      logger.warn(`[trueconf] sendMedia step 3/3 FAIL: ${err instanceof Error ? err.message : String(err)}`)
       if (captionSentSeparately) {
         logger.error(
           `[trueconf] sendFile failed AFTER caption was already delivered as separate message; user sees orphan caption-text without attachment (chatId=${activeChatId})`,
         )
       }
-      return fail(
-        isReconnect ? 'reconnect' : 'sendFailed',
-        isReconnect ? 'Соединение прервалось — попробуйте ещё раз.' : 'Не удалось отправить файл — попробуйте ещё раз.',
-      )
+      return fail('sendFailed', 'Не удалось отправить файл — попробуйте ещё раз.')
     }
 
     let sendErrorCode = responseErrorCode(sendResp)
     if (sendErrorCode === ErrorCode.CHAT_NOT_FOUND) {
       logger.warn(`[trueconf] sendMedia chat ${activeChatId} not found for ${stableUserId}; recreating P2P chat and retrying once`)
       try {
-        activeChatId = await recreateChat(wsClient, store, accountId, stableUserId, logger)
-        sendResp = await sendRequestWithReconnectRetry(wsClient, 'sendFile', buildSendFilePayload(activeChatId, upload), logger)
+        activeChatId = await recreateChat(outboundQueue, store, accountId, stableUserId)
+        sendResp = await outboundQueue.submit('sendFile', buildSendFilePayload(activeChatId, upload))
         sendErrorCode = responseErrorCode(sendResp)
       } catch (err) {
-        const isReconnect = isReconnectableSendError(err)
         logger.error(`[trueconf] sendMedia 304 repair FAIL: ${err instanceof Error ? err.message : String(err)}`)
         if (captionSentSeparately) {
           logger.error(
             `[trueconf] sendFile failed AFTER caption was already delivered as separate message; user sees orphan caption-text without attachment (chatId=${activeChatId})`,
           )
         }
-        return { ok: false, reason: isReconnect ? 'reconnect' : 'sendFailed' }
+        return { ok: false, reason: 'sendFailed' }
       }
     }
     if (sendErrorCode !== undefined && sendErrorCode !== 0) {
@@ -761,7 +725,7 @@ export interface OutboundAttachmentToChatCtx {
 
 export type OutboundAttachmentToChatDeps = Pick<
   OutboundAttachmentDeps,
-  'wsClient' | 'resolved' | 'channelConfig' | 'logger' | 'dispatcher' | 'limits' | 'sendQueue'
+  'outboundQueue' | 'resolved' | 'channelConfig' | 'logger' | 'dispatcher' | 'limits' | 'sendQueue'
 >
 
 // Parallel to sendTextToChat: attachment send to an authoritative chatId
@@ -773,7 +737,7 @@ export async function handleOutboundAttachmentToChat(
   ctx: OutboundAttachmentToChatCtx,
   deps: OutboundAttachmentToChatDeps,
 ): Promise<{ ok: true; messageId: string; chatId: string } | { ok: false; reason: OutboundAttachmentReason }> {
-  const { wsClient, logger, sendQueue } = deps
+  const { outboundQueue, logger, sendQueue } = deps
 
   let safeChatId: string
   try {
@@ -786,7 +750,7 @@ export async function handleOutboundAttachmentToChat(
   }
 
   const fail = async (reason: OutboundAttachmentReason, text: string): Promise<{ ok: false; reason: OutboundAttachmentReason }> => {
-    await sendTextToChat(wsClient, safeChatId, text, logger, sendQueue)
+    await sendTextToChat(outboundQueue, safeChatId, text, logger, sendQueue)
     return { ok: false, reason }
   }
 
@@ -795,26 +759,22 @@ export async function handleOutboundAttachmentToChat(
     if (!prepared.ok) return fail(prepared.failure.reason, prepared.failure.userFacingText)
     let upload = prepared.upload
 
-    const captionGate = await maybeSendCaptionSeparately(wsClient, safeChatId, upload, logger, sendQueue)
+    const captionGate = await maybeSendCaptionSeparately(outboundQueue, safeChatId, upload, logger, sendQueue)
     if (!captionGate.ok) return fail(captionGate.failure.reason, captionGate.failure.userFacingText)
     upload = captionGate.upload
     const captionSentSeparately = captionGate.captionSentSeparately
 
     let sendResp: TrueConfResponse
     try {
-      sendResp = await sendRequestWithReconnectRetry(wsClient, 'sendFile', buildSendFilePayload(safeChatId, upload), logger)
+      sendResp = await outboundQueue.submit('sendFile', buildSendFilePayload(safeChatId, upload))
     } catch (err) {
-      const isReconnect = isReconnectableSendError(err)
-      logger.warn(`[trueconf] sendMediaToChat step 3/3 FAIL after retries: ${err instanceof Error ? err.message : String(err)}`)
+      logger.warn(`[trueconf] sendMediaToChat step 3/3 FAIL: ${err instanceof Error ? err.message : String(err)}`)
       if (captionSentSeparately) {
         logger.error(
           `[trueconf] sendFile failed AFTER caption was already delivered as separate message; user sees orphan caption-text without attachment (chatId=${safeChatId})`,
         )
       }
-      return fail(
-        isReconnect ? 'reconnect' : 'sendFailed',
-        isReconnect ? 'Соединение прервалось — попробуйте ещё раз.' : 'Не удалось отправить файл — попробуйте ещё раз.',
-      )
+      return fail('sendFailed', 'Не удалось отправить файл — попробуйте ещё раз.')
     }
 
     const sendErrorCode = responseErrorCode(sendResp)

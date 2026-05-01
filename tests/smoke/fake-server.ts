@@ -73,6 +73,10 @@ export interface FakeServer {
   chats: ChatRegistry
   configureFailures: (opts: { getChats?: number; getChatByID?: number; getChatByIDOmitErrorCode?: number; getChatByIDErrorCode?: number }) => void
   delayAuthBy: (ms: number) => void
+  // Schedules the next `count` auth requests to fail with errorCode=1.
+  // Subsequent auths succeed normally. Used to exercise the reconnect-with-
+  // failed-auth path that the OutboundQueue must park around.
+  failNextAuth: (count: number) => void
   pushInbound: (envelope: Json) => void
   pushFileProgress: (fileId: string, progress: number) => void
   pushEvent: (method: string, payload: Json) => void
@@ -378,6 +382,7 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
     chats,
     configureFailures,
     delayAuthBy: (ms) => { authDelayMs = ms },
+    failNextAuth: (count) => { pendingAuthFailures = count },
     setOauthResponse(value) { oauthResponse = value },
     setChatType(chatId, chatType) { chatTypeOverrides.set(chatId, chatType) },
     pushInbound(envelope) {

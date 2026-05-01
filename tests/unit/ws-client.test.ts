@@ -435,6 +435,45 @@ describe('WsClient — message handling on captured ws', () => {
     client.close()
   })
 
+  it('close() forwards the close event to onClose so lifecycle can schedule reconnect', async () => {
+    const client = new WsClient()
+    client.logger = silentLogger
+    await client.connect(makeConfig(server!.port), 'fake-token')
+
+    const onCloseSpy = vi.fn()
+    client.onClose = onCloseSpy
+
+    client.close()
+
+    // ws emits 'close' on the next event-loop tick after the TCP FIN handshake;
+    // 50 ms is generous slack for CI. Do NOT shrink to 0 — close is async.
+    await new Promise<void>((r) => setTimeout(r, 50))
+
+    // Contract under test: close() must NOT suppress its own close event.
+    // Lifecycle.handleClose subscribes via onClose and is the only entity that
+    // schedules a reconnect — if onClose never fires, the bot goes silent.
+    expect(onCloseSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('terminate() forwards the close event to onClose so lifecycle can schedule reconnect', async () => {
+    const client = new WsClient()
+    client.logger = silentLogger
+    await client.connect(makeConfig(server!.port), 'fake-token')
+
+    const onCloseSpy = vi.fn()
+    client.onClose = onCloseSpy
+
+    client.terminate()
+
+    // ws emits 'close' on the next event-loop tick after the TCP FIN handshake;
+    // 50 ms is generous slack for CI. Do NOT shrink to 0 — close is async.
+    await new Promise<void>((r) => setTimeout(r, 50))
+
+    // Contract under test: terminate() (used by escalateDeadConnection on
+    // heartbeat pong timeout) must NOT suppress its own close event.
+    expect(onCloseSpy).toHaveBeenCalledTimes(1)
+  })
+
   it('sendMessage push (method="sendMessage") does NOT call onPush listeners; only onInboundMessage', async () => {
     const client = new WsClient()
     client.logger = silentLogger

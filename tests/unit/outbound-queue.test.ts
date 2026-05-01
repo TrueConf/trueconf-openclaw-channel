@@ -118,4 +118,31 @@ describe('OutboundQueue', () => {
     await Promise.all([p1, p2, p3])
     expect(drainOrder).toEqual(['m1', 'm2', 'm3'])
   })
+
+  it('concurrent auth events do not double-attempt items (draining mutex)', async () => {
+    const fake = makeFakeWsClient()
+    let unblock: () => void = () => {}
+    const blocked = new Promise<TrueConfResponse>((resolve) => {
+      unblock = () => resolve({ type: 2, id: 1, payload: { errorCode: 0 } })
+    })
+    fake.sendRequest
+      .mockRejectedValueOnce(new Error('WebSocket is not connected'))
+      .mockReturnValueOnce(blocked)
+
+    const queue = new OutboundQueue(fake as never, silentLogger)
+    const promise = queue.submit('m1', { id: 1 })
+    await new Promise((r) => setTimeout(r, 10))
+
+    fake.fireAuth()
+    await new Promise((r) => setTimeout(r, 10))
+    expect(fake.sendRequest).toHaveBeenCalledTimes(2)
+
+    fake.fireAuth()
+    await new Promise((r) => setTimeout(r, 10))
+    expect(fake.sendRequest).toHaveBeenCalledTimes(2)
+
+    unblock()
+    await promise
+    expect(fake.sendRequest).toHaveBeenCalledTimes(2)
+  })
 })

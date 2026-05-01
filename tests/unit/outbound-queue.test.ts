@@ -96,4 +96,26 @@ describe('OutboundQueue', () => {
     expect(result).toEqual(response)
     expect(fake.sendRequest).toHaveBeenCalledTimes(2)
   })
+
+  it('drain preserves submission order (FIFO)', async () => {
+    const fake = makeFakeWsClient()
+    fake.sendRequest.mockRejectedValue(new Error('WebSocket is not connected'))
+
+    const queue = new OutboundQueue(fake as never, silentLogger)
+    const p1 = queue.submit('m1', { id: 1 })
+    const p2 = queue.submit('m2', { id: 2 })
+    const p3 = queue.submit('m3', { id: 3 })
+    await new Promise((r) => setTimeout(r, 10))
+
+    const drainOrder: string[] = []
+    fake.sendRequest.mockReset()
+    fake.sendRequest.mockImplementation(async (method) => {
+      drainOrder.push(method)
+      return { type: 2, id: 1, payload: { errorCode: 0 } }
+    })
+    fake.fireAuth()
+
+    await Promise.all([p1, p2, p3])
+    expect(drainOrder).toEqual(['m1', 'm2', 'm3'])
+  })
 })

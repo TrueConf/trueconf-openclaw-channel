@@ -466,15 +466,20 @@ export class WsClient {
   }
 }
 
+// Discriminated union over the bounded set of terminal lifecycle outcomes.
+// Receivers branch on `kind` instead of parsing message strings; the original
+// Error survives on `cause` for logging.
+export type TerminalCause =
+  | { kind: 'shutdown'; cause: Error }
+  | { kind: 'dns_exhausted'; retries: number; cause: NetworkError }
+
 interface LifecycleOptions {
   onConnectionClosed?: (code: number, reason: string) => void
   onConnected?: () => void
   onDisconnected?: () => void
-  // Fired when the lifecycle gives up on reconnection (DNS unreachable after
-  // DNS_MAX_RETRIES, or explicit shutdown). Out-of-band signal for
-  // delivery-layer cleanup (OutboundQueue.failAll). Does NOT fire on transient
-  // close events — those go through onConnectionClosed and reconnect.
-  onTerminalFailure?: (err: Error) => void
+  // Fires once on terminal lifecycle outcome (not on transient close events,
+  // which go through onConnectionClosed and reconnect).
+  onTerminalFailure?: (terminal: TerminalCause) => void
 }
 
 // Liveness is governed by WebSocket protocol ping/pong (opcode 0x9/0xA) on a
@@ -546,10 +551,10 @@ export class ConnectionLifecycle {
     // Reject the auth barrier with an explicit reason so any pending
     // waitAuthenticated() callers fail fast on shutdown instead of waiting
     // out their per-call timeout.
-    const terminal = new Error('lifecycle shutting down')
-    this.wsClient.markAuthFailed(terminal)
+    const cause = new Error('lifecycle shutting down')
+    this.wsClient.markAuthFailed(cause)
     try {
-      this.options?.onTerminalFailure?.(terminal)
+      this.options?.onTerminalFailure?.({ kind: 'shutdown', cause })
     } catch (err) {
       this.logger.warn(`[trueconf] onTerminalFailure callback failed: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -674,15 +679,15 @@ export class ConnectionLifecycle {
             // set in types.ts) so consumers branching on `err instanceof
             // NetworkError` can distinguish a terminal DNS failure from a
             // retryable one without spinning further.
-            const terminal = new NetworkError(
+            const cause = new NetworkError(
               `dns_unreachable: gave up after ${this.dnsRetryCount} retries`,
               'websocket',
               undefined,
               DNS_TERMINAL_CODE,
             )
-            this.wsClient.markAuthFailed(terminal)
+            this.wsClient.markAuthFailed(cause)
             try {
-              this.options?.onTerminalFailure?.(terminal)
+              this.options?.onTerminalFailure?.({ kind: 'dns_exhausted', retries: this.dnsRetryCount, cause })
             } catch (err) {
               this.logger.warn(`[trueconf] onTerminalFailure callback failed: ${err instanceof Error ? err.message : String(err)}`)
             }

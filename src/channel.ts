@@ -630,7 +630,7 @@ export const channelPlugin = {
           onConnectionClosed: () => clearAccountChats(accountId),
           onConnected: () => setStatus({ accountId, running: true, connected: true, lastStartAt: Date.now() }),
           onDisconnected: () => setStatus({ accountId, connected: false }),
-          onTerminalFailure: (err) => outboundQueue.failAll(err),
+          onTerminalFailure: (terminal) => outboundQueue.failAll(terminal.cause),
           dispatcher,
         },
       )

@@ -884,7 +884,7 @@ describe('LifecycleOptions.onTerminalFailure', () => {
     port: 4309,
   } satisfies TrueConfAccountConfig
 
-  it('fires onTerminalFailure when shutdown() is called', () => {
+  it('fires onTerminalFailure with kind=shutdown when shutdown() is called', () => {
     const ws = new WsClient()
     const onTerminalFailure = vi.fn()
     const lifecycle = new ConnectionLifecycle(ws, baseConfig, silentLogger, {
@@ -897,11 +897,13 @@ describe('LifecycleOptions.onTerminalFailure', () => {
     lifecycle.shutdown()
 
     expect(onTerminalFailure).toHaveBeenCalledTimes(1)
-    expect(onTerminalFailure.mock.calls[0][0]).toBeInstanceOf(Error)
-    expect(onTerminalFailure.mock.calls[0][0].message).toBe('lifecycle shutting down')
+    const arg = onTerminalFailure.mock.calls[0][0]
+    expect(arg.kind).toBe('shutdown')
+    expect(arg.cause).toBeInstanceOf(Error)
+    expect(arg.cause.message).toBe('lifecycle shutting down')
   })
 
-  it('fires onTerminalFailure after DNS_MAX_RETRIES exhausted', async () => {
+  it('fires onTerminalFailure with kind=dns_exhausted after DNS_MAX_RETRIES exhausted', async () => {
     vi.useFakeTimers()
     try {
       const onTerminalFailure = vi.fn()
@@ -923,9 +925,11 @@ describe('LifecycleOptions.onTerminalFailure', () => {
       }
 
       expect(onTerminalFailure).toHaveBeenCalledTimes(1)
-      const err = onTerminalFailure.mock.calls[0][0]
-      expect(err).toBeInstanceOf(NetworkError)
-      expect(err.message).toMatch(/dns_unreachable/)
+      const arg = onTerminalFailure.mock.calls[0][0]
+      expect(arg.kind).toBe('dns_exhausted')
+      expect(arg.retries).toBeGreaterThanOrEqual(5)
+      expect(arg.cause).toBeInstanceOf(NetworkError)
+      expect(arg.cause.message).toMatch(/dns_unreachable/)
     } finally {
       vi.useRealTimers()
     }

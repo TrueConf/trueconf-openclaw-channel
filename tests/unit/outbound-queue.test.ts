@@ -216,4 +216,27 @@ describe('OutboundQueue', () => {
     expect(result).toEqual(erroredResponse)
     expect(fake.sendRequest).toHaveBeenCalledTimes(1)
   })
+
+  it('race: failAll fires while sendRequest in flight — no double-settle', async () => {
+    const fake = makeFakeWsClient()
+    let resolveSendRequest: (resp: TrueConfResponse) => void = () => {}
+    const inFlight = new Promise<TrueConfResponse>((resolve) => {
+      resolveSendRequest = resolve
+    })
+    fake.sendRequest.mockReturnValueOnce(inFlight)
+
+    const queue = new OutboundQueue(fake as never, silentLogger)
+    const p1 = queue.submit('m1', {})
+    await new Promise((r) => setTimeout(r, 10))
+
+    queue.failAll(new Error('terminal during in-flight'))
+    await expect(p1).rejects.toThrow('terminal during in-flight')
+
+    resolveSendRequest({ type: 2, id: 1, payload: { errorCode: 0 } })
+    await new Promise((r) => setTimeout(r, 10))
+
+    let stillRejected = false
+    await p1.catch(() => { stillRejected = true })
+    expect(stillRejected).toBe(true)
+  })
 })

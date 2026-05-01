@@ -299,6 +299,10 @@ export class NetworkError extends Error {
     this.name = 'NetworkError'
     this.parkable = options.parkable === true
   }
+
+  static parkable(message: string, phase: NetworkErrorPhase = 'websocket'): NetworkError {
+    return new NetworkError(message, phase, undefined, undefined, undefined, undefined, { parkable: true })
+  }
 }
 
 export const DNS_ERROR_CODES: ReadonlySet<string> = new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_NODATA', 'EAI_NONAME'])

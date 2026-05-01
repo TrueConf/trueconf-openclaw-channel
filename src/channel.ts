@@ -957,3 +957,7 @@ export function __resetForTesting(): void {
   __resetCoalesceBufferForTesting()
   pluginRuntimeStore.clearRuntime()
 }
+
+export function __getAccountsForTesting(): Map<string, AccountEntry> {
+  return store.accounts
+}

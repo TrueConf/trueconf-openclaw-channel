@@ -303,6 +303,22 @@ export class NetworkError extends Error {
   static parkable(message: string, phase: NetworkErrorPhase = 'websocket'): NetworkError {
     return new NetworkError(message, phase, undefined, undefined, undefined, undefined, { parkable: true })
   }
+
+  // Wraps any error as a parkable NetworkError, preserving NetworkError
+  // metadata (phase, code, syscall, hostname) when present. Used by the
+  // reconnect path so transient handshake / TCP-level failures park the
+  // OutboundQueue items rather than rejecting them — DNS_MAX_RETRIES and
+  // shutdown still mark non-parkable so terminal causes flow through
+  // failAll instead of looping forever.
+  static asParkable(err: unknown): NetworkError {
+    if (err instanceof NetworkError) {
+      if (err.parkable) return err
+      return new NetworkError(err.message, err.phase, err.cause, err.code, err.syscall, err.hostname, { parkable: true })
+    }
+    const msg = err instanceof Error ? err.message : String(err)
+    const cause = err instanceof Error ? err : undefined
+    return new NetworkError(msg, 'unknown', cause, undefined, undefined, undefined, { parkable: true })
+  }
 }
 
 export const DNS_ERROR_CODES: ReadonlySet<string> = new Set(['ENOTFOUND', 'EAI_AGAIN', 'EAI_NODATA', 'EAI_NONAME'])

@@ -101,18 +101,24 @@ function buildChannelConfig(): TrueConfChannelConfig {
   return { serverUrl: 'tc.example.com', username: 'bot', password: 'pw', useTls: true } as TrueConfChannelConfig
 }
 
-function buildAttachmentDeps(overrides: Partial<OutboundAttachmentDeps> = {}): OutboundAttachmentDeps {
-  const wsClient = overrides.wsClient ?? (buildFakeClient() as never)
+function buildAttachmentDeps(
+  overrides: Partial<OutboundAttachmentDeps> & { client?: FakeWsClient } = {},
+): OutboundAttachmentDeps {
+  // `client` is a test-only shorthand: build the OutboundQueue around this
+  // fake client. Not a field on OutboundAttachmentDeps; keeps existing tests
+  // succinct without leaking a wsClient dep field that the production type
+  // no longer carries.
+  const { client, ...depsOverrides } = overrides
+  const fakeClient = client ?? buildFakeClient()
   return {
-    wsClient,
-    outboundQueue: overrides.outboundQueue ?? buildOutboundQueue(wsClient as unknown as FakeWsClient),
+    outboundQueue: overrides.outboundQueue ?? buildOutboundQueue(fakeClient),
     resolved: { serverUrl: 'tc.example.com', useTls: true, port: 443 },
     store: buildStore(),
     channelConfig: buildChannelConfig(),
     logger: silentLogger,
     limits: buildLimits(),
     sendQueue: new PerChatSendQueue(),
-    ...overrides,
+    ...depsOverrides,
   }
 }
 
@@ -299,7 +305,7 @@ describe('handleOutboundAttachment caption flow', () => {
 
     try {
       const longCaption = 'x'.repeat(5000)
-      const deps = buildAttachmentDeps({ wsClient: client as never })
+      const deps = buildAttachmentDeps({ client })
       const result = await handleOutboundAttachment(
         { to: 'alice@srv', text: longCaption, mediaUrl: 'file:///tmp/doc.pdf', accountId: 'default' },
         deps,
@@ -346,7 +352,7 @@ describe('handleOutboundAttachment caption flow', () => {
       return ok('m-x')
     })
 
-    const deps = buildAttachmentDeps({ wsClient: client as never, limits })
+    const deps = buildAttachmentDeps({ client, limits })
     const result = await handleOutboundAttachment(
       { to: 'alice@srv', text: '', mediaUrl: 'file:///tmp/big.bin', accountId: 'default' },
       deps,
@@ -400,7 +406,7 @@ describe('handleOutboundAttachment caption flow', () => {
 
     try {
       const longCaption = 'x'.repeat(5000)
-      const deps = buildAttachmentDeps({ wsClient: client as never, logger: captureLogger })
+      const deps = buildAttachmentDeps({ client, logger: captureLogger })
       const result = await handleOutboundAttachment(
         { to: 'alice@srv', text: longCaption, mediaUrl: 'file:///tmp/doc.pdf', accountId: 'default' },
         deps,
@@ -429,10 +435,9 @@ describe('sanitizeMarkdown unchanged for caption use', () => {
 // Reference: ensure types compile.
 describe('OutboundAttachmentToChatDeps Pick keys include limits and sendQueue', () => {
   it('type compiles with limits and sendQueue', () => {
-    const wsClient = buildFakeClient()
+    const client = buildFakeClient()
     const deps: OutboundAttachmentToChatDeps = {
-      wsClient: wsClient as never,
-      outboundQueue: buildOutboundQueue(wsClient),
+      outboundQueue: buildOutboundQueue(client),
       resolved: { serverUrl: 'x', useTls: true, port: 443 },
       channelConfig: buildChannelConfig(),
       logger: silentLogger,
@@ -520,7 +525,6 @@ describe('handleOutboundAttachmentToChat happy path', () => {
     }) as typeof globalThis.fetch
     try {
       const deps: OutboundAttachmentToChatDeps = {
-        wsClient: client as never,
         outboundQueue: buildOutboundQueue(client),
         resolved: { serverUrl: 'tc.example.com', useTls: true, port: 443 },
         channelConfig: buildChannelConfig(),

@@ -4,7 +4,7 @@ import sharp from 'sharp'
 import type { Dispatcher } from 'undici'
 import { ErrorCode } from './types'
 import type { Logger, TrueConfChannelConfig, TrueConfResponse } from './types'
-import { WsClient, hostPort } from './ws-client'
+import { hostPort } from './ws-client'
 import {
   CAPTION_LIMIT,
   bytesToMB,
@@ -42,8 +42,6 @@ async function buildImagePreview(
     return null
   }
 }
-
-const DISCONNECTED_RETRY_DELAYS_MS = [1_000, 2_000] as const
 
 export interface DirectChatStore {
   directChatsByStableUserId: Map<string, string>
@@ -83,37 +81,6 @@ function upsertDirectChat(
 export function isReconnectableSendError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err)
   return message.includes('WebSocket is not connected') || message.startsWith('WebSocket closed:')
-}
-
-/**
- * Wraps `client.sendRequest(...)` with bounded retry on reconnectable transport
- * errors. WsClient.sendRequest already handles auth barrier, 203 retry, and
- * DNS fail-fast at the transport layer; this wrapper adds caller-level retry
- * across full reconnect cycles, which file-upload paths rely on (uploadFile,
- * sendFile, createP2PChat). Prefer `client.sendRequest` directly for plain
- * one-shot requests where transport-level recovery is sufficient.
- */
-export async function sendRequestWithReconnectRetry(
-  client: WsClient,
-  method: string,
-  payload: Record<string, unknown>,
-  logger: Logger,
-): Promise<TrueConfResponse> {
-  let lastError: unknown = null
-  for (let attempt = 0; attempt <= DISCONNECTED_RETRY_DELAYS_MS.length; attempt++) {
-    if (attempt > 0) {
-      const delayMs = DISCONNECTED_RETRY_DELAYS_MS[attempt - 1]
-      logger.warn(`[trueconf] ${method} retrying after reconnect wait (${delayMs}ms)`)
-      await new Promise<void>((r) => setTimeout(r, delayMs))
-    }
-    try {
-      return await client.sendRequest(method, payload)
-    } catch (err) {
-      lastError = err
-      if (!isReconnectableSendError(err) || attempt === DISCONNECTED_RETRY_DELAYS_MS.length) throw err
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError))
 }
 
 export function responseErrorCode(response: TrueConfResponse): number | undefined {
@@ -441,7 +408,6 @@ export interface OutboundAttachmentCtx {
 }
 
 export interface OutboundAttachmentDeps {
-  wsClient: WsClient
   outboundQueue: OutboundQueue
   resolved: { serverUrl: string; useTls: boolean; port?: number }
   store: DirectChatStore
@@ -766,7 +732,7 @@ export interface OutboundAttachmentToChatCtx {
 
 export type OutboundAttachmentToChatDeps = Pick<
   OutboundAttachmentDeps,
-  'wsClient' | 'outboundQueue' | 'resolved' | 'channelConfig' | 'logger' | 'dispatcher' | 'limits' | 'sendQueue'
+  'outboundQueue' | 'resolved' | 'channelConfig' | 'logger' | 'dispatcher' | 'limits' | 'sendQueue'
 >
 
 // Parallel to sendTextToChat: attachment send to an authoritative chatId

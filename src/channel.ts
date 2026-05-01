@@ -435,7 +435,6 @@ export const channelPlugin = {
       const botUserIdMedia = entry.wsClient.botUserId
       const normalizedTo = (ctx.to ?? '').replace(/\/.*$/, '').trim()
       const commonDeps = {
-        wsClient: entry.wsClient,
         outboundQueue: entry.outboundQueue,
         resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
         channelConfig: store.channelConfig,
@@ -498,7 +497,6 @@ export const channelPlugin = {
           accountId,
         },
         {
-          wsClient: entry.wsClient,
           outboundQueue: entry.outboundQueue,
           resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
           store,
@@ -642,7 +640,6 @@ export const channelPlugin = {
       // `store` on top because handleOutboundAttachment needs the direct-chat
       // cache; handleOutboundAttachmentToChat does not.
       const transport = {
-        wsClient,
         outboundQueue,
         resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
         channelConfig,

@@ -173,10 +173,6 @@ describe('integration: python-sdk-alignment smoke', () => {
     const fakeStore = {
       directChatsByStableUserId: new Map<string, string>(),
     }
-    const stubWsClient = {
-      sendRequest: vi.fn().mockResolvedValue({ type: 2, id: 1, payload: { errorCode: 0, messageId: 'm-fail' } }),
-      botUserId: 'bot@srv',
-    } as unknown as Parameters<typeof handleOutboundAttachment>[1]['wsClient']
     const pipelineLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
 
     const result = await handleOutboundAttachment(
@@ -188,14 +184,13 @@ describe('integration: python-sdk-alignment smoke', () => {
         accountId: 'default',
       },
       {
-        wsClient: stubWsClient,
         resolved: { serverUrl: server.serverUrl, useTls: false, port: server.port },
         store: fakeStore as never,
         channelConfig: { maxFileSize: 64 * 1024 * 1024 } as never,
         logger: pipelineLogger,
         limits,
         sendQueue,
-      },
+      } as never,
     )
 
     // Pipeline rejected the upload (which is the user-observable behavior).

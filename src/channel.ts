@@ -370,7 +370,7 @@ export const channelPlugin = {
           logger.info(
             `[trueconf] sendText: target=${to} is bot identity; redirecting to last inbound group ${route.chatId}`,
           )
-          const groupResult = await sendTextToChat(entry.wsClient, route.chatId, cleanText, logger, entry.sendQueue)
+          const groupResult = await sendTextToChat(entry.wsClient, entry.outboundQueue, route.chatId, cleanText, logger, entry.sendQueue)
           if (groupResult.ok && groupResult.messageId) {
             rememberBotMessage(store.recentBotMsgIdsByChat, groupResult.chatId, groupResult.messageId)
           }
@@ -384,6 +384,7 @@ export const channelPlugin = {
           directChatStore: store,
           accountId,
           sendQueue: entry.sendQueue,
+          outboundQueue: entry.outboundQueue,
         })
         if (directResult.ok && directResult.messageId) {
           rememberBotMessage(store.recentBotMsgIdsByChat, directResult.chatId, directResult.messageId)
@@ -396,6 +397,7 @@ export const channelPlugin = {
         directChatStore: store,
         accountId,
         sendQueue: entry.sendQueue,
+        outboundQueue: entry.outboundQueue,
       })
       if (result.ok && result.messageId) {
         rememberBotMessage(store.recentBotMsgIdsByChat, result.chatId, result.messageId)
@@ -661,12 +663,13 @@ export const channelPlugin = {
           text: reply.text,
           sendText: async (chunk) => {
             const result = inbound.isGroup
-              ? await sendTextToChat(wsClient, inbound.chatId, chunk, logger, sendQueue)
+              ? await sendTextToChat(wsClient, outboundQueue, inbound.chatId, chunk, logger, sendQueue)
               : await sendText(wsClient, inbound.peerId, chunk, logger, {
                   fallbackUserId: inbound.peerId,
                   directChatStore: store,
                   accountId,
                   sendQueue,
+                  outboundQueue,
                 })
             if (!result.ok) {
               logger.warn(`[trueconf] deliver: text chunk send failed (peer=${inbound.peerId}, isGroup=${inbound.isGroup})`)
@@ -734,6 +737,7 @@ export const channelPlugin = {
             channelConfig: store.channelConfig!,
             logger,
             sendQueue,
+            outboundQueue,
             dispatcher,
           })
           if (!prep.ok) return

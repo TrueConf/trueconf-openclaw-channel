@@ -202,9 +202,11 @@ export function sanitizeMarkdownPreservingParagraphs(text: string): string {
 // and the loop halts on the first non-zero errorCode, returning the responses
 // gathered so far. The whole chunked send runs inside a single
 // `sendQueue.enqueue` so concurrent replies to the same chatId don't
-// interleave their chunks on the wire.
+// interleave their chunks on the wire. Routes through `outboundQueue.submit`
+// so a reconnect-class transport failure parks the chunk until auth
+// re-establishes (at-least-once delivery).
 async function sendMessageRequest(
-  client: WsClient,
+  outboundQueue: OutboundQueue,
   chatId: string,
   text: string,
   _logger: Logger,
@@ -214,7 +216,7 @@ async function sendMessageRequest(
     const chunks = splitTextForSending(text)
     const responses: TrueConfResponse[] = []
     for (const chunk of chunks) {
-      const resp = await client.sendRequest('sendMessage', {
+      const resp = await outboundQueue.submit('sendMessage', {
         chatId,
         content: { text: chunk, parseMode: 'markdown' },
       })
@@ -246,6 +248,7 @@ type SendTextOptions = {
   directChatStore: DirectChatStore
   accountId?: string
   sendQueue: PerChatSendQueue
+  outboundQueue: OutboundQueue
 }
 
 export type SendTextResult =
@@ -263,7 +266,8 @@ function lastResponse(responses: TrueConfResponse[]): TrueConfResponse | undefin
 // Direct chatId send: no P2P resolution, no 304-repair. Used for groups where
 // the chatId is authoritative and we can't recreate the chat.
 export async function sendTextToChat(
-  client: WsClient,
+  _client: WsClient,
+  outboundQueue: OutboundQueue,
   chatId: string,
   text: string,
   logger: Logger,
@@ -272,7 +276,7 @@ export async function sendTextToChat(
   try {
     const cleanText = sanitizeMarkdownPreservingParagraphs(text)
     const safeChatId = normalizeChatId(chatId)
-    const responses = await sendMessageRequest(client, safeChatId, cleanText, logger, sendQueue)
+    const responses = await sendMessageRequest(outboundQueue, safeChatId, cleanText, logger, sendQueue)
     const last = lastResponse(responses)
     if (!last) {
       logger.error(`[trueconf] sendTextToChat: no responses returned (chatId=${safeChatId})`)
@@ -311,7 +315,7 @@ export async function sendText(
       accountId,
     })
     let activeChatId = resolved.chatId
-    let responses = await sendMessageRequest(client, activeChatId, cleanText, logger, options.sendQueue)
+    let responses = await sendMessageRequest(options.outboundQueue, activeChatId, cleanText, logger, options.sendQueue)
     let last = lastResponse(responses)
     let errorCode = last ? responseErrorCode(last) : undefined
     let repaired = false
@@ -322,7 +326,7 @@ export async function sendText(
       )
       repaired = true
       activeChatId = await recreateChat(client, options.directChatStore, accountId, resolved.stableUserId, logger)
-      responses = await sendMessageRequest(client, activeChatId, cleanText, logger, options.sendQueue)
+      responses = await sendMessageRequest(options.outboundQueue, activeChatId, cleanText, logger, options.sendQueue)
       last = lastResponse(responses)
       errorCode = last ? responseErrorCode(last) : undefined
     }
@@ -606,7 +610,7 @@ export const __test__buildSendFilePayload = buildSendFilePayload
 // it. Returns either a mutated `upload` (caption stripped) or a structured
 // failure routed back through the caller's `fail()` helper.
 async function maybeSendCaptionSeparately(
-  client: WsClient,
+  outboundQueue: OutboundQueue,
   chatId: string,
   upload: PreparedUpload,
   logger: Logger,
@@ -621,7 +625,7 @@ async function maybeSendCaptionSeparately(
   logger.warn(
     `[trueconf] caption too long: ${captionCheck.codePoints} > ${captionCheck.limit}; sending as separate message`,
   )
-  const captionResults = await sendMessageRequest(client, chatId, captionText, logger, sendQueue)
+  const captionResults = await sendMessageRequest(outboundQueue, chatId, captionText, logger, sendQueue)
   const lastResult = captionResults[captionResults.length - 1]
   const captionErr = lastResult ? responseErrorCode(lastResult) : -1
   if (captionErr !== undefined && captionErr !== 0) {
@@ -641,7 +645,7 @@ export async function handleOutboundAttachment(
   ctx: OutboundAttachmentCtx,
   deps: OutboundAttachmentDeps,
 ): Promise<{ ok: true; messageId: string; chatId: string } | { ok: false; reason: OutboundAttachmentReason }> {
-  const { wsClient, logger, store, sendQueue } = deps
+  const { wsClient, outboundQueue, logger, store, sendQueue } = deps
 
   let stableUserId: string
   try {
@@ -662,6 +666,7 @@ export async function handleOutboundAttachment(
       directChatStore: store,
       accountId,
       sendQueue,
+      outboundQueue,
     })
     return { ok: false, reason }
   }
@@ -685,7 +690,7 @@ export async function handleOutboundAttachment(
       return { ok: false, reason: isReconnect ? 'reconnect' : 'sendFailed' }
     }
 
-    const captionGate = await maybeSendCaptionSeparately(wsClient, activeChatId, upload, logger, sendQueue)
+    const captionGate = await maybeSendCaptionSeparately(outboundQueue, activeChatId, upload, logger, sendQueue)
     if (!captionGate.ok) return fail(captionGate.failure.reason, captionGate.failure.userFacingText)
     upload = captionGate.upload
     const captionSentSeparately = captionGate.captionSentSeparately
@@ -763,7 +768,7 @@ export interface OutboundAttachmentToChatCtx {
 
 export type OutboundAttachmentToChatDeps = Pick<
   OutboundAttachmentDeps,
-  'wsClient' | 'resolved' | 'channelConfig' | 'logger' | 'dispatcher' | 'limits' | 'sendQueue'
+  'wsClient' | 'outboundQueue' | 'resolved' | 'channelConfig' | 'logger' | 'dispatcher' | 'limits' | 'sendQueue'
 >
 
 // Parallel to sendTextToChat: attachment send to an authoritative chatId
@@ -775,7 +780,7 @@ export async function handleOutboundAttachmentToChat(
   ctx: OutboundAttachmentToChatCtx,
   deps: OutboundAttachmentToChatDeps,
 ): Promise<{ ok: true; messageId: string; chatId: string } | { ok: false; reason: OutboundAttachmentReason }> {
-  const { wsClient, logger, sendQueue } = deps
+  const { wsClient, outboundQueue, logger, sendQueue } = deps
 
   let safeChatId: string
   try {
@@ -788,7 +793,7 @@ export async function handleOutboundAttachmentToChat(
   }
 
   const fail = async (reason: OutboundAttachmentReason, text: string): Promise<{ ok: false; reason: OutboundAttachmentReason }> => {
-    await sendTextToChat(wsClient, safeChatId, text, logger, sendQueue)
+    await sendTextToChat(wsClient, outboundQueue, safeChatId, text, logger, sendQueue)
     return { ok: false, reason }
   }
 
@@ -797,7 +802,7 @@ export async function handleOutboundAttachmentToChat(
     if (!prepared.ok) return fail(prepared.failure.reason, prepared.failure.userFacingText)
     let upload = prepared.upload
 
-    const captionGate = await maybeSendCaptionSeparately(wsClient, safeChatId, upload, logger, sendQueue)
+    const captionGate = await maybeSendCaptionSeparately(outboundQueue, safeChatId, upload, logger, sendQueue)
     if (!captionGate.ok) return fail(captionGate.failure.reason, captionGate.failure.userFacingText)
     upload = captionGate.upload
     const captionSentSeparately = captionGate.captionSentSeparately

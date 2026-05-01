@@ -24,6 +24,7 @@ import { WsClient, hostPort } from './ws-client'
 import { sendText, sendTextToChat, isReconnectableSendError } from './outbound'
 import { resolveAccount } from './config'
 import { PerChatSendQueue } from './send-queue'
+import type { OutboundQueue } from './outbound-queue'
 
 const DEFAULT_MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 export const MAX_FILE_SIZE_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
@@ -647,12 +648,16 @@ export async function prepareInboundAttachment(params: {
   // chunks per chatId. Owning the queue at the account level keeps replies
   // from one account from blocking on another's outbound burst.
   sendQueue: PerChatSendQueue
+  // Per-account at-least-once outbound queue. sendText/sendTextToChat in the
+  // error-reply path route `sendMessage` through it so a reconnect-class
+  // failure parks the chunk until auth re-establishes.
+  outboundQueue: OutboundQueue
   // Per-account undici dispatcher built from the operator's CA / tlsVerify.
   // OAuth and WS already use it; we thread it into the inbound download path
   // so caPath / tlsVerify:false deployments can also fetch inbound media.
   dispatcher?: Dispatcher
 }): Promise<InboundAttachmentReady | { ok: false }> {
-  const { inboundMsg, wsClient, accountId, store, channelConfig, logger, sendQueue, dispatcher } = params
+  const { inboundMsg, wsClient, accountId, store, channelConfig, logger, sendQueue, outboundQueue, dispatcher } = params
   const attachment = inboundMsg.attachmentContent
   if (!attachment) {
     logger.error('[trueconf] prepareInboundAttachment called without attachmentContent')
@@ -665,12 +670,13 @@ export async function prepareInboundAttachment(params: {
   const replyOn = async (text: string) => {
     try {
       const result = inboundMsg.isGroup
-        ? await sendTextToChat(wsClient, inboundMsg.chatId, text, logger, sendQueue)
+        ? await sendTextToChat(wsClient, outboundQueue, inboundMsg.chatId, text, logger, sendQueue)
         : await sendText(wsClient, inboundMsg.peerId, text, logger, {
             fallbackUserId: inboundMsg.peerId,
             directChatStore: store,
             accountId,
             sendQueue,
+            outboundQueue,
           })
       if (!result.ok) logger.warn('[trueconf] replyErrorText: send returned ok=false')
     } catch (err) {

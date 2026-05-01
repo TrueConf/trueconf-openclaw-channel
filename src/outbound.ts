@@ -13,6 +13,7 @@ import {
   type FileUploadLimits,
 } from './limits'
 import type { PerChatSendQueue } from './send-queue'
+import type { OutboundQueue } from './outbound-queue'
 import { basename } from 'node:path'
 
 const PREVIEW_MAX_SIDE = 512
@@ -439,6 +440,7 @@ export interface OutboundAttachmentCtx {
 
 export interface OutboundAttachmentDeps {
   wsClient: WsClient
+  outboundQueue: OutboundQueue
   resolved: { serverUrl: string; useTls: boolean; port?: number }
   store: DirectChatStore
   channelConfig: TrueConfChannelConfig

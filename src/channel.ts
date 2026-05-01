@@ -37,6 +37,7 @@ import { trueconfSetupWizard } from './channel-setup'
 import { trueconfSetupAdapter } from './setup-shared'
 import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './always-respond'
 import { WsClient, ConnectionLifecycle } from './ws-client'
+import { OutboundQueue } from './outbound-queue'
 import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage, InboundExtraContext, InboundMediaContext } from './types'
 import { widenExtraContext } from './types'
 
@@ -86,6 +87,7 @@ export interface AccountEntry {
   //    queues — otherwise unrelated outbounds would block each other.
   limits: FileUploadLimits
   sendQueue: PerChatSendQueue
+  outboundQueue: OutboundQueue
 }
 
 // Tears down a single account entry: stops its lifecycle and closes the
@@ -432,6 +434,7 @@ export const channelPlugin = {
       const normalizedTo = (ctx.to ?? '').replace(/\/.*$/, '').trim()
       const commonDeps = {
         wsClient: entry.wsClient,
+        outboundQueue: entry.outboundQueue,
         resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
         channelConfig: store.channelConfig,
         logger,
@@ -494,6 +497,7 @@ export const channelPlugin = {
         },
         {
           wsClient: entry.wsClient,
+          outboundQueue: entry.outboundQueue,
           resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
           store,
           channelConfig: store.channelConfig,
@@ -572,6 +576,7 @@ export const channelPlugin = {
         forceReconnect: makeForceReconnectAdapter(() => lifecycleRef),
       })
       wsClient.logger = logger
+      const outboundQueue = new OutboundQueue(wsClient, logger)
 
       const wireAdapter: WireAdapter = {
         get botUserId() { return wsClient.botUserId },
@@ -625,6 +630,7 @@ export const channelPlugin = {
           onConnectionClosed: () => clearAccountChats(accountId),
           onConnected: () => setStatus({ accountId, running: true, connected: true, lastStartAt: Date.now() }),
           onDisconnected: () => setStatus({ accountId, connected: false }),
+          onTerminalFailure: (err) => outboundQueue.failAll(err),
           dispatcher,
         },
       )
@@ -635,6 +641,7 @@ export const channelPlugin = {
       // cache; handleOutboundAttachmentToChat does not.
       const transport = {
         wsClient,
+        outboundQueue,
         resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
         channelConfig,
         logger,
@@ -872,6 +879,7 @@ export const channelPlugin = {
         unsubscribers: [unsubscribePush, unsubscribeAuth, unsubscribeSdkPush],
         limits,
         sendQueue,
+        outboundQueue,
       })
 
       try {

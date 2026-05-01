@@ -958,6 +958,8 @@ export function __resetForTesting(): void {
   pluginRuntimeStore.clearRuntime()
 }
 
+// Test-only handle. Returns the live store.accounts Map by reference;
+// do NOT mutate from production code paths.
 export function __getAccountsForTesting(): Map<string, AccountEntry> {
   return store.accounts
 }

@@ -445,8 +445,8 @@ describe('WsClient — message handling on captured ws', () => {
 
     client.close()
 
-    // Allow the WS close handshake + close event to propagate to the listener
-    // registered inside connect().
+    // ws emits 'close' on the next event-loop tick after the TCP FIN handshake;
+    // 50 ms is generous slack for CI. Do NOT shrink to 0 — close is async.
     await new Promise<void>((r) => setTimeout(r, 50))
 
     // Contract under test: close() must NOT suppress its own close event.
@@ -465,6 +465,8 @@ describe('WsClient — message handling on captured ws', () => {
 
     client.terminate()
 
+    // ws emits 'close' on the next event-loop tick after the TCP FIN handshake;
+    // 50 ms is generous slack for CI. Do NOT shrink to 0 — close is async.
     await new Promise<void>((r) => setTimeout(r, 50))
 
     // Contract under test: terminate() (used by escalateDeadConnection on

@@ -651,14 +651,19 @@ export class ConnectionLifecycle {
             // set in types.ts) so consumers branching on `err instanceof
             // NetworkError` can distinguish a terminal DNS failure from a
             // retryable one without spinning further.
-            this.wsClient.markAuthFailed(
-              new NetworkError(
-                `dns_unreachable: gave up after ${this.dnsRetryCount} retries`,
-                'websocket',
-                undefined,
-                DNS_TERMINAL_CODE,
-              ),
+            const terminal = new NetworkError(
+              `dns_unreachable: gave up after ${this.dnsRetryCount} retries`,
+              'websocket',
+              undefined,
+              DNS_TERMINAL_CODE,
             )
+            this.wsClient.markAuthFailed(terminal)
+            try { this.options?.onTerminalFailure?.(terminal) }
+            catch (err) {
+              this.logger.warn(
+                `[trueconf] onTerminalFailure callback failed: ${err instanceof Error ? err.message : String(err)}`,
+              )
+            }
             this.wsClient.close()
             return
           }

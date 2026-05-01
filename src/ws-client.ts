@@ -431,7 +431,6 @@ export class WsClient {
 
   close(): void {
     this.ws?.close(1000, 'Client closing')
-    this.ws = null
   }
 
   ping(): void {
@@ -439,7 +438,7 @@ export class WsClient {
   }
 
   terminate(): void {
-    if (this.ws) { this.ws.terminate(); this.ws = null }
+    this.ws?.terminate()
   }
 }
 

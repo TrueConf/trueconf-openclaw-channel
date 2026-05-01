@@ -522,7 +522,14 @@ export class ConnectionLifecycle {
     // Reject the auth barrier with an explicit reason so any pending
     // waitAuthenticated() callers fail fast on shutdown instead of waiting
     // out their per-call timeout.
-    this.wsClient.markAuthFailed(new Error('lifecycle shutting down'))
+    const terminal = new Error('lifecycle shutting down')
+    this.wsClient.markAuthFailed(terminal)
+    try { this.options?.onTerminalFailure?.(terminal) }
+    catch (err) {
+      this.logger.warn(
+        `[trueconf] onTerminalFailure callback failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
     this.stopTimers()
     this.cancelReconnect()
     this.wsClient.close()

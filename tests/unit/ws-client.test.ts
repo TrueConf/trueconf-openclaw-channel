@@ -874,3 +874,30 @@ describe('ConnectionLifecycle integration — server-side TCP-terminate triggers
   }, 20_000)
 
 })
+
+describe('LifecycleOptions.onTerminalFailure', () => {
+  const baseConfig = {
+    serverUrl: 'srv.example',
+    username: 'bot',
+    password: 'p',
+    useTls: false,
+    port: 4309,
+  } satisfies TrueConfAccountConfig
+
+  it('fires onTerminalFailure when shutdown() is called', () => {
+    const ws = new WsClient()
+    const onTerminalFailure = vi.fn()
+    const lifecycle = new ConnectionLifecycle(ws, baseConfig, silentLogger, {
+      onTerminalFailure,
+    })
+
+    // Stub close so we don't try to interact with a real socket.
+    vi.spyOn(ws, 'close').mockImplementation(() => {})
+
+    lifecycle.shutdown()
+
+    expect(onTerminalFailure).toHaveBeenCalledTimes(1)
+    expect(onTerminalFailure.mock.calls[0][0]).toBeInstanceOf(Error)
+    expect(onTerminalFailure.mock.calls[0][0].message).toBe('lifecycle shutting down')
+  })
+})

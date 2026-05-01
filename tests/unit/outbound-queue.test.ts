@@ -59,4 +59,22 @@ describe('OutboundQueue', () => {
     expect(fake.sendRequest).toHaveBeenCalledTimes(1)
     void promise
   })
+
+  it.each([
+    ['"WebSocket closed: 1006"', new Error('WebSocket closed: 1006 ')],
+    ['"auth barrier reset: forced reconnect: 203"', new Error('auth barrier reset: forced reconnect: 203_credentials_expired')],
+    ['"waitAuthenticated timed out after 30000ms"', new Error('waitAuthenticated timed out after 30000ms')],
+    ['"New connection started"', new Error('New connection started')],
+  ])('parks on %s', async (_label, err) => {
+    const fake = makeFakeWsClient()
+    fake.sendRequest.mockRejectedValueOnce(err)
+
+    const queue = new OutboundQueue(fake as never, silentLogger)
+    let settled = false
+    const promise = queue.submit('sendMessage', { chatId: 'c1' }).finally(() => { settled = true })
+    await new Promise((r) => setTimeout(r, 10))
+
+    expect(settled).toBe(false)
+    void promise
+  })
 })

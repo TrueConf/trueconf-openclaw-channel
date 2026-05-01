@@ -446,6 +446,11 @@ interface LifecycleOptions {
   onConnectionClosed?: (code: number, reason: string) => void
   onConnected?: () => void
   onDisconnected?: () => void
+  // Fired when the lifecycle gives up on reconnection (DNS unreachable after
+  // DNS_MAX_RETRIES, or explicit shutdown). Out-of-band signal for
+  // delivery-layer cleanup (OutboundQueue.failAll). Does NOT fire on transient
+  // close events — those go through onConnectionClosed and reconnect.
+  onTerminalFailure?: (err: Error) => void
 }
 
 // Liveness is governed by WebSocket protocol ping/pong (opcode 0x9/0xA) on a

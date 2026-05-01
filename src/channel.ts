@@ -379,7 +379,7 @@ export const channelPlugin = {
         logger.info(
           `[trueconf] sendText: target=${to} is bot identity; redirecting to last inbound peer ${route.userId}`,
         )
-        const directResult = await sendText(entry.wsClient, route.userId, cleanText, logger, {
+        const directResult = await sendText(route.userId, cleanText, logger, {
           fallbackUserId: route.userId,
           directChatStore: store,
           accountId,
@@ -392,7 +392,7 @@ export const channelPlugin = {
         return { channel: 'trueconf', messageId: directResult.ok ? (directResult.messageId ?? '') : '' }
       }
 
-      const result = await sendText(entry.wsClient, to, cleanText, logger, {
+      const result = await sendText(to, cleanText, logger, {
         fallbackUserId: to,
         directChatStore: store,
         accountId,
@@ -664,7 +664,7 @@ export const channelPlugin = {
           sendText: async (chunk) => {
             const result = inbound.isGroup
               ? await sendTextToChat(outboundQueue, inbound.chatId, chunk, logger, sendQueue)
-              : await sendText(wsClient, inbound.peerId, chunk, logger, {
+              : await sendText(inbound.peerId, chunk, logger, {
                   fallbackUserId: inbound.peerId,
                   directChatStore: store,
                   accountId,

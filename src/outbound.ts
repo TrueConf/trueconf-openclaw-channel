@@ -121,8 +121,8 @@ export function responseErrorCode(response: TrueConfResponse): number | undefine
   return typeof code === 'number' ? code : undefined
 }
 
-async function createP2PChat(client: WsClient, userId: string, logger: Logger): Promise<string> {
-  const response = await sendRequestWithReconnectRetry(client, 'createP2PChat', { userId }, logger)
+async function createP2PChat(outboundQueue: OutboundQueue, userId: string, _logger: Logger): Promise<string> {
+  const response = await outboundQueue.submit('createP2PChat', { userId })
   const errorCode = responseErrorCode(response)
   if (errorCode !== undefined && errorCode !== 0) {
     const desc = response.payload?.errorDescription ?? ''
@@ -134,7 +134,7 @@ async function createP2PChat(client: WsClient, userId: string, logger: Logger): 
 }
 
 async function resolveDirectChat(
-  client: WsClient,
+  outboundQueue: OutboundQueue,
   stableUserIdInput: string,
   logger: Logger,
   options: { directChatStore: DirectChatStore; accountId: string },
@@ -144,7 +144,7 @@ async function resolveDirectChat(
     directKey(options.accountId, stableUserId),
   )
   if (existing) return { stableUserId, chatId: existing }
-  const chatId = normalizeChatId(await createP2PChat(client, stableUserId, logger))
+  const chatId = normalizeChatId(await createP2PChat(outboundQueue, stableUserId, logger))
   upsertDirectChat(options.directChatStore, options.accountId, stableUserId, chatId)
   return { stableUserId, chatId }
 }
@@ -231,14 +231,14 @@ async function sendMessageRequest(
 export const __test__sendMessageRequest = sendMessageRequest
 
 async function recreateChat(
-  client: WsClient,
+  outboundQueue: OutboundQueue,
   store: DirectChatStore,
   accountId: string,
   stableUserId: string,
   logger: Logger,
 ): Promise<string> {
   store.directChatsByStableUserId.delete(directKey(accountId, stableUserId))
-  const chatId = normalizeChatId(await createP2PChat(client, stableUserId, logger))
+  const chatId = normalizeChatId(await createP2PChat(outboundQueue, stableUserId, logger))
   upsertDirectChat(store, accountId, stableUserId, chatId)
   return chatId
 }
@@ -297,7 +297,6 @@ export async function sendTextToChat(
 // Resolves stableUserId → chatId via registry, falls back to createP2PChat on
 // miss, and performs exactly one 304-repair cycle on a stale entry.
 export async function sendText(
-  client: WsClient,
   userId: string,
   text: string,
   logger: Logger,
@@ -309,7 +308,7 @@ export async function sendText(
     if (!options.accountId) {
       logger.warn('[trueconf] sendText: accountId missing, falling back to "default"')
     }
-    const resolved = await resolveDirectChat(client, options.fallbackUserId ?? userId, logger, {
+    const resolved = await resolveDirectChat(options.outboundQueue, options.fallbackUserId ?? userId, logger, {
       directChatStore: options.directChatStore,
       accountId,
     })
@@ -324,7 +323,7 @@ export async function sendText(
         `[trueconf] sendText chat ${activeChatId} not found for ${resolved.stableUserId}; recreating P2P chat and retrying once`,
       )
       repaired = true
-      activeChatId = await recreateChat(client, options.directChatStore, accountId, resolved.stableUserId, logger)
+      activeChatId = await recreateChat(options.outboundQueue, options.directChatStore, accountId, resolved.stableUserId, logger)
       responses = await sendMessageRequest(options.outboundQueue, activeChatId, cleanText, logger, options.sendQueue)
       last = lastResponse(responses)
       errorCode = last ? responseErrorCode(last) : undefined
@@ -644,7 +643,7 @@ export async function handleOutboundAttachment(
   ctx: OutboundAttachmentCtx,
   deps: OutboundAttachmentDeps,
 ): Promise<{ ok: true; messageId: string; chatId: string } | { ok: false; reason: OutboundAttachmentReason }> {
-  const { wsClient, outboundQueue, logger, store, sendQueue } = deps
+  const { outboundQueue, logger, store, sendQueue } = deps
 
   let stableUserId: string
   try {
@@ -660,7 +659,7 @@ export async function handleOutboundAttachment(
   const accountId = normalizeAccountId(ctx.accountId ?? 'default')
 
   const fail = async (reason: OutboundAttachmentReason, text: string): Promise<{ ok: false; reason: OutboundAttachmentReason }> => {
-    await sendText(wsClient, stableUserId, text, logger, {
+    await sendText(stableUserId, text, logger, {
       fallbackUserId: stableUserId,
       directChatStore: store,
       accountId,
@@ -677,7 +676,7 @@ export async function handleOutboundAttachment(
 
     let activeChatId: string
     try {
-      activeChatId = (await resolveDirectChat(wsClient, stableUserId, logger, {
+      activeChatId = (await resolveDirectChat(outboundQueue, stableUserId, logger, {
         directChatStore: store,
         accountId,
       })).chatId
@@ -715,7 +714,7 @@ export async function handleOutboundAttachment(
     if (sendErrorCode === ErrorCode.CHAT_NOT_FOUND) {
       logger.warn(`[trueconf] sendMedia chat ${activeChatId} not found for ${stableUserId}; recreating P2P chat and retrying once`)
       try {
-        activeChatId = await recreateChat(wsClient, store, accountId, stableUserId, logger)
+        activeChatId = await recreateChat(outboundQueue, store, accountId, stableUserId, logger)
         sendResp = await outboundQueue.submit('sendFile', buildSendFilePayload(activeChatId, upload))
         sendErrorCode = responseErrorCode(sendResp)
       } catch (err) {

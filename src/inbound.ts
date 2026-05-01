@@ -671,7 +671,7 @@ export async function prepareInboundAttachment(params: {
     try {
       const result = inboundMsg.isGroup
         ? await sendTextToChat(outboundQueue, inboundMsg.chatId, text, logger, sendQueue)
-        : await sendText(wsClient, inboundMsg.peerId, text, logger, {
+        : await sendText(inboundMsg.peerId, text, logger, {
             fallbackUserId: inboundMsg.peerId,
             directChatStore: store,
             accountId,

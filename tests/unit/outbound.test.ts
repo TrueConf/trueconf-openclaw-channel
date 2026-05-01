@@ -460,7 +460,6 @@ describe('sendText/sendTextToChat plumb queue', () => {
     const outboundQueue = buildOutboundQueue(client)
     const queue = new PerChatSendQueue()
     const result = await sendText(
-      client as never,
       'alice@srv',
       'simple text',
       silentLogger,

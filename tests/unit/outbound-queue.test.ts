@@ -202,4 +202,18 @@ describe('OutboundQueue', () => {
 
     await expect(p1).rejects.toThrow('first')
   })
+
+  it('response with errorCode != 0 still resolves (queue does not retry on application errors)', async () => {
+    const fake = makeFakeWsClient()
+    const erroredResponse: TrueConfResponse = {
+      type: 2, id: 1, payload: { errorCode: 304, errorDescription: 'CHAT_NOT_FOUND' },
+    }
+    fake.sendRequest.mockResolvedValueOnce(erroredResponse)
+
+    const queue = new OutboundQueue(fake as never, silentLogger)
+    const result = await queue.submit('sendMessage', {})
+
+    expect(result).toEqual(erroredResponse)
+    expect(fake.sendRequest).toHaveBeenCalledTimes(1)
+  })
 })

@@ -188,4 +188,18 @@ describe('OutboundQueue', () => {
     await expect(queue.submit('m1', {})).rejects.toThrow('terminal')
     expect(fake.sendRequest).not.toHaveBeenCalled()
   })
+
+  it('failAll is idempotent — second call is no-op', async () => {
+    const fake = makeFakeWsClient()
+    fake.sendRequest.mockRejectedValue(new Error('WebSocket is not connected'))
+
+    const queue = new OutboundQueue(fake as never, silentLogger)
+    const p1 = queue.submit('m1', {})
+    await new Promise((r) => setTimeout(r, 10))
+
+    queue.failAll(new Error('first'))
+    queue.failAll(new Error('second'))
+
+    await expect(p1).rejects.toThrow('first')
+  })
 })

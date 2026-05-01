@@ -74,6 +74,17 @@ export class OutboundQueue {
   }
 
   private async drain(): Promise<void> {
-    // No-op for now (no parking yet)
+    if (this.draining || this.terminalError) return
+    this.draining = true
+    try {
+      const items = Array.from(this.pending.values())
+      for (const item of items) {
+        if (this.terminalError) break
+        if (!this.pending.has(item.id)) continue
+        await this.attempt(item)
+      }
+    } finally {
+      this.draining = false
+    }
   }
 }

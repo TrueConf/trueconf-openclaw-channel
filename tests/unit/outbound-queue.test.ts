@@ -77,4 +77,23 @@ describe('OutboundQueue', () => {
     expect(settled).toBe(false)
     void promise
   })
+
+  it('drains parked items on auth event', async () => {
+    const fake = makeFakeWsClient()
+    const response: TrueConfResponse = { type: 2, id: 1, payload: { errorCode: 0 } }
+    fake.sendRequest
+      .mockRejectedValueOnce(new Error('WebSocket is not connected'))
+      .mockResolvedValueOnce(response)
+
+    const queue = new OutboundQueue(fake as never, silentLogger)
+    const promise = queue.submit('sendMessage', { chatId: 'c1' })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(fake.sendRequest).toHaveBeenCalledTimes(1)
+
+    fake.fireAuth()
+
+    const result = await promise
+    expect(result).toEqual(response)
+    expect(fake.sendRequest).toHaveBeenCalledTimes(2)
+  })
 })

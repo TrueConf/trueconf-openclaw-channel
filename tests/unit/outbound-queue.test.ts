@@ -44,4 +44,19 @@ describe('OutboundQueue', () => {
     expect(fake.sendRequest).toHaveBeenCalledTimes(1)
     expect(fake.sendRequest).toHaveBeenCalledWith('sendMessage', { chatId: 'c1', text: 'hi' })
   })
+
+  it('parks on "WebSocket is not connected" — does not resolve or reject yet', async () => {
+    const fake = makeFakeWsClient()
+    fake.sendRequest.mockRejectedValueOnce(new Error('WebSocket is not connected'))
+
+    const queue = new OutboundQueue(fake as never, silentLogger)
+    let settled = false
+    const promise = queue.submit('sendMessage', { chatId: 'c1' }).finally(() => { settled = true })
+
+    await new Promise((r) => setTimeout(r, 10))
+
+    expect(settled).toBe(false)
+    expect(fake.sendRequest).toHaveBeenCalledTimes(1)
+    void promise
+  })
 })

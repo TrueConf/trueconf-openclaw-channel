@@ -51,10 +51,20 @@ export class OutboundQueue {
       const response = await this.client.sendRequest(item.method, item.payload)
       if (this.pending.delete(item.id)) item.resolve(response)
     } catch (err) {
+      if (this.isReconnectable(err)) {
+        // Park: keep item in `pending`, do not resolve or reject. Drain will
+        // re-attempt when the next auth event fires.
+        return
+      }
       if (this.pending.delete(item.id)) {
         item.reject(err instanceof Error ? err : new Error(String(err)))
       }
     }
+  }
+
+  private isReconnectable(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err)
+    return message.includes('WebSocket is not connected')
   }
 
   private async drain(): Promise<void> {

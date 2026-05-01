@@ -5,7 +5,7 @@ vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
 }))
 
 import { dispatchInboundDirectDmWithRuntime } from 'openclaw/plugin-sdk/channel-inbound'
-import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
+import { __getAccountsForTesting, __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
 import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
 
 const dispatch = vi.mocked(dispatchInboundDirectDmWithRuntime)
@@ -86,4 +86,64 @@ describe('integration: reconnect after server-side terminate', () => {
     expect(arg.rawBody).toBe('after reconnect')
     expect(arg.senderId).toBe('bob@srv')
   })
+})
+
+describe('integration: reconnect after client-side terminate', () => {
+  let server: FakeServer
+  let harness: Harness | null = null
+
+  beforeEach(async () => {
+    __resetForTesting()
+    dispatch.mockClear()
+    server = await startFakeServer()
+  })
+
+  afterEach(async () => {
+    if (harness) {
+      harness.abort()
+      await Promise.race([harness.startPromise.catch(() => {}), new Promise((r) => setTimeout(r, 500))])
+      harness = null
+    }
+    await server.close()
+  })
+
+  it('reauthenticates and keeps dispatching inbound after a CLIENT-side terminate', async () => {
+    harness = await bootPlugin(server)
+    expect(server.authRequests).toHaveLength(1)
+
+    // Confirm dispatch is wired before we do anything destructive.
+    server.pushInbound({
+      type: 200,
+      chatId: 'chat_alice@srv',
+      author: { id: 'alice@srv', type: 1 },
+      content: { text: 'before client terminate', parseMode: 'plain' },
+      messageId: 'm-pre',
+      timestamp: 1,
+    })
+    await waitFor(() => dispatch.mock.calls.length >= 1, 5000)
+
+    // Drive a CLIENT-initiated terminate via the test-only handle. This is the
+    // exact code path escalateDeadConnection takes on a heartbeat pong timeout.
+    const accounts = __getAccountsForTesting()
+    const entry = accounts.get('default')
+    if (!entry) throw new Error('account "default" not registered after bootPlugin')
+    entry.wsClient.terminate()
+
+    await waitFor(() => server.connections.size === 0, 2000)
+    await waitFor(() => server.authRequests.length >= 2 && server.connections.size >= 1, 10_000)
+
+    server.pushInbound({
+      type: 200,
+      chatId: 'chat_alice@srv',
+      author: { id: 'alice@srv', type: 1 },
+      content: { text: 'after client terminate', parseMode: 'plain' },
+      messageId: 'm-post',
+      timestamp: 2,
+    })
+
+    await waitFor(() => dispatch.mock.calls.length >= 2, 5000)
+    const arg = dispatch.mock.calls[1][0] as { rawBody: string; senderId: string }
+    expect(arg.rawBody).toBe('after client terminate')
+    expect(arg.senderId).toBe('alice@srv')
+  }, 20_000)
 })

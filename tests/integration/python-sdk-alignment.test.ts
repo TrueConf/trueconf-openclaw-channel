@@ -145,6 +145,8 @@ describe('integration: python-sdk-alignment smoke', () => {
     const { FileUploadLimits, bytesToMB } = await import('../../src/limits')
     const { handleOutboundAttachment } = await import('../../src/outbound')
     const { PerChatSendQueue } = await import('../../src/send-queue')
+    const { OutboundQueue } = await import('../../src/outbound-queue')
+    type WsClientLike = import('../../src/outbound-queue').WsClientLike
 
     // Mirror the plugin's per-account FileUploadLimits state and apply the
     // same server push payload. validateFile MUST report too_large with the
@@ -174,6 +176,14 @@ describe('integration: python-sdk-alignment smoke', () => {
       directChatsByStableUserId: new Map<string, string>(),
     }
     const pipelineLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+    // Real OutboundQueue over a no-op fake WsClientLike: the test asserts the
+    // pre-submit size check throws, so neither sendRequest nor the auth
+    // listener are invoked. Type-clean deps bag survives future refactors.
+    const fakeWsClient: WsClientLike = {
+      sendRequest: async () => { throw new Error('fakeWsClient.sendRequest should not be invoked') },
+      onAuth: () => () => {},
+    }
+    const outboundQueue = new OutboundQueue(fakeWsClient, pipelineLogger)
 
     const result = await handleOutboundAttachment(
       {
@@ -184,13 +194,14 @@ describe('integration: python-sdk-alignment smoke', () => {
         accountId: 'default',
       },
       {
+        outboundQueue,
         resolved: { serverUrl: server.serverUrl, useTls: false, port: server.port },
-        store: fakeStore as never,
-        channelConfig: { maxFileSize: 64 * 1024 * 1024 } as never,
+        store: fakeStore,
+        channelConfig: { maxFileSize: 64 * 1024 * 1024, serverUrl: server.serverUrl, useTls: false, username: 'bot', password: 'p' },
         logger: pipelineLogger,
         limits,
         sendQueue,
-      } as never,
+      },
     )
 
     // Pipeline rejected the upload (which is the user-observable behavior).

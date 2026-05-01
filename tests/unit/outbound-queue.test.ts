@@ -327,4 +327,55 @@ describe('OutboundQueue', () => {
     )
     expect(matched).toHaveLength(1)
   })
+
+  it('increments attempts counter across re-parks', async () => {
+    const fake = makeFakeWsClient()
+    const info = vi.fn()
+    const logger = { info, warn: () => {}, error: () => {} }
+
+    fake.sendRequest
+      .mockRejectedValueOnce(parkable('WebSocket is not connected'))
+      .mockRejectedValueOnce(parkable('WebSocket is not connected'))
+      .mockResolvedValueOnce({ type: 2, id: 1, payload: { errorCode: 0 } })
+
+    const queue = new OutboundQueue(fake, logger)
+    const promise = queue.submit('sendMessage', { chatId: 'c1' })
+    await new Promise((r) => setTimeout(r, 10))
+
+    fake.fireAuth()
+    await new Promise((r) => setTimeout(r, 10))
+
+    const parkLines = info.mock.calls
+      .map(([msg]) => String(msg))
+      .filter((m) => /outbound parked/.test(m))
+    expect(parkLines).toHaveLength(2)
+    expect(parkLines[0]).toMatch(/attempt=1/)
+    expect(parkLines[1]).toMatch(/attempt=2/)
+
+    fake.fireAuth()
+    const result = await promise
+    expect(result.payload?.errorCode).toBe(0)
+  })
+
+  it('emits terminal warn log on failAll with drained count', async () => {
+    const fake = makeFakeWsClient()
+    const warn = vi.fn()
+    const logger = { info: () => {}, warn, error: () => {} }
+    fake.sendRequest.mockRejectedValue(parkable('WebSocket is not connected'))
+
+    const queue = new OutboundQueue(fake, logger)
+    const p1 = queue.submit('m1', {})
+    const p2 = queue.submit('m2', {})
+    await new Promise((r) => setTimeout(r, 10))
+
+    queue.failAll(new Error('terminal'))
+
+    await expect(p1).rejects.toThrow('terminal')
+    await expect(p2).rejects.toThrow('terminal')
+
+    const matched = warn.mock.calls
+      .map(([msg]) => String(msg))
+      .filter((m) => /outbound queue terminal:.*drained=2/.test(m))
+    expect(matched).toHaveLength(1)
+  })
 })

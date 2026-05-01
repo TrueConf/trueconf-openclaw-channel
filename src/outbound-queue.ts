@@ -16,6 +16,14 @@ interface PendingItem {
   inFlight: boolean
 }
 
+/**
+ * In-memory at-least-once delivery queue for TrueConf outbound requests.
+ *
+ * FIFO is preserved within the parked-set on each drain. Items submitted
+ * concurrently with a drain are not order-guaranteed against parked items
+ * (the in-flight drain holds a snapshot of pending IDs at start; a fresh
+ * `submit` lands in `pending` but may attempt before the drain finishes).
+ */
 export class OutboundQueue {
   private readonly pending = new Map<string, PendingItem>()
   private idCounter = 0

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { OutboundQueue } from '../../src/outbound-queue'
+import { OutboundQueue, type WsClientLike } from '../../src/outbound-queue'
+import { NetworkError } from '../../src/types'
 import type { Logger, TrueConfResponse } from '../../src/types'
 
 const silentLogger: Logger = {
@@ -8,7 +9,11 @@ const silentLogger: Logger = {
   error: () => {},
 }
 
-interface FakeWsClient {
+function parkable(message: string): NetworkError {
+  return new NetworkError(message, 'websocket', undefined, undefined, undefined, undefined, { parkable: true })
+}
+
+interface FakeWsClient extends WsClientLike {
   sendRequest: ReturnType<typeof vi.fn<(method: string, payload: Record<string, unknown>) => Promise<TrueConfResponse>>>
   onAuth: ReturnType<typeof vi.fn<(listener: () => void) => () => void>>
   authListeners: Array<() => void>
@@ -37,7 +42,7 @@ describe('OutboundQueue', () => {
     const response: TrueConfResponse = { type: 2, id: 1, payload: { errorCode: 0 } }
     fake.sendRequest.mockResolvedValueOnce(response)
 
-    const queue = new OutboundQueue(fake as never, silentLogger)
+    const queue = new OutboundQueue(fake, silentLogger)
     const result = await queue.submit('sendMessage', { chatId: 'c1', text: 'hi' })
 
     expect(result).toEqual(response)
@@ -47,9 +52,9 @@ describe('OutboundQueue', () => {
 
   it('parks on "WebSocket is not connected" — does not resolve or reject yet', async () => {
     const fake = makeFakeWsClient()
-    fake.sendRequest.mockRejectedValueOnce(new Error('WebSocket is not connected'))
+    fake.sendRequest.mockRejectedValueOnce(parkable('WebSocket is not connected'))
 
-    const queue = new OutboundQueue(fake as never, silentLogger)
+    const queue = new OutboundQueue(fake, silentLogger)
     let settled = false
     const promise = queue.submit('sendMessage', { chatId: 'c1' }).finally(() => { settled = true })
 
@@ -61,15 +66,15 @@ describe('OutboundQueue', () => {
   })
 
   it.each([
-    ['"WebSocket closed: 1006"', new Error('WebSocket closed: 1006 ')],
-    ['"auth barrier reset: forced reconnect: 203"', new Error('auth barrier reset: forced reconnect: 203_credentials_expired')],
-    ['"waitAuthenticated timed out after 30000ms"', new Error('waitAuthenticated timed out after 30000ms')],
-    ['"New connection started"', new Error('New connection started')],
+    ['"WebSocket closed: 1006"', parkable('WebSocket closed: 1006 ')],
+    ['"auth barrier reset: forced reconnect: 203"', parkable('auth barrier reset: forced reconnect: 203_credentials_expired')],
+    ['"waitAuthenticated timed out after 30000ms"', parkable('waitAuthenticated timed out after 30000ms')],
+    ['"New connection started"', parkable('New connection started')],
   ])('parks on %s', async (_label, err) => {
     const fake = makeFakeWsClient()
     fake.sendRequest.mockRejectedValueOnce(err)
 
-    const queue = new OutboundQueue(fake as never, silentLogger)
+    const queue = new OutboundQueue(fake, silentLogger)
     let settled = false
     const promise = queue.submit('sendMessage', { chatId: 'c1' }).finally(() => { settled = true })
     await new Promise((r) => setTimeout(r, 10))
@@ -82,10 +87,10 @@ describe('OutboundQueue', () => {
     const fake = makeFakeWsClient()
     const response: TrueConfResponse = { type: 2, id: 1, payload: { errorCode: 0 } }
     fake.sendRequest
-      .mockRejectedValueOnce(new Error('WebSocket is not connected'))
+      .mockRejectedValueOnce(parkable('WebSocket is not connected'))
       .mockResolvedValueOnce(response)
 
-    const queue = new OutboundQueue(fake as never, silentLogger)
+    const queue = new OutboundQueue(fake, silentLogger)
     const promise = queue.submit('sendMessage', { chatId: 'c1' })
     await new Promise((r) => setTimeout(r, 10))
     expect(fake.sendRequest).toHaveBeenCalledTimes(1)
@@ -99,9 +104,9 @@ describe('OutboundQueue', () => {
 
   it('drain preserves submission order (FIFO)', async () => {
     const fake = makeFakeWsClient()
-    fake.sendRequest.mockRejectedValue(new Error('WebSocket is not connected'))
+    fake.sendRequest.mockRejectedValue(parkable('WebSocket is not connected'))
 
-    const queue = new OutboundQueue(fake as never, silentLogger)
+    const queue = new OutboundQueue(fake, silentLogger)
     const p1 = queue.submit('m1', { id: 1 })
     const p2 = queue.submit('m2', { id: 2 })
     const p3 = queue.submit('m3', { id: 3 })
@@ -123,9 +128,9 @@ describe('OutboundQueue', () => {
     const fake = makeFakeWsClient()
     const info = vi.fn()
     const logger = { info, warn: () => {}, error: () => {} }
-    fake.sendRequest.mockRejectedValueOnce(new Error('WebSocket is not connected'))
+    fake.sendRequest.mockRejectedValueOnce(parkable('WebSocket is not connected'))
 
-    const queue = new OutboundQueue(fake as never, logger)
+    const queue = new OutboundQueue(fake, logger)
     void queue.submit('sendMessage', { chatId: 'c1' })
     await new Promise((r) => setTimeout(r, 10))
 
@@ -142,10 +147,10 @@ describe('OutboundQueue', () => {
       unblock = () => resolve({ type: 2, id: 1, payload: { errorCode: 0 } })
     })
     fake.sendRequest
-      .mockRejectedValueOnce(new Error('WebSocket is not connected'))
+      .mockRejectedValueOnce(parkable('WebSocket is not connected'))
       .mockReturnValueOnce(blocked)
 
-    const queue = new OutboundQueue(fake as never, silentLogger)
+    const queue = new OutboundQueue(fake, silentLogger)
     const promise = queue.submit('m1', { id: 1 })
     await new Promise((r) => setTimeout(r, 10))
 
@@ -164,9 +169,9 @@ describe('OutboundQueue', () => {
 
   it('failAll(err) rejects all pending items and unsubscribes onAuth', async () => {
     const fake = makeFakeWsClient()
-    fake.sendRequest.mockRejectedValue(new Error('WebSocket is not connected'))
+    fake.sendRequest.mockRejectedValue(parkable('WebSocket is not connected'))
 
-    const queue = new OutboundQueue(fake as never, silentLogger)
+    const queue = new OutboundQueue(fake, silentLogger)
     const p1 = queue.submit('m1', {})
     const p2 = queue.submit('m2', {})
     await new Promise((r) => setTimeout(r, 10))
@@ -182,7 +187,7 @@ describe('OutboundQueue', () => {
 
   it('submit after failAll throws terminal error immediately', async () => {
     const fake = makeFakeWsClient()
-    const queue = new OutboundQueue(fake as never, silentLogger)
+    const queue = new OutboundQueue(fake, silentLogger)
     queue.failAll(new Error('terminal'))
 
     await expect(queue.submit('m1', {})).rejects.toThrow('terminal')
@@ -191,9 +196,9 @@ describe('OutboundQueue', () => {
 
   it('failAll is idempotent — second call is no-op', async () => {
     const fake = makeFakeWsClient()
-    fake.sendRequest.mockRejectedValue(new Error('WebSocket is not connected'))
+    fake.sendRequest.mockRejectedValue(parkable('WebSocket is not connected'))
 
-    const queue = new OutboundQueue(fake as never, silentLogger)
+    const queue = new OutboundQueue(fake, silentLogger)
     const p1 = queue.submit('m1', {})
     await new Promise((r) => setTimeout(r, 10))
 
@@ -210,7 +215,7 @@ describe('OutboundQueue', () => {
     }
     fake.sendRequest.mockResolvedValueOnce(erroredResponse)
 
-    const queue = new OutboundQueue(fake as never, silentLogger)
+    const queue = new OutboundQueue(fake, silentLogger)
     const result = await queue.submit('sendMessage', {})
 
     expect(result).toEqual(erroredResponse)
@@ -225,7 +230,7 @@ describe('OutboundQueue', () => {
     })
     fake.sendRequest.mockReturnValueOnce(inFlight)
 
-    const queue = new OutboundQueue(fake as never, silentLogger)
+    const queue = new OutboundQueue(fake, silentLogger)
     const p1 = queue.submit('m1', {})
     await new Promise((r) => setTimeout(r, 10))
 
@@ -252,7 +257,7 @@ describe('OutboundQueue', () => {
     })
     fake.sendRequest.mockReturnValueOnce(inFlight)
 
-    const queue = new OutboundQueue(fake as never, silentLogger)
+    const queue = new OutboundQueue(fake, silentLogger)
     const promise = queue.submit('sendMessage', { chatId: 'c1' })
     await new Promise((r) => setTimeout(r, 10))
     expect(fake.sendRequest).toHaveBeenCalledTimes(1)
@@ -281,12 +286,12 @@ describe('OutboundQueue', () => {
     })
     fake.sendRequest.mockReturnValueOnce(deferred)
 
-    const queue = new OutboundQueue(fake as never, logger)
+    const queue = new OutboundQueue(fake, logger)
     const p1 = queue.submit('sendMessage', { chatId: 'c1' })
     await new Promise((r) => setTimeout(r, 10))
 
     queue.failAll(new Error('lifecycle shutting down'))
-    rejectSendRequest(new Error('WebSocket closed: 1000'))
+    rejectSendRequest(parkable('WebSocket closed: 1000'))
 
     await expect(p1).rejects.toThrow('lifecycle shutting down')
     await new Promise((r) => setTimeout(r, 10))
@@ -307,7 +312,7 @@ describe('OutboundQueue', () => {
     })
     fake.sendRequest.mockReturnValueOnce(deferred)
 
-    const queue = new OutboundQueue(fake as never, logger)
+    const queue = new OutboundQueue(fake, logger)
     const p1 = queue.submit('sendMessage', { chatId: 'c1' })
     await new Promise((r) => setTimeout(r, 10))
 

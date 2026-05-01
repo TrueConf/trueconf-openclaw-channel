@@ -217,7 +217,7 @@ export class WsClient {
   resetAuthBarrier(reason: string = 'reset'): void {
     const old = this.authBarrier
     this.authBarrier = this.makeDeferred()
-    old.reject(new Error(`auth barrier reset: ${reason}`))
+    old.reject(new NetworkError(`auth barrier reset: ${reason}`, 'websocket', undefined, undefined, undefined, undefined, { parkable: true }))
   }
 
   markAuthenticated(): void {
@@ -235,7 +235,15 @@ export class WsClient {
         this.authBarrier.promise,
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
-            reject(new Error(`waitAuthenticated timed out after ${timeoutMs}ms`))
+            reject(new NetworkError(
+              `waitAuthenticated timed out after ${timeoutMs}ms`,
+              'websocket',
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              { parkable: true },
+            ))
           }, timeoutMs)
           timer.unref?.()
         }),
@@ -246,7 +254,7 @@ export class WsClient {
   }
 
   connect(config: TrueConfAccountConfig, token: string): Promise<void> {
-    this.matcher.rejectAll(new Error('New connection started'))
+    this.matcher.rejectAll(new NetworkError('New connection started', 'websocket', undefined, undefined, undefined, undefined, { parkable: true }))
     this.progressHandlers.clear()
     this.idCounter.reset()
     const ws = new WebSocket(
@@ -374,7 +382,15 @@ export class WsClient {
           this.logger?.info(`[trueconf] stale close from old socket (code=${code}); ignoring`)
           return
         }
-        this.matcher.rejectAll(new Error('WebSocket closed: ' + code + ' ' + (reason?.toString() ?? '')))
+        this.matcher.rejectAll(new NetworkError(
+          'WebSocket closed: ' + code + ' ' + (reason?.toString() ?? ''),
+          'websocket',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { parkable: true },
+        ))
         this.progressHandlers.clear()
         this.onClose?.(code, reason?.toString() ?? '')
       })
@@ -424,7 +440,15 @@ export class WsClient {
 
   send(msg: object): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error('WebSocket is not connected')
+      throw new NetworkError(
+        'WebSocket is not connected',
+        'websocket',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { parkable: true },
+      )
     }
     this.ws.send(JSON.stringify(msg))
   }

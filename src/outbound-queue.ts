@@ -1,6 +1,7 @@
+import { NetworkError } from './types'
 import type { Logger, TrueConfResponse } from './types'
 
-interface WsClientLike {
+export interface WsClientLike {
   sendRequest(method: string, payload: Record<string, unknown>): Promise<TrueConfResponse>
   onAuth(listener: () => void): () => void
 }
@@ -84,14 +85,7 @@ export class OutboundQueue {
   }
 
   private isReconnectable(err: unknown): boolean {
-    const message = err instanceof Error ? err.message : String(err)
-    return (
-      message.includes('WebSocket is not connected') ||
-      message.startsWith('WebSocket closed:') ||
-      message.startsWith('auth barrier reset') ||
-      message.startsWith('waitAuthenticated timed out') ||
-      message === 'New connection started'
-    )
+    return err instanceof NetworkError && err.parkable === true
   }
 
   failAll(err: Error): void {

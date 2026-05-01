@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FileUploadLimits, TEXT_LIMIT, type ValidationResult } from '../../src/limits'
 import { PerChatSendQueue } from '../../src/send-queue'
-import { OutboundQueue } from '../../src/outbound-queue'
+import { OutboundQueue, type WsClientLike } from '../../src/outbound-queue'
 import type { Logger, TrueConfChannelConfig, TrueConfResponse } from '../../src/types'
 
 // Mock the SDK module before importing outbound: outbound.ts pulls
@@ -71,7 +71,7 @@ function fail(errorCode: number, errorDescription = ''): TrueConfResponse {
   return { type: 2, id: 1, payload: { errorCode, errorDescription } }
 }
 
-interface FakeWsClient {
+interface FakeWsClient extends WsClientLike {
   sendRequest: ReturnType<typeof vi.fn>
   onAuth: (listener: () => void) => () => void
 }
@@ -86,7 +86,7 @@ function buildFakeClient(impl?: (method: string, payload: Record<string, unknown
 }
 
 function buildOutboundQueue(client: FakeWsClient, logger: Logger = silentLogger): OutboundQueue {
-  return new OutboundQueue(client as never, logger)
+  return new OutboundQueue(client, logger)
 }
 
 function buildStore(): DirectChatStore {

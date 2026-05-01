@@ -117,9 +117,11 @@ describe('integration: OutboundQueue end-to-end', () => {
     server.dropAll()
     await waitFor(() => server.connections.size === 0, 2000)
 
-    // 5s reconnect delay — well past the 100ms park-tick boundary, well below
-    // 30s waitAuthenticated default. Combined with park-on-timeout-prefix in the
-    // queue, this proves the queue holds across a slow auth window.
+    // 5s exceeds the 1–2s reconnect-backoff window by ~2x. Proves the queue holds
+    // the request through a reconnect-then-slow-auth window at the integration
+    // boundary. The 'waitAuthenticated timed out' park-prefix branch itself is
+    // covered by tests/unit/outbound-queue.test.ts (a 30s+ delay would be needed
+    // to exercise it end-to-end, which adds fixture cost without much gain).
     server.delayAuthBy(5000)
 
     const outboundPromise = account.outboundQueue.submit('sendMessage', {

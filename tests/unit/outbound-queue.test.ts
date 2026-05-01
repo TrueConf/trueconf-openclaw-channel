@@ -179,4 +179,13 @@ describe('OutboundQueue', () => {
     await expect(p2).rejects.toThrow('lifecycle shutting down')
     expect(fake.authListeners.length).toBe(0)
   })
+
+  it('submit after failAll throws terminal error immediately', async () => {
+    const fake = makeFakeWsClient()
+    const queue = new OutboundQueue(fake as never, silentLogger)
+    queue.failAll(new Error('terminal'))
+
+    await expect(queue.submit('m1', {})).rejects.toThrow('terminal')
+    expect(fake.sendRequest).not.toHaveBeenCalled()
+  })
 })

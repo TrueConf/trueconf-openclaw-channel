@@ -93,7 +93,7 @@ export function responseErrorCode(response: TrueConfResponse): number | undefine
   return typeof code === 'number' ? code : undefined
 }
 
-async function createP2PChat(outboundQueue: OutboundQueue, userId: string, _logger: Logger): Promise<string> {
+async function createP2PChat(outboundQueue: OutboundQueue, userId: string): Promise<string> {
   const response = await outboundQueue.submit('createP2PChat', { userId })
   const errorCode = responseErrorCode(response)
   if (errorCode !== undefined && errorCode !== 0) {
@@ -116,7 +116,7 @@ async function resolveDirectChat(
     directKey(options.accountId, stableUserId),
   )
   if (existing) return { stableUserId, chatId: existing }
-  const chatId = normalizeChatId(await createP2PChat(outboundQueue, stableUserId, logger))
+  const chatId = normalizeChatId(await createP2PChat(outboundQueue, stableUserId))
   upsertDirectChat(options.directChatStore, options.accountId, stableUserId, chatId)
   return { stableUserId, chatId }
 }
@@ -181,7 +181,6 @@ async function sendMessageRequest(
   outboundQueue: OutboundQueue,
   chatId: string,
   text: string,
-  _logger: Logger,
   sendQueue: PerChatSendQueue,
 ): Promise<TrueConfResponse[]> {
   return sendQueue.enqueue(chatId, async () => {
@@ -207,10 +206,9 @@ async function recreateChat(
   store: DirectChatStore,
   accountId: string,
   stableUserId: string,
-  logger: Logger,
 ): Promise<string> {
   store.directChatsByStableUserId.delete(directKey(accountId, stableUserId))
-  const chatId = normalizeChatId(await createP2PChat(outboundQueue, stableUserId, logger))
+  const chatId = normalizeChatId(await createP2PChat(outboundQueue, stableUserId))
   upsertDirectChat(store, accountId, stableUserId, chatId)
   return chatId
 }
@@ -247,7 +245,7 @@ export async function sendTextToChat(
   try {
     const cleanText = sanitizeMarkdownPreservingParagraphs(text)
     const safeChatId = normalizeChatId(chatId)
-    const responses = await sendMessageRequest(outboundQueue, safeChatId, cleanText, logger, sendQueue)
+    const responses = await sendMessageRequest(outboundQueue, safeChatId, cleanText, sendQueue)
     const last = lastResponse(responses)
     if (!last) {
       logger.error(`[trueconf] sendTextToChat: no responses returned (chatId=${safeChatId})`)
@@ -285,7 +283,7 @@ export async function sendText(
       accountId,
     })
     let activeChatId = resolved.chatId
-    let responses = await sendMessageRequest(options.outboundQueue, activeChatId, cleanText, logger, options.sendQueue)
+    let responses = await sendMessageRequest(options.outboundQueue, activeChatId, cleanText, options.sendQueue)
     let last = lastResponse(responses)
     let errorCode = last ? responseErrorCode(last) : undefined
     let repaired = false
@@ -295,8 +293,8 @@ export async function sendText(
         `[trueconf] sendText chat ${activeChatId} not found for ${resolved.stableUserId}; recreating P2P chat and retrying once`,
       )
       repaired = true
-      activeChatId = await recreateChat(options.outboundQueue, options.directChatStore, accountId, resolved.stableUserId, logger)
-      responses = await sendMessageRequest(options.outboundQueue, activeChatId, cleanText, logger, options.sendQueue)
+      activeChatId = await recreateChat(options.outboundQueue, options.directChatStore, accountId, resolved.stableUserId)
+      responses = await sendMessageRequest(options.outboundQueue, activeChatId, cleanText, options.sendQueue)
       last = lastResponse(responses)
       errorCode = last ? responseErrorCode(last) : undefined
     }
@@ -590,7 +588,7 @@ async function maybeSendCaptionSeparately(
   logger.warn(
     `[trueconf] caption too long: ${captionCheck.codePoints} > ${captionCheck.limit}; sending as separate message`,
   )
-  const captionResults = await sendMessageRequest(outboundQueue, chatId, captionText, logger, sendQueue)
+  const captionResults = await sendMessageRequest(outboundQueue, chatId, captionText, sendQueue)
   const lastResult = captionResults[captionResults.length - 1]
   const captionErr = lastResult ? responseErrorCode(lastResult) : -1
   if (captionErr !== undefined && captionErr !== 0) {
@@ -676,7 +674,7 @@ export async function handleOutboundAttachment(
     if (sendErrorCode === ErrorCode.CHAT_NOT_FOUND) {
       logger.warn(`[trueconf] sendMedia chat ${activeChatId} not found for ${stableUserId}; recreating P2P chat and retrying once`)
       try {
-        activeChatId = await recreateChat(outboundQueue, store, accountId, stableUserId, logger)
+        activeChatId = await recreateChat(outboundQueue, store, accountId, stableUserId)
         sendResp = await outboundQueue.submit('sendFile', buildSendFilePayload(activeChatId, upload))
         sendErrorCode = responseErrorCode(sendResp)
       } catch (err) {

@@ -162,7 +162,6 @@ describe('sendMessageRequest auto-split + sendQueue', () => {
       outboundQueue,
       'chat-X',
       'short text',
-      silentLogger,
       queue,
     )
 
@@ -195,7 +194,6 @@ describe('sendMessageRequest auto-split + sendQueue', () => {
       outboundQueue,
       'chat-X',
       big,
-      silentLogger,
       queue,
     )
 

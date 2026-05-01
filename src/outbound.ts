@@ -473,9 +473,9 @@ interface PreparedUploadFailure {
 // reports to the user.
 async function prepareAttachmentUpload(
   ctx: Pick<OutboundAttachmentCtx, 'mediaUrl' | 'mediaLocalRoots' | 'text'>,
-  deps: Pick<OutboundAttachmentDeps, 'wsClient' | 'resolved' | 'channelConfig' | 'logger' | 'dispatcher' | 'limits'>,
+  deps: Pick<OutboundAttachmentDeps, 'outboundQueue' | 'resolved' | 'channelConfig' | 'logger' | 'dispatcher' | 'limits'>,
 ): Promise<{ ok: true; upload: PreparedUpload } | { ok: false; failure: PreparedUploadFailure }> {
-  const { wsClient, resolved, logger, dispatcher, limits } = deps
+  const { outboundQueue, resolved, logger, dispatcher, limits } = deps
   const maxBytes = limits.getMaxBytes()
 
   if (!ctx.mediaUrl) {
@@ -541,7 +541,7 @@ async function prepareAttachmentUpload(
 
   let uploadResp: TrueConfResponse
   try {
-    uploadResp = await wsClient.sendRequest('uploadFile', { fileSize, fileName })
+    uploadResp = await outboundQueue.submit('uploadFile', { fileSize, fileName })
   } catch (err) {
     const isReconnect = isReconnectableSendError(err)
     logger.warn(`[trueconf] sendMedia step 1/3 FAIL: ${err instanceof Error ? err.message : String(err)}`)
@@ -696,7 +696,7 @@ export async function handleOutboundAttachment(
 
     let sendResp: TrueConfResponse
     try {
-      sendResp = await sendRequestWithReconnectRetry(wsClient, 'sendFile', buildSendFilePayload(activeChatId, upload), logger)
+      sendResp = await outboundQueue.submit('sendFile', buildSendFilePayload(activeChatId, upload))
     } catch (err) {
       const isReconnect = isReconnectableSendError(err)
       logger.warn(`[trueconf] sendMedia step 3/3 FAIL after retries: ${err instanceof Error ? err.message : String(err)}`)
@@ -716,7 +716,7 @@ export async function handleOutboundAttachment(
       logger.warn(`[trueconf] sendMedia chat ${activeChatId} not found for ${stableUserId}; recreating P2P chat and retrying once`)
       try {
         activeChatId = await recreateChat(wsClient, store, accountId, stableUserId, logger)
-        sendResp = await sendRequestWithReconnectRetry(wsClient, 'sendFile', buildSendFilePayload(activeChatId, upload), logger)
+        sendResp = await outboundQueue.submit('sendFile', buildSendFilePayload(activeChatId, upload))
         sendErrorCode = responseErrorCode(sendResp)
       } catch (err) {
         const isReconnect = isReconnectableSendError(err)
@@ -779,7 +779,7 @@ export async function handleOutboundAttachmentToChat(
   ctx: OutboundAttachmentToChatCtx,
   deps: OutboundAttachmentToChatDeps,
 ): Promise<{ ok: true; messageId: string; chatId: string } | { ok: false; reason: OutboundAttachmentReason }> {
-  const { wsClient, outboundQueue, logger, sendQueue } = deps
+  const { outboundQueue, logger, sendQueue } = deps
 
   let safeChatId: string
   try {
@@ -808,7 +808,7 @@ export async function handleOutboundAttachmentToChat(
 
     let sendResp: TrueConfResponse
     try {
-      sendResp = await sendRequestWithReconnectRetry(wsClient, 'sendFile', buildSendFilePayload(safeChatId, upload), logger)
+      sendResp = await outboundQueue.submit('sendFile', buildSendFilePayload(safeChatId, upload))
     } catch (err) {
       const isReconnect = isReconnectableSendError(err)
       logger.warn(`[trueconf] sendMediaToChat step 3/3 FAIL after retries: ${err instanceof Error ? err.message : String(err)}`)

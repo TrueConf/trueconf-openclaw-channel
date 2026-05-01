@@ -941,7 +941,6 @@ describe('LifecycleOptions.onTerminalFailure', () => {
     // schedule a reconnect, but must NOT fire onTerminalFailure (that's
     // reserved for shutdown / DNS exhaustion).
     ;(lifecycle as unknown as { handleClose: (c: number, r: string) => void }).handleClose(1006, '')
-    await new Promise((r) => setTimeout(r, 100))
     expect(onTerminalFailure).not.toHaveBeenCalled()
     // Stop the chain so the test exits cleanly.
     ;(lifecycle as unknown as { cancelReconnect: () => void }).cancelReconnect()

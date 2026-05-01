@@ -524,11 +524,10 @@ export class ConnectionLifecycle {
     // out their per-call timeout.
     const terminal = new Error('lifecycle shutting down')
     this.wsClient.markAuthFailed(terminal)
-    try { this.options?.onTerminalFailure?.(terminal) }
-    catch (err) {
-      this.logger.warn(
-        `[trueconf] onTerminalFailure callback failed: ${err instanceof Error ? err.message : String(err)}`,
-      )
+    try {
+      this.options?.onTerminalFailure?.(terminal)
+    } catch (err) {
+      this.logger.warn(`[trueconf] onTerminalFailure callback failed: ${err instanceof Error ? err.message : String(err)}`)
     }
     this.stopTimers()
     this.cancelReconnect()
@@ -658,11 +657,10 @@ export class ConnectionLifecycle {
               DNS_TERMINAL_CODE,
             )
             this.wsClient.markAuthFailed(terminal)
-            try { this.options?.onTerminalFailure?.(terminal) }
-            catch (err) {
-              this.logger.warn(
-                `[trueconf] onTerminalFailure callback failed: ${err instanceof Error ? err.message : String(err)}`,
-              )
+            try {
+              this.options?.onTerminalFailure?.(terminal)
+            } catch (err) {
+              this.logger.warn(`[trueconf] onTerminalFailure callback failed: ${err instanceof Error ? err.message : String(err)}`)
             }
             this.wsClient.close()
             return

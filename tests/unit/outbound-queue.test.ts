@@ -119,6 +119,22 @@ describe('OutboundQueue', () => {
     expect(drainOrder).toEqual(['m1', 'm2', 'm3'])
   })
 
+  it('logs info on park with method/attempt/reason fields', async () => {
+    const fake = makeFakeWsClient()
+    const info = vi.fn()
+    const logger = { info, warn: () => {}, error: () => {} }
+    fake.sendRequest.mockRejectedValueOnce(new Error('WebSocket is not connected'))
+
+    const queue = new OutboundQueue(fake as never, logger)
+    void queue.submit('sendMessage', { chatId: 'c1' })
+    await new Promise((r) => setTimeout(r, 10))
+
+    expect(info).toHaveBeenCalledTimes(1)
+    expect(info).toHaveBeenCalledWith(
+      expect.stringMatching(/outbound parked: method=sendMessage attempt=1 reason=WebSocket is not connected/),
+    )
+  })
+
   it('concurrent auth events do not double-attempt items (draining mutex)', async () => {
     const fake = makeFakeWsClient()
     let unblock: () => void = () => {}

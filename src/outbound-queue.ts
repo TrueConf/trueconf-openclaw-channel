@@ -54,6 +54,10 @@ export class OutboundQueue {
       if (this.isReconnectable(err)) {
         // Park: keep item in `pending`, do not resolve or reject. Drain will
         // re-attempt when the next auth event fires.
+        this.logger.info(
+          `[trueconf] outbound parked: method=${item.method} attempt=${item.attempts} ` +
+          `reason=${err instanceof Error ? err.message : String(err)}`,
+        )
         return
       }
       if (this.pending.delete(item.id)) {

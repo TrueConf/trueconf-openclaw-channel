@@ -209,8 +209,8 @@ describe('sendMessageRequest auto-split + sendQueue', () => {
     const outboundQueue = buildOutboundQueue(client)
     const queue = new PerChatSendQueue()
 
-    const p1 = sendTextToChat(client as never, outboundQueue, 'chat-X', 'first', silentLogger, queue)
-    const p2 = sendTextToChat(client as never, outboundQueue, 'chat-X', 'second', silentLogger, queue)
+    const p1 = sendTextToChat(outboundQueue, 'chat-X', 'first', silentLogger, queue)
+    const p2 = sendTextToChat(outboundQueue, 'chat-X', 'second', silentLogger, queue)
 
     // Let microtasks settle so the first sendRequest fires.
     await Promise.resolve()
@@ -488,7 +488,7 @@ describe('sendText/sendTextToChat plumb queue', () => {
     const queue = new PerChatSendQueue()
     const para = 'a'.repeat(TEXT_LIMIT - 1)
     const big = `${para}\n\n${para}\n\n${para}`
-    const result = await sendTextToChat(client as never, outboundQueue, 'chat-X', big, silentLogger, queue)
+    const result = await sendTextToChat(outboundQueue, 'chat-X', big, silentLogger, queue)
     expect(result.ok).toBe(false)
     expect(call).toBe(2)
   })

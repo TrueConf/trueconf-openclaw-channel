@@ -266,7 +266,6 @@ function lastResponse(responses: TrueConfResponse[]): TrueConfResponse | undefin
 // Direct chatId send: no P2P resolution, no 304-repair. Used for groups where
 // the chatId is authoritative and we can't recreate the chat.
 export async function sendTextToChat(
-  _client: WsClient,
   outboundQueue: OutboundQueue,
   chatId: string,
   text: string,
@@ -793,7 +792,7 @@ export async function handleOutboundAttachmentToChat(
   }
 
   const fail = async (reason: OutboundAttachmentReason, text: string): Promise<{ ok: false; reason: OutboundAttachmentReason }> => {
-    await sendTextToChat(wsClient, outboundQueue, safeChatId, text, logger, sendQueue)
+    await sendTextToChat(outboundQueue, safeChatId, text, logger, sendQueue)
     return { ok: false, reason }
   }
 

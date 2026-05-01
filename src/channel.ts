@@ -370,7 +370,7 @@ export const channelPlugin = {
           logger.info(
             `[trueconf] sendText: target=${to} is bot identity; redirecting to last inbound group ${route.chatId}`,
           )
-          const groupResult = await sendTextToChat(entry.wsClient, entry.outboundQueue, route.chatId, cleanText, logger, entry.sendQueue)
+          const groupResult = await sendTextToChat(entry.outboundQueue, route.chatId, cleanText, logger, entry.sendQueue)
           if (groupResult.ok && groupResult.messageId) {
             rememberBotMessage(store.recentBotMsgIdsByChat, groupResult.chatId, groupResult.messageId)
           }
@@ -663,7 +663,7 @@ export const channelPlugin = {
           text: reply.text,
           sendText: async (chunk) => {
             const result = inbound.isGroup
-              ? await sendTextToChat(wsClient, outboundQueue, inbound.chatId, chunk, logger, sendQueue)
+              ? await sendTextToChat(outboundQueue, inbound.chatId, chunk, logger, sendQueue)
               : await sendText(wsClient, inbound.peerId, chunk, logger, {
                   fallbackUserId: inbound.peerId,
                   directChatStore: store,

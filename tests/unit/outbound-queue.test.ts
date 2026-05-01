@@ -161,4 +161,22 @@ describe('OutboundQueue', () => {
     await promise
     expect(fake.sendRequest).toHaveBeenCalledTimes(2)
   })
+
+  it('failAll(err) rejects all pending items and unsubscribes onAuth', async () => {
+    const fake = makeFakeWsClient()
+    fake.sendRequest.mockRejectedValue(new Error('WebSocket is not connected'))
+
+    const queue = new OutboundQueue(fake as never, silentLogger)
+    const p1 = queue.submit('m1', {})
+    const p2 = queue.submit('m2', {})
+    await new Promise((r) => setTimeout(r, 10))
+    expect(fake.authListeners.length).toBe(1)
+
+    const terminal = new Error('lifecycle shutting down')
+    queue.failAll(terminal)
+
+    await expect(p1).rejects.toThrow('lifecycle shutting down')
+    await expect(p2).rejects.toThrow('lifecycle shutting down')
+    expect(fake.authListeners.length).toBe(0)
+  })
 })

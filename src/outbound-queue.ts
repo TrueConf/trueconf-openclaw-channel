@@ -77,6 +77,21 @@ export class OutboundQueue {
     )
   }
 
+  failAll(err: Error): void {
+    if (this.terminalError) return
+    this.terminalError = err
+    const items = Array.from(this.pending.values())
+    this.pending.clear()
+    if (items.length > 0) {
+      this.logger.warn(
+        `[trueconf] outbound queue terminal: reason=${err.message} drained=${items.length}`,
+      )
+    }
+    for (const item of items) item.reject(err)
+    this.offAuth?.()
+    this.offAuth = null
+  }
+
   private async drain(): Promise<void> {
     if (this.draining || this.terminalError) return
     this.draining = true

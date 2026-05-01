@@ -78,6 +78,11 @@ function upsertDirectChat(
   store.directChatsByStableUserId.set(directKey(accountId, stableUserId), chatId)
 }
 
+// Used by inbound.ts:subscribeAndAwaitReady to classify a direct
+// wsClient.sendRequest failure (bypasses OutboundQueue) as transient or
+// terminal. The OutboundQueue itself classifies via NetworkError.parkable —
+// outbound.ts callers no longer need this helper because all reconnect-class
+// errors are parked-then-drained inside the queue.
 export function isReconnectableSendError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err)
   return message.includes('WebSocket is not connected') || message.startsWith('WebSocket closed:')
@@ -396,7 +401,6 @@ export type OutboundAttachmentReason =
   | 'tooLarge'
   | 'uploadFailed'
   | 'sendFailed'
-  | 'reconnect'
   | 'genericError'
 
 export interface OutboundAttachmentCtx {
@@ -508,15 +512,12 @@ async function prepareAttachmentUpload(
   try {
     uploadResp = await outboundQueue.submit('uploadFile', { fileSize, fileName })
   } catch (err) {
-    const isReconnect = isReconnectableSendError(err)
     logger.warn(`[trueconf] sendMedia step 1/3 FAIL: ${err instanceof Error ? err.message : String(err)}`)
     return {
       ok: false,
       failure: {
-        reason: isReconnect ? 'reconnect' : 'uploadFailed',
-        userFacingText: isReconnect
-          ? 'Соединение прервалось — попробуйте ещё раз.'
-          : 'Не удалось загрузить файл — попробуйте ещё раз.',
+        reason: 'uploadFailed',
+        userFacingText: 'Не удалось загрузить файл — попробуйте ещё раз.',
       },
     }
   }
@@ -647,11 +648,10 @@ export async function handleOutboundAttachment(
         accountId,
       })).chatId
     } catch (err) {
-      const isReconnect = isReconnectableSendError(err)
       // Skip user reply: no chat to send to. Re-entering sendText here would
       // fire createP2PChat a second time on every persistent failure.
       logger.error(`[trueconf] sendMedia direct-chat resolve FAIL: ${err instanceof Error ? err.message : String(err)}`)
-      return { ok: false, reason: isReconnect ? 'reconnect' : 'sendFailed' }
+      return { ok: false, reason: 'sendFailed' }
     }
 
     const captionGate = await maybeSendCaptionSeparately(outboundQueue, activeChatId, upload, logger, sendQueue)
@@ -663,17 +663,13 @@ export async function handleOutboundAttachment(
     try {
       sendResp = await outboundQueue.submit('sendFile', buildSendFilePayload(activeChatId, upload))
     } catch (err) {
-      const isReconnect = isReconnectableSendError(err)
-      logger.warn(`[trueconf] sendMedia step 3/3 FAIL after retries: ${err instanceof Error ? err.message : String(err)}`)
+      logger.warn(`[trueconf] sendMedia step 3/3 FAIL: ${err instanceof Error ? err.message : String(err)}`)
       if (captionSentSeparately) {
         logger.error(
           `[trueconf] sendFile failed AFTER caption was already delivered as separate message; user sees orphan caption-text without attachment (chatId=${activeChatId})`,
         )
       }
-      return fail(
-        isReconnect ? 'reconnect' : 'sendFailed',
-        isReconnect ? 'Соединение прервалось — попробуйте ещё раз.' : 'Не удалось отправить файл — попробуйте ещё раз.',
-      )
+      return fail('sendFailed', 'Не удалось отправить файл — попробуйте ещё раз.')
     }
 
     let sendErrorCode = responseErrorCode(sendResp)
@@ -684,14 +680,13 @@ export async function handleOutboundAttachment(
         sendResp = await outboundQueue.submit('sendFile', buildSendFilePayload(activeChatId, upload))
         sendErrorCode = responseErrorCode(sendResp)
       } catch (err) {
-        const isReconnect = isReconnectableSendError(err)
         logger.error(`[trueconf] sendMedia 304 repair FAIL: ${err instanceof Error ? err.message : String(err)}`)
         if (captionSentSeparately) {
           logger.error(
             `[trueconf] sendFile failed AFTER caption was already delivered as separate message; user sees orphan caption-text without attachment (chatId=${activeChatId})`,
           )
         }
-        return { ok: false, reason: isReconnect ? 'reconnect' : 'sendFailed' }
+        return { ok: false, reason: 'sendFailed' }
       }
     }
     if (sendErrorCode !== undefined && sendErrorCode !== 0) {
@@ -775,17 +770,13 @@ export async function handleOutboundAttachmentToChat(
     try {
       sendResp = await outboundQueue.submit('sendFile', buildSendFilePayload(safeChatId, upload))
     } catch (err) {
-      const isReconnect = isReconnectableSendError(err)
-      logger.warn(`[trueconf] sendMediaToChat step 3/3 FAIL after retries: ${err instanceof Error ? err.message : String(err)}`)
+      logger.warn(`[trueconf] sendMediaToChat step 3/3 FAIL: ${err instanceof Error ? err.message : String(err)}`)
       if (captionSentSeparately) {
         logger.error(
           `[trueconf] sendFile failed AFTER caption was already delivered as separate message; user sees orphan caption-text without attachment (chatId=${safeChatId})`,
         )
       }
-      return fail(
-        isReconnect ? 'reconnect' : 'sendFailed',
-        isReconnect ? 'Соединение прервалось — попробуйте ещё раз.' : 'Не удалось отправить файл — попробуйте ещё раз.',
-      )
+      return fail('sendFailed', 'Не удалось отправить файл — попробуйте ещё раз.')
     }
 
     const sendErrorCode = responseErrorCode(sendResp)

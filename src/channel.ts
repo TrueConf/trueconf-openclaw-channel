@@ -496,16 +496,7 @@ export const channelPlugin = {
           mediaLocalRoots: ctx.mediaLocalRoots,
           accountId,
         },
-        {
-          outboundQueue: entry.outboundQueue,
-          resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
-          store,
-          channelConfig: store.channelConfig,
-          logger,
-          dispatcher: entry.dispatcher,
-          limits: entry.limits,
-          sendQueue: entry.sendQueue,
-        },
+        { ...commonDeps, store },
       )
 
       if (result.ok) {

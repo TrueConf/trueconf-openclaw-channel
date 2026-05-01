@@ -104,6 +104,8 @@ describe('integration: OutboundQueue end-to-end', () => {
 
     const result = await outboundPromise
     expect(result.payload?.errorCode).toBe(0)
+    expect(server.messageRequests).toHaveLength(1)
+    expect(server.messageRequests[0]?.payload?.content).toMatchObject({ text: 'queued message' })
   }, 15_000)
 
   it('outbound survives reconnect that exceeds default waitAuthenticated timeout', async () => {

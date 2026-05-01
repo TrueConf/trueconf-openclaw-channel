@@ -239,4 +239,87 @@ describe('OutboundQueue', () => {
     await p1.catch(() => { stillRejected = true })
     expect(stillRejected).toBe(true)
   })
+
+  it('does not double-send on 203 reconnect race', async () => {
+    // Simulates the post-203 race: outer attempt() is suspended at
+    // `await client.sendRequest(...)` while forceReconnect → start → connect
+    // fires onAuth synchronously. Drain must not re-fire the same item while
+    // the outer call is still in-flight.
+    const fake = makeFakeWsClient()
+    let resolveSendRequest: (resp: TrueConfResponse) => void = () => {}
+    const inFlight = new Promise<TrueConfResponse>((resolve) => {
+      resolveSendRequest = resolve
+    })
+    fake.sendRequest.mockReturnValueOnce(inFlight)
+
+    const queue = new OutboundQueue(fake as never, silentLogger)
+    const promise = queue.submit('sendMessage', { chatId: 'c1' })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(fake.sendRequest).toHaveBeenCalledTimes(1)
+
+    // Auth fires while the first sendRequest is still pending — drain MUST
+    // skip the in-flight item, not re-issue it.
+    fake.fireAuth()
+    await new Promise((r) => setTimeout(r, 10))
+    expect(fake.sendRequest).toHaveBeenCalledTimes(1)
+
+    resolveSendRequest({ type: 2, id: 1, payload: { errorCode: 0 } })
+    const result = await promise
+    expect(result.payload?.errorCode).toBe(0)
+    expect(fake.sendRequest).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not log misleading park line after failAll race', async () => {
+    const fake = makeFakeWsClient()
+    const info = vi.fn()
+    const warn = vi.fn()
+    const logger = { info, warn, error: () => {} }
+
+    let rejectSendRequest: (err: Error) => void = () => {}
+    const deferred = new Promise<TrueConfResponse>((_, reject) => {
+      rejectSendRequest = reject
+    })
+    fake.sendRequest.mockReturnValueOnce(deferred)
+
+    const queue = new OutboundQueue(fake as never, logger)
+    const p1 = queue.submit('sendMessage', { chatId: 'c1' })
+    await new Promise((r) => setTimeout(r, 10))
+
+    queue.failAll(new Error('lifecycle shutting down'))
+    rejectSendRequest(new Error('WebSocket closed: 1000'))
+
+    await expect(p1).rejects.toThrow('lifecycle shutting down')
+    await new Promise((r) => setTimeout(r, 10))
+
+    const parkCalls = info.mock.calls.filter(([msg]) => /outbound parked/.test(String(msg)))
+    expect(parkCalls).toHaveLength(0)
+  })
+
+  it('warns on non-reconnectable error after failAll instead of silently swallowing', async () => {
+    const fake = makeFakeWsClient()
+    const info = vi.fn()
+    const warn = vi.fn()
+    const logger = { info, warn, error: () => {} }
+
+    let rejectSendRequest: (err: Error) => void = () => {}
+    const deferred = new Promise<TrueConfResponse>((_, reject) => {
+      rejectSendRequest = reject
+    })
+    fake.sendRequest.mockReturnValueOnce(deferred)
+
+    const queue = new OutboundQueue(fake as never, logger)
+    const p1 = queue.submit('sendMessage', { chatId: 'c1' })
+    await new Promise((r) => setTimeout(r, 10))
+
+    queue.failAll(new Error('lifecycle shutting down'))
+    rejectSendRequest(new Error('boom'))
+
+    await expect(p1).rejects.toThrow('lifecycle shutting down')
+    await new Promise((r) => setTimeout(r, 10))
+
+    const matched = warn.mock.calls.filter(([msg]) =>
+      /non-reconnectable error after terminal/.test(String(msg)),
+    )
+    expect(matched).toHaveLength(1)
+  })
 })

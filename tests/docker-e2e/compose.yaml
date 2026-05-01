@@ -1,0 +1,28 @@
+services:
+  fake-server:
+    build:
+      context: ../..
+      dockerfile: tests/docker-e2e/Dockerfile
+    image: openclaw-trueconf-e2e:local
+    command: ["tsx", "tests/docker-e2e/fake-server-bin.ts"]
+    environment:
+      FAKE_PORT: "4309"
+      CONTROL_PORT: "4310"
+      HOST: "0.0.0.0"
+    networks:
+      - e2e
+
+  plugin:
+    image: openclaw-trueconf-e2e:local
+    depends_on:
+      - fake-server
+    command: ["tsx", "tests/docker-e2e/plugin-bin.ts"]
+    environment:
+      TARGET_HOST: "fake-server"
+      FAKE_PORT: "4309"
+    networks:
+      - e2e
+
+networks:
+  e2e:
+    driver: bridge

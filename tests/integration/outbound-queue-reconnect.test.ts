@@ -142,6 +142,44 @@ describe('integration: OutboundQueue end-to-end', () => {
     expect(result.payload?.errorCode).toBe(0)
   }, 20_000)
 
+  it('parks outbound across a transient reconnect-auth failure, drains on second attempt', async () => {
+    harness = await bootPlugin(server)
+    expect(server.authRequests).toHaveLength(1)
+
+    const accounts = __getAccountsForTesting()
+    const account = accounts.get('default')
+    if (!account) throw new Error('account not found')
+
+    // Force the next reconnect's auth to fail; the second one succeeds.
+    // wsClient.connect rejects with a non-NetworkError ('Auth failed:
+    // errorCode 1'); without parkable wrapping in lifecycle.start's catch,
+    // markAuthFailed propagates that rejection to waitAuthenticated, and
+    // any item submitted in the reconnect window rejects rather than parks.
+    server.failNextAuth(1)
+    server.dropAll()
+    await waitFor(() => server.connections.size === 0, 2000)
+
+    const outboundPromise = account.outboundQueue.submit('sendMessage', {
+      chatId: 'chat_alice@srv',
+      content: { text: 'parked across failed-auth reconnect', parseMode: 'plain' },
+    })
+
+    let settled = false
+    void outboundPromise.finally(() => { settled = true })
+
+    // 1.5s in: first reconnect attempt has fired and its auth has failed.
+    // The item must still be parked, not rejected.
+    await new Promise((r) => setTimeout(r, 1500))
+    expect(settled).toBe(false)
+
+    const result = await outboundPromise
+    expect(result.payload?.errorCode).toBe(0)
+    expect(server.authRequests.length).toBeGreaterThanOrEqual(3) // initial + failed + recovered
+    expect(server.messageRequests.length).toBeGreaterThanOrEqual(1)
+    const last = server.messageRequests[server.messageRequests.length - 1]
+    expect(last?.payload?.content).toMatchObject({ text: 'parked across failed-auth reconnect' })
+  }, 20_000)
+
   // DNS-terminal end-to-end coverage is provided by:
   // - tests/unit/ws-client.test.ts: 'fires onTerminalFailure after DNS_MAX_RETRIES exhausted'
   // - tests/unit/outbound-queue.test.ts: 'failAll(err) rejects all pending items and unsubscribes onAuth'

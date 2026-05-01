@@ -73,6 +73,10 @@ export interface FakeServer {
   chats: ChatRegistry
   configureFailures: (opts: { getChats?: number; getChatByID?: number; getChatByIDOmitErrorCode?: number; getChatByIDErrorCode?: number }) => void
   delayAuthBy: (ms: number) => void
+  // Schedules the next `count` auth requests to fail with errorCode=1.
+  // Subsequent auths succeed normally. Used to exercise the reconnect-with-
+  // failed-auth path that the OutboundQueue must park around.
+  failNextAuth: (count: number) => void
   pushInbound: (envelope: Json) => void
   pushFileProgress: (fileId: string, progress: number) => void
   pushEvent: (method: string, payload: Json) => void
@@ -90,6 +94,10 @@ export interface FakeServerOptions {
   botUserId?: string
   failAuthOnce?: boolean
   oauthResponse?: FakeOAuthResponse
+  // Used by tests/docker-e2e to bind on 0.0.0.0:fixed-port for cross-container
+  // traffic. Defaults preserve in-process test behavior (loopback, ephemeral).
+  host?: string
+  port?: number
 }
 
 function makeDefaultOAuthResponse(): FakeOAuthResponse {
@@ -348,13 +356,15 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
     ws.on('close', () => { connections.delete(ws) })
   })
 
-  await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve))
+  const bindHost = opts.host ?? '127.0.0.1'
+  const bindPort = opts.port ?? 0
+  await new Promise<void>((resolve) => http.listen(bindPort, bindHost, resolve))
   const addr = http.address() as { port: number }
 
   const instance: FakeServer = {
-    host: '127.0.0.1',
+    host: bindHost,
     port: addr.port,
-    serverUrl: '127.0.0.1',
+    serverUrl: bindHost,
     authRequests,
     messageRequests,
     uploadFileRequests,
@@ -372,6 +382,7 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
     chats,
     configureFailures,
     delayAuthBy: (ms) => { authDelayMs = ms },
+    failNextAuth: (count) => { pendingAuthFailures = count },
     setOauthResponse(value) { oauthResponse = value },
     setChatType(chatId, chatType) { chatTypeOverrides.set(chatId, chatType) },
     pushInbound(envelope) {

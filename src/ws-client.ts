@@ -494,7 +494,11 @@ export class ConnectionLifecycle {
     try {
       tokenResponse = await acquireToken(this.config, { dispatcher: this.options?.dispatcher })
     } catch (err) {
-      this.wsClient.markAuthFailed(err instanceof Error ? err : new Error(String(err)))
+      // Mark parkable so OutboundQueue items waiting on the auth barrier
+      // park instead of rejecting; scheduleReconnect's catch decides
+      // terminal-vs-retry and fires onTerminalFailure -> failAll for the
+      // give-up cases.
+      this.wsClient.markAuthFailed(NetworkError.asParkable(err))
       throw err
     }
     // Register lifecycle handlers BEFORE connect so a close event that fires
@@ -505,7 +509,7 @@ export class ConnectionLifecycle {
     try {
       await this.wsClient.connect(this.config, tokenResponse.access_token)
     } catch (err) {
-      this.wsClient.markAuthFailed(err instanceof Error ? err : new Error(String(err)))
+      this.wsClient.markAuthFailed(NetworkError.asParkable(err))
       throw err
     }
 

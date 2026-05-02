@@ -117,6 +117,10 @@ The logs should contain:
 
 Open the TrueConf client, find the bot in your contacts, and send it a message. 
 
+### Setting this up with an AI assistant?
+
+Point your assistant at [`llms.txt`](./llms.txt) (a short index) or paste the contents of [`llms-full.txt`](./llms-full.txt) into the chat for full grounded context.
+
 ## Configuration
 
 ### Single bot account

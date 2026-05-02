@@ -5,6 +5,7 @@
 ### Added
 - At-least-once outbound delivery via in-memory `OutboundQueue`. Outbound requests (`sendMessage`, `sendFile`, `uploadFile`, `createP2PChat`) survive arbitrary-length WS reconnect windows by parking on transport errors and draining on each successful auth. Closes failure-mode classes (i)/(iii)/(v)/(vi)/(vii) from item 49.
 - `LifecycleOptions.onTerminalFailure` callback fires from `lifecycle.shutdown()` and after `DNS_MAX_RETRIES` exhaustion. Wired to `outboundQueue.failAll` in `channel.ts` so terminal failures reject pending outbound with explicit cause.
+- Outbound lifecycle instrumentation (`submit` / `wait_auth` / `wire_send` / `ack`) correlated by `qid` for failure-mode diagnosis (L1c). Each outbound request emits four `.info` log lines threading a single id from `OutboundQueue.submit` through `WsClient.sendRequest` and `sendRequestInternal`. Direct ws-client callers (`subscribeFileProgress`) skip the lifecycle log via the optional `traceId` parameter.
 
 ### Fixed
 - Reconnect-time WS-handshake and auth-response failures (e.g. `ECONNREFUSED`, `Server sent no subprotocol`, `Auth failed: errorCode N`) now park outbound items instead of rejecting them. `lifecycle.start` wraps the auth-barrier rejection as parkable so `waitAuthenticated` callers go through the queue's park-and-drain branch; terminal causes (`DNS_MAX_RETRIES`, `shutdown`) keep their non-parkable form so `onTerminalFailure -> failAll` still flushes pending items on give-up.

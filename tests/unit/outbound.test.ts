@@ -170,7 +170,7 @@ describe('sendMessageRequest auto-split + sendQueue', () => {
     expect(client.sendRequest).toHaveBeenCalledWith('sendMessage', {
       chatId: 'chat-X',
       content: { text: 'short text', parseMode: 'markdown' },
-    })
+    }, expect.any(String))
   })
 
   it('multi-chunk: halts on first error, returns partial array', async () => {

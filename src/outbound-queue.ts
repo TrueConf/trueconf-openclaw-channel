@@ -2,7 +2,11 @@ import { NetworkError } from './types'
 import type { Logger, TrueConfResponse } from './types'
 
 export interface WsClientLike {
-  sendRequest(method: string, payload: Record<string, unknown>): Promise<TrueConfResponse>
+  sendRequest(
+    method: string,
+    payload: Record<string, unknown>,
+    traceId?: string,
+  ): Promise<TrueConfResponse>
   onAuth(listener: () => void): () => void
 }
 
@@ -51,6 +55,9 @@ export class OutboundQueue {
         inFlight: false,
       }
       this.pending.set(item.id, item)
+      const chatId = typeof payload.chatId === 'string' ? payload.chatId : undefined
+      const chatIdSeg = chatId === undefined ? '' : ` chatId=${chatId}`
+      this.logger.info(`[trueconf] outbound submit: qid=${item.id} method=${method}${chatIdSeg}`)
       void this.attempt(item)
     })
   }
@@ -61,7 +68,7 @@ export class OutboundQueue {
     item.attempts++
     item.inFlight = true
     try {
-      const response = await this.client.sendRequest(item.method, item.payload)
+      const response = await this.client.sendRequest(item.method, item.payload, item.id)
       if (this.pending.delete(item.id)) item.resolve(response)
       else this.logger.info(`[trueconf] outbound: response after terminal: method=${item.method}`)
     } catch (err) {

@@ -387,9 +387,22 @@ export class WsClient {
   // Public sendRequest gates on the auth barrier (so requests fired during a
   // reconnect window queue until auth lands) and recovers from
   // CREDENTIALS_EXPIRED (203) by forcing a fresh-token reconnect once.
-  async sendRequest(method: string, payload: Record<string, unknown>): Promise<TrueConfResponse> {
+  async sendRequest(
+    method: string,
+    payload: Record<string, unknown>,
+    traceId?: string,
+  ): Promise<TrueConfResponse> {
+    const c = payload.chatId
+    const chatIdSeg = typeof c === 'string' ? ` chatId=${c}` : ''
+    const log = (event: 'wait_auth' | 'ack', extra = ''): void => {
+      if (traceId === undefined) return
+      this.logger?.info(`[trueconf] outbound ${event}: qid=${traceId} method=${method}${chatIdSeg}${extra}`)
+    }
+
     await this.waitAuthenticated()
-    const response = await this.sendRequestInternal(method, payload)
+    log('wait_auth')
+    const response = await this.sendRequestInternal(method, payload, traceId)
+    log('ack', ` errorCode=${response.payload?.errorCode}`)
 
     if (response.payload?.errorCode === ErrorCode.CREDENTIALS_EXPIRED) {
       this.logger?.warn(
@@ -406,18 +419,30 @@ export class WsClient {
       }
       await this.forceReconnect('203_credentials_expired')
       await this.waitAuthenticated()
-      return this.sendRequestInternal(method, payload)
+      log('wait_auth')
+      const retried = await this.sendRequestInternal(method, payload, traceId)
+      log('ack', ` errorCode=${retried.payload?.errorCode}`)
+      return retried
     }
 
     return response
   }
 
-  private sendRequestInternal(method: string, payload: Record<string, unknown>): Promise<TrueConfResponse> {
+  private sendRequestInternal(
+    method: string,
+    payload: Record<string, unknown>,
+    traceId?: string,
+  ): Promise<TrueConfResponse> {
     const id = this.idCounter.next()
     const request: TrueConfRequest = { type: 1, id, method, payload }
     const tracked = this.matcher.track(id)
     try {
       this.send(request)
+      if (traceId !== undefined) {
+        const c = payload.chatId
+        const chatIdSeg = typeof c === 'string' ? ` chatId=${c}` : ''
+        this.logger?.info(`[trueconf] outbound wire_send: qid=${traceId} method=${method}${chatIdSeg}`)
+      }
     } catch (err) {
       this.matcher.reject(id, err instanceof Error ? err : new Error(String(err)))
     }

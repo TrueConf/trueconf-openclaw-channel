@@ -47,7 +47,7 @@ describe('OutboundQueue', () => {
 
     expect(result).toEqual(response)
     expect(fake.sendRequest).toHaveBeenCalledTimes(1)
-    expect(fake.sendRequest).toHaveBeenCalledWith('sendMessage', { chatId: 'c1', text: 'hi' })
+    expect(fake.sendRequest).toHaveBeenCalledWith('sendMessage', { chatId: 'c1', text: 'hi' }, expect.any(String))
   })
 
   it('parks on "WebSocket is not connected" — does not resolve or reject yet', async () => {

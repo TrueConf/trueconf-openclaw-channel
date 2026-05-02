@@ -333,6 +333,95 @@ describe('WsClient.sendRequest — 203 recovery', () => {
     // Surfaces the original 203 instead of hanging.
     expect(resp.payload?.errorCode).toBe(203)
   })
+
+  it('logs full lifecycle (wait_auth → wire_send → ack) on happy path when traceId provided', async () => {
+    const forceReconnect = vi.fn(async (_reason: string) => {})
+    const client = new WsClient({ forceReconnect })
+    client.markAuthenticated()
+    const logger: Logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    client.logger = logger
+
+    // Stub send() (no real WS) and matcher.track() (resolve with happy response).
+    vi.spyOn(client as unknown as { send: (msg: object) => void }, 'send').mockImplementation(() => {})
+    vi.spyOn((client as unknown as { matcher: { track: (id: number) => Promise<unknown> } }).matcher, 'track')
+      .mockResolvedValueOnce({ type: 2, id: 1, payload: { errorCode: 0 } } as never)
+
+    await client.sendRequest('sendMessage', { chatId: 'abc' }, '42')
+
+    const lifecycleLines = (logger.info as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0] as string)
+      .filter((s) => /\[trueconf\] outbound (wait_auth|wire_send|ack):/.test(s))
+    expect(lifecycleLines).toEqual([
+      '[trueconf] outbound wait_auth: qid=42 method=sendMessage chatId=abc',
+      '[trueconf] outbound wire_send: qid=42 method=sendMessage chatId=abc',
+      '[trueconf] outbound ack: qid=42 method=sendMessage chatId=abc errorCode=0',
+    ])
+  })
+
+  it('logs no L1c lifecycle lines when traceId is undefined', async () => {
+    const client = new WsClient()
+    client.markAuthenticated()
+    const logger: Logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    client.logger = logger
+
+    vi.spyOn(client as unknown as { send: (msg: object) => void }, 'send').mockImplementation(() => {})
+    vi.spyOn((client as unknown as { matcher: { track: (id: number) => Promise<unknown> } }).matcher, 'track')
+      .mockResolvedValueOnce({ type: 2, id: 1, payload: { errorCode: 0 } } as never)
+
+    await client.sendRequest('subscribeFileProgress', { fileId: 'f1' })
+
+    const lines = (logger.info as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string)
+    expect(lines.some((s) => /\[trueconf\] outbound (wait_auth|wire_send|ack):/.test(s))).toBe(false)
+  })
+
+  it('203 retry logs two wait_auth + two wire_send + two ack with the same qid', async () => {
+    const forceReconnect = vi.fn(async (_reason: string) => {})
+    const client = new WsClient({ forceReconnect })
+    client.markAuthenticated()
+    const logger: Logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    client.logger = logger
+
+    forceReconnect.mockImplementationOnce(async () => {
+      client.resetAuthBarrier('forced reconnect')
+      client.markAuthenticated()
+    })
+    vi.spyOn(client as unknown as { sendRequestInternal: (m: string, p: Record<string, unknown>, t?: string) => Promise<{ type: 2; id: number; payload?: Record<string, unknown> }> }, 'sendRequestInternal')
+      .mockResolvedValueOnce({ type: 2, id: 1, payload: { errorCode: 203 } })
+      .mockResolvedValueOnce({ type: 2, id: 2, payload: { errorCode: 0 } })
+
+    await client.sendRequest('sendMessage', { chatId: 'abc' }, '42')
+
+    const lifecycleLines = (logger.info as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0] as string)
+      .filter((s) => /\[trueconf\] outbound (wait_auth|ack):/.test(s))
+    // wire_send is filtered out here because sendRequestInternal is stubbed via
+    // vi.spyOn — the real body (which logs wire_send) does not run. The 203
+    // path's behaviour we care about is wait_auth + ack repetition with stable qid.
+    expect(lifecycleLines).toEqual([
+      '[trueconf] outbound wait_auth: qid=42 method=sendMessage chatId=abc',
+      '[trueconf] outbound ack: qid=42 method=sendMessage chatId=abc errorCode=203',
+      '[trueconf] outbound wait_auth: qid=42 method=sendMessage chatId=abc',
+      '[trueconf] outbound ack: qid=42 method=sendMessage chatId=abc errorCode=0',
+    ])
+  })
+
+  it('does NOT log wire_send when send() throws (WebSocket not connected)', async () => {
+    const client = new WsClient()
+    client.markAuthenticated()
+    const logger: Logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    client.logger = logger
+
+    // No send() stub — the real send() throws because this.ws is null
+    // (no connect() called). The thrown error routes through
+    // matcher.reject → tracked promise rejects → sendRequest awaits and
+    // re-throws.
+    await expect(client.sendRequest('sendMessage', { chatId: 'abc' }, '42')).rejects.toThrow()
+
+    const lines = (logger.info as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string)
+    expect(lines.find((s) => s.startsWith('[trueconf] outbound wait_auth:'))).toBeDefined() // auth gate passed
+    expect(lines.find((s) => s.startsWith('[trueconf] outbound wire_send:'))).toBeUndefined() // send() threw
+    expect(lines.find((s) => s.startsWith('[trueconf] outbound ack:'))).toBeUndefined() // never reached
+  })
 })
 
 describe('WsClient — message handling on captured ws', () => {

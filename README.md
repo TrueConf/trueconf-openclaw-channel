@@ -41,6 +41,7 @@ With this channel, OpenClaw can:
 
 - **Work in group chats** — in a group the bot responds only when mentioned with `@` or when someone replies to its message (see the [Group Chats](#group-chats) section)
 - **Work across federation** — a bot on one TrueConf server replies to users on other servers via federation (see the [Cross-Server Federation](#cross-server-federation) section)
+- **Survive transient disconnects** — outbound messages park during WS reconnects and token rotations, then drain after re-auth (no manual retry, nothing lost)
 
 ## Requirements
 
@@ -98,17 +99,13 @@ You can run `trueconf-setup` again. You can change and save specific field value
 
 ### Self-signed certificates
 
-If TrueConf Server uses a self-signed certificate, the wizard offers three trust paths in decreasing order of safety:
+If your TrueConf Server uses a self-signed or internal-CA certificate, the wizard offers three trust paths (in decreasing order of safety):
 
-1. **Point to a CA from your admin** — the recommended path. If the TrueConf Server administrator gave you a root CA in PEM format, set `"caPath": "/path/to/server-ca.pem"` in the config (or pick "Specify path to a root CA certificate" in the interactive wizard).
-   - On TrueConf Server the certificate is usually stored as `*.crt`. If the file is in PEM format you can rename it to `*.pem`.
-   - If you own the server, find the certificate in the TrueConf Server control panel under HTTPS.
-2. **`NODE_EXTRA_CA_CERTS` / system trust** — make the CA root trusted at the OS or Node level (MDM, `update-ca-certificates`, or `export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/corp-ca.pem`). The probe sees the cert as trusted and `caPath` isn't needed at all.
-3. **Disable TLS verification** (`tlsVerify: false`) — last resort. Skips certificate verification for **this TrueConf Server only** (other Node HTTPS calls stay verified). Pick "Disable TLS certificate verification for this TrueConf Server" in the wizard, or set `"tlsVerify": false` in the config, or pass `TRUECONF_TLS_VERIFY=false` to the headless setup.
+1. **`caPath`** — point at a CA file from your admin. Set `"caPath": "/path/to/server-ca.pem"` in the config or pick "Specify path to a root CA certificate" in the interactive wizard.
+2. **`NODE_EXTRA_CA_CERTS` / system trust** — add the CA to the OS or Node trust store; the probe then sees the cert as trusted and `caPath` isn't needed.
+3. **`tlsVerify: false`** — last resort, skips verification for this TrueConf Server only. Pick "Disable TLS certificate verification for this TrueConf Server" in the wizard, set `"tlsVerify": false` in the config, or pass `TRUECONF_TLS_VERIFY=false` to the headless setup.
 
-> **Security.** Option #3 makes a MITM attack possible against TrueConf traffic — use it only in a safe or restricted environment (offline lab, trusted internal network). Option #1 is the closest to production-grade.
-
-> **What not to do.** Do **not** set `NODE_TLS_REJECT_UNAUTHORIZED=0`. That env var disables TLS validation for the **entire** Node process — every LLM provider, every webhook, every HTTPS call. The `tlsVerify: false` option above is per-TrueConf only.
+See [TLS trust for TrueConf Server](#tls-trust-for-trueconf-server) below for the full guide and security caveats — including why you should never set `NODE_TLS_REJECT_UNAUTHORIZED=0`.
 
 ### Verifying the channel
 
@@ -366,6 +363,7 @@ This channel is wire-compatible with [python-trueconf-bot](https://github.com/tr
 | Long captions (> 4096 chars) | Sent as a separate message before the file; file is then sent without caption | Same input is truncated server-side | Best-effort: if `sendFile` fails after the caption was delivered, the channel logs the orphan-text condition explicitly. |
 | DNS failures (`ENOTFOUND`, `EAI_AGAIN`, …) | 5 retries (≈ 31 s) then fail-fast | Retried indefinitely | Inside an OpenClaw runtime, an unresolvable hostname is almost always a typo in `serverUrl`; surfacing it loudly is more useful than retrying forever. |
 | Token expiry (`errorCode: 203`) on any RPC | Transport-level reconnect with fresh OAuth + transparent retry of the original request | User-level pattern via `examples/update_token.py` | Plugins should not require example boilerplate to stay connected. |
+| Outbound during WS reconnect or auth failure | Parked in an in-memory queue, drained after the next successful auth | Rejected to the caller; calling code retries | Transient WS drops and token rotations shouldn't lose user-facing replies, and applications shouldn't have to implement their own retry buffer. |
 
 The `setChatMutationHandler` callback (edit / remove / clearHistory events) is not currently exposed; the underlying push events are parsed and logged but not dispatched.
 
@@ -432,6 +430,7 @@ The `setChatMutationHandler` callback (edit / remove / clearHistory events) is n
 - **Symptom:** `[trueconf] Connection closed, scheduling reconnect` repeats in the logs.
 - **Cause:** WebSocket connection drop at the network layer. Heartbeat runs as ping/pong on a 20-second interval — if two pongs in a row don't arrive within 20 seconds, the connection is considered dead and the plugin reconnects. 
 - **Solution:** Check network stability to TrueConf Server, traceroute, MTU, corporate proxy/VPN between the client and the server. If there's a reverse proxy (nginx, haproxy) between the plugin and the server, make sure the WebSocket idle-connection timeouts there are large enough.
+- **Outbound during reconnect:** messages sent while the WS is down are parked in memory and delivered after the next successful auth — replies aren't lost across reconnects, only delayed. Trace a single request via `[trueconf] outbound qid=<id>` lines stepping through `submit → wait_auth → wire_send → ack`.
 
 
 ### Finding the logs

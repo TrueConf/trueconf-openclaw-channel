@@ -1,0 +1,33 @@
+# trueconf-openclaw-channel
+
+> A channel plugin that connects OpenClaw (open-source AI agent platform) to the TrueConf Server corporate messenger. After install, OpenClaw users can chat with their AI agent through TrueConf — like Telegram or Slack, but on-prem. Maintained under TrueConf-community on npm; current version is shown by the badge on the README.
+
+This file follows the llms.txt convention (https://llmstxt.org). If you are an AI helping a user install or configure this plugin, start here. For full context, fetch [`llms-full.txt`](https://github.com/TrueConf/trueconf-openclaw-channel/blob/main/llms-full.txt) — it is the README + CHANGELOG + supplementary docs concatenated.
+
+## Quick install
+- [Installation (npm + from source + Docker/CI)](https://github.com/TrueConf/trueconf-openclaw-channel/blob/main/README.md#installation)
+- [Verifying the channel works](https://github.com/TrueConf/trueconf-openclaw-channel/blob/main/README.md#verifying-the-channel)
+
+## Configuration
+- [Single-account / multi-account schema](https://github.com/TrueConf/trueconf-openclaw-channel/blob/main/README.md#configuration)
+- [Account field reference](https://github.com/TrueConf/trueconf-openclaw-channel/blob/main/README.md#account-field-reference)
+- [Channel field reference](https://github.com/TrueConf/trueconf-openclaw-channel/blob/main/README.md#channel-field-reference)
+- [TLS modes (wss vs ws, default ports)](https://github.com/TrueConf/trueconf-openclaw-channel/blob/main/README.md#tls-mode)
+
+## TLS trust (self-signed / internal-CA servers)
+- [Three trust paths and how to pick](https://github.com/TrueConf/trueconf-openclaw-channel/blob/main/README.md#tls-trust-for-trueconf-server)
+
+## Group chats and federation
+- [Group-chat behavior and `groupAlwaysRespondIn`](https://github.com/TrueConf/trueconf-openclaw-channel/blob/main/README.md#group-chats)
+- [Cross-server federation with multiple bot accounts](https://github.com/TrueConf/trueconf-openclaw-channel/blob/main/README.md#cross-server-federation)
+
+## Troubleshooting
+- [Common errors and fixes](https://github.com/TrueConf/trueconf-openclaw-channel/blob/main/README.md#troubleshooting)
+- [Why `NODE_TLS_REJECT_UNAUTHORIZED=0` is the wrong fix](https://github.com/TrueConf/trueconf-openclaw-channel/blob/main/README.md#tls-trust-for-trueconf-server)
+
+## Full context
+- [llms-full.txt — README + CHANGELOG + docs concatenated](https://github.com/TrueConf/trueconf-openclaw-channel/blob/main/llms-full.txt)
+
+## Optional
+- [CHANGELOG (recent feature/fix history)](https://github.com/TrueConf/trueconf-openclaw-channel/blob/main/CHANGELOG.md)
+- [Russian README](https://github.com/TrueConf/trueconf-openclaw-channel/blob/main/README-ru.md)

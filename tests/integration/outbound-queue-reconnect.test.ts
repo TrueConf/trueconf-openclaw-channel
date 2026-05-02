@@ -10,6 +10,7 @@ import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
 interface Harness {
   abort: () => void
   startPromise: Promise<void>
+  logger: { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn>; debug: ReturnType<typeof vi.fn> }
 }
 
 async function bootPlugin(server: FakeServer): Promise<Harness> {
@@ -39,7 +40,7 @@ async function bootPlugin(server: FakeServer): Promise<Harness> {
     abortSignal: ac.signal,
   })
   await waitFor(() => server.authRequests.length >= 1 && server.connections.size > 0)
-  return { abort: () => ac.abort(), startPromise }
+  return { abort: () => ac.abort(), startPromise, logger }
 }
 
 describe('integration: OutboundQueue end-to-end', () => {
@@ -106,6 +107,30 @@ describe('integration: OutboundQueue end-to-end', () => {
     expect(result.payload?.errorCode).toBe(0)
     expect(server.messageRequests).toHaveLength(1)
     expect(server.messageRequests[0]?.payload?.content).toMatchObject({ text: 'queued message' })
+
+    // L1c: full lifecycle for one outbound submitted across a park boundary
+    // threads a single qid. Whether wait_auth fires once (disconnect-beats-
+    // submit: first attempt blocks at waitAuthenticated until reconnect, then
+    // single wait_auth + wire_send + ack on drain) or twice (submit-beats-
+    // disconnect: pre-disconnect wait_auth + park, then drain wait_auth +
+    // ack) depends on Node-loop scheduling. The deterministic invariants are
+    // qid identity and exactly one successful ack at the end.
+    const lifecycleLines = harness.logger.info.mock.calls
+      .map((c) => c[0] as string)
+      .filter((s) => /\[trueconf\] outbound (submit|wait_auth|wire_send|ack):/.test(s))
+
+    const submitMatch = lifecycleLines.find((s) => s.startsWith('[trueconf] outbound submit:'))
+    expect(submitMatch).toBeDefined()
+    const qidMatch = submitMatch!.match(/qid=(\d+)/)
+    expect(qidMatch).not.toBeNull()
+    const qid = qidMatch![1]
+
+    const waitAuthCount = lifecycleLines.filter((s) => s.startsWith(`[trueconf] outbound wait_auth: qid=${qid} `)).length
+    const ackLines = lifecycleLines.filter((s) => s.startsWith(`[trueconf] outbound ack: qid=${qid} `))
+    const successAcks = ackLines.filter((s) => s.endsWith('errorCode=0'))
+
+    expect(waitAuthCount).toBeGreaterThanOrEqual(1) // at least the post-reconnect drain attempt
+    expect(successAcks).toHaveLength(1) // exactly one successful ack at the end
   }, 15_000)
 
   it('outbound survives reconnect that exceeds default waitAuthenticated timeout', async () => {

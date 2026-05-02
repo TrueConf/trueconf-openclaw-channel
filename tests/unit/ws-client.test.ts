@@ -335,13 +335,11 @@ describe('WsClient.sendRequest — 203 recovery', () => {
   })
 
   it('logs full lifecycle (wait_auth → wire_send → ack) on happy path when traceId provided', async () => {
-    const forceReconnect = vi.fn(async (_reason: string) => {})
-    const client = new WsClient({ forceReconnect })
+    const client = new WsClient()
     client.markAuthenticated()
     const logger: Logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     client.logger = logger
 
-    // Stub send() (no real WS) and matcher.track() (resolve with happy response).
     vi.spyOn(client as unknown as { send: (msg: object) => void }, 'send').mockImplementation(() => {})
     vi.spyOn((client as unknown as { matcher: { track: (id: number) => Promise<unknown> } }).matcher, 'track')
       .mockResolvedValueOnce({ type: 2, id: 1, payload: { errorCode: 0 } } as never)

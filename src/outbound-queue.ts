@@ -55,6 +55,9 @@ export class OutboundQueue {
         inFlight: false,
       }
       this.pending.set(item.id, item)
+      const chatId = typeof payload.chatId === 'string' ? payload.chatId : undefined
+      const chatIdSeg = chatId === undefined ? '' : ` chatId=${chatId}`
+      this.logger.info(`[trueconf] outbound submit: qid=${item.id} method=${method}${chatIdSeg}`)
       void this.attempt(item)
     })
   }

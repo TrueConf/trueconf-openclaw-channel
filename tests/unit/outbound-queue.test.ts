@@ -134,10 +134,11 @@ describe('OutboundQueue', () => {
     void queue.submit('sendMessage', { chatId: 'c1' })
     await new Promise((r) => setTimeout(r, 10))
 
-    expect(info).toHaveBeenCalledTimes(1)
-    expect(info).toHaveBeenCalledWith(
-      expect.stringMatching(/outbound parked: method=sendMessage attempt=1 reason=WebSocket is not connected/),
-    )
+    const parkLines = info.mock.calls
+      .map(([msg]) => String(msg))
+      .filter((m) => /outbound parked/.test(m))
+    expect(parkLines).toHaveLength(1)
+    expect(parkLines[0]).toMatch(/outbound parked: method=sendMessage attempt=1 reason=WebSocket is not connected/)
   })
 
   it('concurrent auth events do not double-attempt items (draining mutex)', async () => {
@@ -377,5 +378,59 @@ describe('OutboundQueue', () => {
       .map(([msg]) => String(msg))
       .filter((m) => /outbound queue terminal:.*drained=2/.test(m))
     expect(matched).toHaveLength(1)
+  })
+
+  it('emits submit log with qid+method+chatId on submit()', async () => {
+    const fake = makeFakeWsClient()
+    const response: TrueConfResponse = { type: 2, id: 1, payload: { errorCode: 0 } }
+    fake.sendRequest.mockResolvedValueOnce(response)
+    const logger: Logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+
+    const queue = new OutboundQueue(fake, logger)
+    await queue.submit('sendMessage', { chatId: 'abc', text: 'hi' })
+
+    const submitLine = (logger.info as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0] as string)
+      .find((s) => s.startsWith('[trueconf] outbound submit:'))
+    expect(submitLine).toMatch(/^\[trueconf\] outbound submit: qid=\d+ method=sendMessage chatId=abc$/)
+
+    const traceId = fake.sendRequest.mock.calls[0]?.[2]
+    expect(traceId).toEqual(expect.any(String))
+    expect(submitLine).toContain(`qid=${traceId}`)
+  })
+
+  it('submit log omits chatId segment when payload has no chatId', async () => {
+    const fake = makeFakeWsClient()
+    const response: TrueConfResponse = { type: 2, id: 1, payload: { errorCode: 0, chatId: 'newly-created' } }
+    fake.sendRequest.mockResolvedValueOnce(response)
+    const logger: Logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+
+    const queue = new OutboundQueue(fake, logger)
+    await queue.submit('createP2PChat', { userId: 'u1' })
+
+    const submitLine = (logger.info as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0] as string)
+      .find((s) => s.startsWith('[trueconf] outbound submit:'))
+    expect(submitLine).toMatch(/^\[trueconf\] outbound submit: qid=\d+ method=createP2PChat$/)
+  })
+
+  it('park-then-drain passes the same traceId on both sendRequest calls', async () => {
+    const fake = makeFakeWsClient()
+    fake.sendRequest
+      .mockRejectedValueOnce(parkable('WebSocket is not connected'))
+      .mockResolvedValueOnce({ type: 2, id: 1, payload: { errorCode: 0 } })
+
+    const queue = new OutboundQueue(fake, silentLogger)
+    const promise = queue.submit('sendMessage', { chatId: 'c1', text: 'hi' })
+
+    await new Promise((r) => setTimeout(r, 10))
+    fake.fireAuth() // triggers drain
+    await promise
+
+    expect(fake.sendRequest).toHaveBeenCalledTimes(2)
+    const traceId1 = fake.sendRequest.mock.calls[0]?.[2]
+    const traceId2 = fake.sendRequest.mock.calls[1]?.[2]
+    expect(traceId1).toBeDefined()
+    expect(traceId1).toBe(traceId2)
   })
 })

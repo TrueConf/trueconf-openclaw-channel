@@ -31,7 +31,9 @@
     "src/",
     "openclaw.plugin.json",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "llms.txt",
+    "llms-full.txt"
   ],
   "bin": {
     "trueconf-setup": "./bin/trueconf-setup.mjs"
@@ -92,6 +94,8 @@
     "test:watch": "vitest",
     "lint": "oxlint .",
     "typecheck": "tsc --noEmit",
-    "setup": "node ./bin/trueconf-setup.mjs"
+    "setup": "node ./bin/trueconf-setup.mjs",
+    "build:llms": "node scripts/build-llms-full.mjs",
+    "prepack": "node scripts/build-llms-full.mjs"
   }
 }

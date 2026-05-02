@@ -1,0 +1,1285 @@
+# === Source: README.md ===
+
+
+<p align="center">
+  <img src="assets/cover.png" alt="TrueConf-OpenClaw-Channel" width="800" height="auto">
+</p>
+
+<h1 align="center">OpenClaw Channel for TrueConf Server</h1>
+
+<p align="center">Connect <a href="https://openclaw.ai/">OpenClaw</a> to the corporate <a href="https://trueconf.com/products/tcsf/trueconf-server-free.html">TrueConf Server</a> messenger. </p>
+
+<p align="center">
+    <a href="https://www.npmjs.com/package/@trueconf-community/trueconf-openclaw-channel" target="_blank">
+      <img alt="NPM Version" src="https://img.shields.io/npm/v/%40trueconf-community%2Ftrueconf-openclaw-channel">
+    </a>
+    <img alt="NPM Downloads" src="https://img.shields.io/npm/d18m/%40trueconf-community%2Ftrueconf-openclaw-channel?label=Downloads">
+    <a href="https://t.me/trueconf_chat" target="_blank">
+        <img src="https://img.shields.io/badge/Telegram-2CA5E0?logo=telegram&logoColor=white" />
+    </a>
+    <a href="https://discord.gg/2gJ4VUqATZ">
+        <img src="https://img.shields.io/badge/Discord-%235865F2.svg?&logo=discord&logoColor=white" />
+    </a>
+    <a href="#">
+        <img src="https://img.shields.io/github/stars/trueconf/trueconf-openclaw-channel?style=social" />
+    </a>
+</p>
+
+<p align="center">
+  <a href="./README.md">English</a> /
+  <a href="./README-ru.md">Русский</a>
+</p>
+
+A channel that connects OpenClaw to the TrueConf corporate messenger. After installation, the OpenClaw AI agent communicates with users via TrueConf — messages sent to the bot are forwarded to the AI agent, and responses are delivered back to the chat.
+
+```
+[TrueConf client]  ->  [TrueConf Server]  ->  [OpenClaw + plugin]  ->      [LLM]
+    you type            Chatbot Connector       receives message        generates
+   a message                                     forwards to LLM          response
+```
+
+## Agent Capabilities
+
+With this channel, OpenClaw can:
+
+- **Work in group chats** — in a group the bot responds only when mentioned with `@` or when someone replies to its message (see the [Group Chats](#group-chats) section)
+- **Work across federation** — a bot on one TrueConf server replies to users on other servers via federation (see the [Cross-Server Federation](#cross-server-federation) section)
+- **Survive transient disconnects** — outbound messages park during WS reconnects and token rotations, then drain after re-auth (no manual retry, nothing lost)
+
+## Requirements
+
+- **OpenClaw** >= 2026.3.22
+- **TrueConf Server** >= 5.5.3 
+- **Bot account** on TrueConf Server 
+
+## Installation
+
+Prerequisites: `node >= 22.14`, `npm`, `openclaw` (`npm install -g openclaw@latest`).
+
+### From npm (recommended)
+
+```bash
+openclaw plugins install @trueconf-community/trueconf-openclaw-channel
+npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
+openclaw gateway
+```
+
+`trueconf-setup` is the channel setup wizard: it prompts for the server URL, bot username and password, verifies TLS and OAuth, and writes the result to `~/.openclaw/openclaw.json`.
+
+### From source 
+
+```bash
+git clone https://github.com/TrueConf/trueconf-openclaw-channel.git
+cd trueconf-openclaw-channel
+npm install
+openclaw plugins install -l .
+npm run setup      
+openclaw gateway
+```
+
+### Docker / Ansible / CI
+
+Set environment variables before running `trueconf-setup` — the wizard will detect them and skip all prompts:
+
+```bash
+export TRUECONF_SERVER_URL=tc.example.com
+export TRUECONF_USERNAME=bot_user              # account login only, without the server address
+export TRUECONF_PASSWORD=secret
+export TRUECONF_USE_TLS=true                   # optional; default — auto-detect
+export TRUECONF_PORT=443                       # optional; any port 1-65535
+export TRUECONF_ACCEPT_UNTRUSTED_CA=true       # required if the cert is self-signed and the wizard should download it
+
+openclaw plugins install @trueconf-community/trueconf-openclaw-channel
+npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
+openclaw gateway
+```
+
+Without `TRUECONF_ACCEPT_UNTRUSTED_CA=true`, on a self-signed certificate the wizard fails with `Self-signed cert detected; set TRUECONF_ACCEPT_UNTRUSTED_CA=true to auto-download chain`.
+
+### Re-running setup
+
+You can run `trueconf-setup` again. You can change and save specific field values as needed.
+
+### Self-signed certificates
+
+If your TrueConf Server uses a self-signed or internal-CA certificate, the wizard offers three trust paths (in decreasing order of safety):
+
+1. **`caPath`** — point at a CA file from your admin. Set `"caPath": "/path/to/server-ca.pem"` in the config or pick "Specify path to a root CA certificate" in the interactive wizard.
+2. **`NODE_EXTRA_CA_CERTS` / system trust** — add the CA to the OS or Node trust store; the probe then sees the cert as trusted and `caPath` isn't needed.
+3. **`tlsVerify: false`** — last resort, skips verification for this TrueConf Server only. Pick "Disable TLS certificate verification for this TrueConf Server" in the wizard, set `"tlsVerify": false` in the config, or pass `TRUECONF_TLS_VERIFY=false` to the headless setup.
+
+See [TLS trust for TrueConf Server](#tls-trust-for-trueconf-server) below for the full guide and security caveats — including why you should never set `NODE_TLS_REJECT_UNAUTHORIZED=0`.
+
+### Verifying the channel
+
+The logs should contain:
+
+```
+[trueconf] Connected and authenticated
+```
+
+Open the TrueConf client, find the bot in your contacts, and send it a message. 
+
+### Setting this up with an AI assistant?
+
+Point your assistant at [`llms.txt`](./llms.txt) (a short index) or paste the contents of [`llms-full.txt`](./llms-full.txt) into the chat for full grounded context.
+
+## Configuration
+
+### Single bot account
+
+```json
+{
+  "channels": {
+    "trueconf": {
+      "serverUrl": "trueconf.example.com",
+      "username": "bot_user",
+      "password": "bot_password",
+      "useTls": true,
+      "port": 443
+    }
+  }
+}
+```
+
+`port` is optional — without it the channel uses the default (443 for `useTls:true`, 4309 for `useTls:false`). See the full list of fields in the [reference](#account-field-reference) below.
+
+### Multiple bot accounts
+
+```json
+{
+  "channels": {
+    "trueconf": {
+      "accounts": {
+        "main-office": {
+          "serverUrl": "trueconf.example.com",
+          "username": "bot_user",
+          "password": "bot_password",
+          "useTls": true
+        },
+        "branch-office": {
+          "serverUrl": "branch.example.com",
+          "username": "bot_branch",
+          "password": "bot_branch_password",
+          "useTls": false,
+          "port": 5309
+        }
+      },
+      "dmPolicy": "allowlist",
+      "allowFrom": ["user1@trueconf.example.com", "user2@trueconf.example.com"],
+      "maxFileSize": 10485760
+    }
+  }
+}
+```
+
+> **Important:** `dmPolicy`, `allowFrom`, and `maxFileSize` live at the `channels.trueconf` level, **not** inside a specific account. If you put them inside `accounts.*`, the channel ignores them and falls back to defaults.
+
+### Account field reference
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `serverUrl` | string | Yes | — | TrueConf Server address (e.g., `10.0.0.1` or `trueconf.example.com`) |
+| `username` | string | Yes | — | Bot account username on the server (e.g., `bot_user`) |
+| `password` | string \| `{ useEnv: string }` | Yes | — | Bot password. Either a string or an env-var reference: `"password": { "useEnv": "TRUECONF_PASSWORD" }` |
+| `useTls` | boolean | Yes | — | `true` — connects via wss/https; `false` — via ws/http. |
+| `port` | number | No | `443` when `useTls:true`, `4309` when `useTls:false` | TrueConf Server port (1-65535). |
+| `clientId` | string | No | `"chat_bot"` | OAuth client_id. Override only if the server is configured with a non-standard chatbot client |
+| `clientSecret` | string | No | `""` | OAuth client_secret. Most TrueConf Server installations use a public client (empty secret) |
+| `caPath` | string | No | — | Path to a PEM file with the TrueConf Server certificate. Needed if the server uses a self-signed or corporate CA |
+| `tlsVerify` | boolean | No | `true` | When `false`, disables TLS certificate verification **for this TrueConf account only** (per-undici/per-ws). Last-resort insecure mode for self-signed servers; do not use in production. Mutually exclusive with `caPath` — the wizard clears the unused field when you switch modes |
+| `setupLocale` | `"en"` \| `"ru"` | No | `en` | Wizard interface language. Set automatically by `trueconf-setup` on first run; you can edit it manually or override via `TRUECONF_SETUP_LOCALE=en\|ru`. Runtime logs always stay English |
+| `enabled` | boolean | No | `true` | If false, the account won't run in the gateway but remains in the config |
+
+### Channel field reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `dmPolicy` | string | `"open"` | Direct-message access policy: `"open"` (everyone), `"allowlist"` (only users in `allowFrom`), `"closed"` / `"disabled"` (nobody). `"pairing"` is reserved for future functionality and currently behaves like `"open"` |
+| `allowFrom` | string[] | — | List of TrueConf IDs (`user@server`) allowed to DM the bot when `dmPolicy: "allowlist"` |
+| `maxFileSize` | number (bytes) | `52428800` (50 MB) | Maximum size of a single file. Applies equally to incoming and outgoing files. Range: 1 byte to 2 GB; on out-of-range values the channel logs `[trueconf] Invalid maxFileSize: ...` and falls back to the default |
+| `groupAlwaysRespondIn` | string[] | `[]` | List of titles and/or chatIds whose group messages bypass the mention/reply gate. Formats: `<name>`, `title:<name>`, `chatId:<id>`. See ["Always-respond chats"](#always-respond-chats) above |
+
+### TLS mode
+
+`useTls` picks the protocol 
+
+| `useTls` | Protocols | Default port | When to use |
+|----------|-----------|--------------|-------------|
+| `true` | `wss://` + `https://` | `443` | TrueConf Server with TLS — via Web Manager (443) or a custom TLS port (8443, 9443, ...) |
+| `false` | `ws://` + `http://` | `4309` | TrueConf Bridge without TLS — typical for internal networks or behind a reverse proxy |
+
+URLs the plugin builds:
+- OAuth token: `{scheme}://{serverUrl}[:{port}]/bridge/api/client/v1/oauth/token`
+- WebSocket: `{wsScheme}://{serverUrl}[:{port}]/websocket/chat_bot/`
+
+
+## Authentication
+
+The plugin uses **OAuth 2.0 Password Grant** to obtain a token and sends the resulting **JWT** in the WebSocket auth packet.
+
+```
+1. POST /bridge/api/client/v1/oauth/token
+   { "client_id": "chat_bot", "client_secret": "",
+     "grant_type": "password", "username": "...", "password": "..." }
+   → { "access_token": "<JWT>", "expires_at": 1234567890, ... }
+
+2. WS /websocket/chat_bot/
+   → { "type": 1, "method": "auth", "payload": { "token": "<JWT>", "tokenType": "JWT" } }
+```
+
+The token is refreshed automatically a minute before `expires_at` — the user does nothing, reconnects are transparent.
+
+## TLS trust for TrueConf Server
+
+TrueConf Server typically runs on-prem with an internal-CA-signed or self-signed TLS certificate. The channel offers three explicit trust paths, listed in decreasing order of safety:
+
+### 1. System trust (default, no action)
+
+Public certificates (Let's Encrypt, etc.) work out-of-the-box. For an internal CA, make the CA root trusted at the OS or Node level:
+
+- **MDM / GPO / Ansible** — push the CA cert to `/usr/local/share/ca-certificates/` (Linux) or the platform equivalent, then run `update-ca-certificates`.
+- **`NODE_EXTRA_CA_CERTS`** — set this env var in your systemd unit, Dockerfile `ENV`, or shell profile:
+  ```bash
+  export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/corp-ca.pem
+  ```
+
+The probe detects `authorized: true` and the wizard skips trust prompts.
+
+### 2. `caPath` — admin-provided root CA (recommended)
+
+If the TrueConf Server administrator gave you a root CA in PEM format, point the channel at it:
+
+- **Wizard interactive**: pick "Specify path to a root CA certificate" on the trust prompt, then enter the path.
+- **Manual config**: `"caPath": "/path/to/server-ca.pem"` in `~/.openclaw/openclaw.json`.
+- **Headless / CI / Docker / systemd**: `export TRUECONF_CA_PATH=/etc/trueconf/ca.pem` before running `trueconf-setup`.
+
+The wizard validates the file (parses as PEM and verifies it validates the live server) before proceeding. If validation fails, setup aborts with a specific reason.
+
+> On TrueConf Server the certificate is usually stored as `*.crt`. If the file is in PEM format you can rename it to `*.pem`. If you own the server, find the certificate in the TrueConf Server control panel under HTTPS.
+
+### 3. `tlsVerify: false` — disable certificate verification (last resort)
+
+For self-signed servers in safe or restricted environments where obtaining the CA isn't practical:
+
+- **Wizard interactive**: pick "Disable TLS certificate verification for this TrueConf Server" on the trust prompt and confirm the MITM warning.
+- **Manual config**: `"tlsVerify": false` in `channels.trueconf` (or per account).
+- **Headless**: `export TRUECONF_TLS_VERIFY=false` before running `trueconf-setup`.
+
+This is per-TrueConf only — every other Node HTTPS call (LLM provider, webhooks, etc.) keeps verification on. Setting `tlsVerify:false` and `caPath` together is rejected; `TRUECONF_TLS_VERIFY=false` together with `TRUECONF_CA_PATH` is rejected.
+
+> **Security.** Disabling verification opens TrueConf traffic to a MITM. Use this mode only in a safe or restricted environment (offline lab, trusted internal network).
+
+### Re-running the wizard
+
+On every subsequent run of `trueconf-setup`, the stored trust mode is re-checked against the live server. Three outcomes:
+
+- **Silent happy** — stored `caPath` still validates the server, or `tlsVerify:false` is still in effect → no prompts.
+- **Trust anchor mismatch** — stored CA no longer validates (cert rotation or MITM). A banner shows both old + new fingerprints and offers: *Abort / Accept new cert / Use admin-provided file*. **Always verify the new fingerprint with the admin out-of-band before accepting.**
+- **Missing trust anchor** — the file recorded in config is gone from disk. Banner offers: *Abort / Re-download chain (legacy) / Use admin-provided file*. If the file was removed by an attacker, re-downloading commits you to whatever the server is presenting — verify first.
+
+### Headless-specific notes
+
+`runHeadlessFinalize` (non-interactive setup invoked with `TRUECONF_SERVER_URL`/`_USERNAME`/`_PASSWORD`) mirrors the trust paths above but all failure modes are fatal — no prompts, no recovery:
+
+- `TRUECONF_CA_PATH=/etc/trueconf/ca.pem` — preferred for production CI/Docker.
+- `TRUECONF_TLS_VERIFY=false` — last-resort insecure mode. Mutually exclusive with `TRUECONF_CA_PATH`.
+- `TRUECONF_ACCEPT_UNTRUSTED_CA=true` — legacy option that auto-downloads the server's chain into `~/.openclaw/trueconf-ca.pem`. **Use only in trusted networks**; anywhere MITM is possible, use `TRUECONF_CA_PATH` or `TRUECONF_TLS_VERIFY=false` instead.
+
+### Wizard language
+
+The setup wizard defaults to **English**. On first run it prompts you to pick `English` or `Russian`; the choice is saved as `channels.trueconf.setupLocale` so re-runs do not re-prompt. Override via `TRUECONF_SETUP_LOCALE=en|ru` (env wins over config; invalid value fails fast). Runtime logs from the gateway stay English regardless.
+
+## Group Chats
+
+The channel works in group chats. Unlike direct messages, where the bot replies to every message, **in a group the bot only responds when explicitly addressed**:
+
+- **`@` mention**
+- **reply to the bot's message** — click "Reply" on one of the bot's recent messages. Buffer: last 50 bot messages per chat.
+
+Messages without a reply or mention are visible to the bot but get no response. The log will contain `[trueconf] group <chatId>: no mention/reply, dropping`.
+
+**Technical details:**
+
+- Chat type is determined via `getChatByID` on the first message in a new chat and cached until the gateway restarts. 
+- Each group = one shared session. The bot's conversation history is shared across the group, not per participant. Each message's `senderId` is preserved so the LLM knows who is speaking.
+- `dmPolicy` applies only to direct messages. In groups, filtering is based solely on mention/reply.
+- TrueConf channels (`chatType=6`) are ignored — the bot does not respond in them. Log: `[trueconf] dropping channel message chatId=<id>`.
+
+### Always-respond chats
+
+By default the bot only replies in groups when @-mentioned or replied to. To make the bot respond to every message in a specific group, list it in `groupAlwaysRespondIn`:
+
+```json
+{
+  "channels": {
+    "trueconf": {
+      "groupAlwaysRespondIn": [
+        "HR-questions",
+        "title:#devops",
+        "chatId:51ffe1b1-1515-498e-8501-233116adf9da"
+      ]
+    }
+  }
+}
+```
+
+**Entry formats:**
+
+- `<name>` — the chat title (default). Leading/trailing whitespace and case are normalized; internal whitespace is preserved.
+- `title:<name>` — explicitly the title (useful when the title would otherwise look like a chatId).
+- `chatId:<id>` — explicitly a chatId. The prefix is required — without it the string is treated as a title.
+
+**Where to find a chatId:** the plugin logs `[trueconf] group <chatId> ...` on the first message from a chat — copy the `<chatId>` value.
+
+**Startup behavior:** the plugin queries the bot's full chat list and matches titles. Titles that don't currently match any group are not an error — the bot may not have been added yet, and the bypass activates automatically when it joins.
+
+**Renames:** if a group's title changes, the plugin re-evaluates. A group whose new title is in `groupAlwaysRespondIn` becomes always-respond; one whose new title isn't is removed. The diff is logged.
+
+**Duplicate titles:** if one configured title matches multiple groups, the bypass applies to all of them and the plugin warns. For pinpoint targeting, use `chatId:`.
+
+**Multi-account:** the list is shared across all accounts in the channel. A title `"HR"` matches the same-named group in every account that has one. `chatId` is globally unique on a TrueConf server — if two accounts are members of the same group, the chatId is identical for both.
+
+**Limitations:**
+
+- Only group chats (`chatType=2`) are activated. Channels (`chatType=6`) are not.
+- If `getChats` fails on startup, title-based entries stay inactive until the next successful reconnect — `chatId:` entries always work.
+- The list is not hot-reloaded; restart the gateway after changes.
+
+## Cross-Server Federation
+
+If multiple accounts are configured (`accounts.office`, `accounts.support`, ...):
+
+- Each account gets its own WebSocket connection, its own CA trust, its own last-inbound-route buffer, and its own recent-bot-messages cache.
+- A single account failing to start doesn't affect the others: the gateway logs `[trueconf] Account <id> startup failed: ...` and continues starting the rest.
+- Outgoing-response routing uses `ctx.accountId`. The LLM must know which account to reply from; this is typically derived from the inbound `accountId`.
+- `dmPolicy`, `allowFrom`, and `maxFileSize` are shared across all accounts (at the `trueconf.*` level). Per-account versions are not supported.
+
+## Media Files and Limits
+
+The channel sends and receives files via TrueConf: images, audio, video, and documents. Size is limited by `maxFileSize` (see the channel field reference). Default — 50 MB.
+
+## Differences from python-trueconf-bot
+
+This channel is wire-compatible with [python-trueconf-bot](https://github.com/trueconf/python-trueconf-bot) — both speak the TrueConf Chatbot Connector protocol. A handful of user-visible behaviors are deliberately different:
+
+| Behavior | This channel | python-trueconf-bot | Why |
+|----------|--------------|---------------------|-----|
+| Default text rendering | `parseMode: 'markdown'` | `ParseMode.TEXT` | LLMs emit markdown by default; rendering it in TrueConf gives the user formatted output without extra configuration. |
+| Long text (> 4096 chars) | Auto-split into chunks (paragraph → sentence → hard cut), order preserved by a per-chat queue | Truncated server-side | LLM responses regularly exceed the limit; paragraph-first splitting is gentler on markdown. |
+| Long captions (> 4096 chars) | Sent as a separate message before the file; file is then sent without caption | Same input is truncated server-side | Best-effort: if `sendFile` fails after the caption was delivered, the channel logs the orphan-text condition explicitly. |
+| DNS failures (`ENOTFOUND`, `EAI_AGAIN`, …) | 5 retries (≈ 31 s) then fail-fast | Retried indefinitely | Inside an OpenClaw runtime, an unresolvable hostname is almost always a typo in `serverUrl`; surfacing it loudly is more useful than retrying forever. |
+| Token expiry (`errorCode: 203`) on any RPC | Transport-level reconnect with fresh OAuth + transparent retry of the original request | User-level pattern via `examples/update_token.py` | Plugins should not require example boilerplate to stay connected. |
+| Outbound during WS reconnect or auth failure | Parked in an in-memory queue, drained after the next successful auth | Rejected to the caller; calling code retries | Transient WS drops and token rotations shouldn't lose user-facing replies, and applications shouldn't have to implement their own retry buffer. |
+
+The `setChatMutationHandler` callback (edit / remove / clearHistory events) is not currently exposed; the underlying push events are parsed and logged but not dispatched.
+
+## Troubleshooting
+
+### `fetch failed` on startup
+
+- **Cause:** The TrueConf Server certificate is not from a public CA (self-signed or from a corporate CA), and Node.js doesn't trust it.
+- **Solution:** Re-run `trueconf-setup`. Pick "Specify path to a root CA certificate" and provide a `.pem` from the server admin (preferred), or "Disable TLS certificate verification for this TrueConf Server" if you accept the MITM risk for this transport (last resort). You can also set `"caPath": "/path/to/ca.pem"` or `"tlsVerify": false` in the config manually, or export `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` for system-wide trust. See [TLS trust for TrueConf Server](#tls-trust-for-trueconf-server).
+- **What not to do:** `NODE_TLS_REJECT_UNAUTHORIZED=0` disables TLS validation for the **entire** Node process, including calls to the LLM provider and any other endpoints. Use the per-account `tlsVerify: false` option above if you need an insecure mode — it scopes the bypass to TrueConf only.
+
+### `blocked URL fetch ... resolves to private/internal/special-use IP address`
+
+- **Cause:** A corporate proxy or VPN redirects LLM-provider requests (e.g., api.openai.com) to an internal address.
+- **Solution:** Configure a proxy (`HTTPS_PROXY`) or use a local model via Ollama.
+
+### `Missing API key for provider "openai"`
+
+- **Cause:** LLM provider is not configured.
+- **Solution:** Run `openclaw configure` and pick a provider (OpenAI, Ollama, etc.).
+
+### Invalid credentials
+
+- **Symptom:** `OAuth token acquisition failed (401): invalid_grant` in the logs.
+- **Cause:** Wrong `username` or `password` in the config.
+- **Solution:** Make sure `username` is just the account name (`bot_user`), without `@server.trueconf.name`; the server address goes separately in `serverUrl`. Verify the account is active in the TrueConf Server admin panel. If the server is configured with a non-standard OAuth client, set `clientId` and `clientSecret` in the config.
+
+### TLS mismatch
+
+- **Symptom:** `WebSocket error: connect ECONNREFUSED` right after start.
+- **Cause:** `useTls` doesn't match the server's configuration, or the `port` is wrong.
+- **Solution:** Make sure `useTls` matches the server's protocol (TLS ↔ true). If the port is non-default, set `port` explicitly. See [TLS mode](#tls-mode).
+
+### Port blocked by firewall
+
+- **Symptom:** `WebSocket error: connect ECONNREFUSED` or `ETIMEDOUT` with otherwise-valid `serverUrl`/`useTls`.
+- **Cause:** The firewall blocks the chosen port (4309, 443, or a custom one).
+- **Solution:** Open the port on the firewall, or switch to a different port/mode (Web Manager on 443 with `useTls:true`, Bridge on 4309 with `useTls:false`, a custom port via the `port` field).
+
+### Bot connects but doesn't respond
+
+- **Symptom:** The log shows `Connected and authenticated`, but there are no replies.
+- **Possible causes:**
+  1. You're messaging the bot from the same account — you need to write from a **different** user.
+  2. Group-chat message without an @-mention and without a reply to the bot — in a group you have to address the bot explicitly (see the [Group Chats](#group-chats) section). The log will contain `group <chatId>: no mention/reply, dropping`.
+  3. Message in a TrueConf channel (`chatType=6`) — the bot ignores them. Log: `dropping channel message chatId=<id>`.
+  4. `dmPolicy: "allowlist"` and the sender isn't in `allowFrom`. Log: `DM blocked for <id> by policy`.
+  5. LLM provider is not configured — run `openclaw configure`.
+  6. LLM provider is unreachable from the network — check access or use Ollama.
+
+### Bot sends a photo without the caption
+
+- **Symptom:** The agent replies "Here's a cat 🐱" with an attached picture; the TrueConf chat only shows the photo, the text is gone.
+- **Cause:** In openclaw `2026.4.22`, when `agents.defaults.blockStreamingDefault` is `"off"` (also the default when the field is unset), the caption and the media are split into separate blocks and the text part is dropped by the final filter before reaching the plugin's deliver.
+- **Fix:**
+  ```bash
+  openclaw config set agents.defaults.blockStreamingDefault on
+  openclaw config set agents.defaults.blockStreamingBreak message_end
+  ```
+  Then restart the gateway. The agent will hand text and media to the plugin as a single block, and the plugin will send the photo with the caption.
+
+### Frequent reconnects
+
+- **Symptom:** `[trueconf] Connection closed, scheduling reconnect` repeats in the logs.
+- **Cause:** WebSocket connection drop at the network layer. Heartbeat runs as ping/pong on a 20-second interval — if two pongs in a row don't arrive within 20 seconds, the connection is considered dead and the plugin reconnects. 
+- **Solution:** Check network stability to TrueConf Server, traceroute, MTU, corporate proxy/VPN between the client and the server. If there's a reverse proxy (nginx, haproxy) between the plugin and the server, make sure the WebSocket idle-connection timeouts there are large enough.
+- **Outbound during reconnect:** messages sent while the WS is down are parked in memory and delivered after the next successful auth — replies aren't lost across reconnects, only delayed. Trace a single request via `[trueconf] outbound qid=<id>` lines stepping through `submit → wait_auth → wire_send → ack`.
+
+
+### Finding the logs
+
+All plugin messages are prefixed with `[trueconf]`. To filter:
+
+**Linux/macOS:**
+
+```bash
+openclaw gateway 2>&1 | grep '\[trueconf\]'
+```
+
+**Windows (PowerShell):**
+
+```powershell
+openclaw gateway | Select-String '\[trueconf\]'
+```
+
+Log file: the path is shown in the gateway output (`[gateway] log file: ...`).
+
+## Testing
+
+```bash
+npm test
+```
+
+## License
+
+MIT
+
+# === Source: CHANGELOG.md ===
+
+
+# Changelog
+
+## [1.2.5] - 2026-05-01
+
+### Added
+- At-least-once outbound delivery via in-memory `OutboundQueue`. Outbound requests (`sendMessage`, `sendFile`, `uploadFile`, `createP2PChat`) survive arbitrary-length WS reconnect windows by parking on transport errors and draining on each successful auth. Closes failure-mode classes (i)/(iii)/(v)/(vi)/(vii) from item 49.
+- `LifecycleOptions.onTerminalFailure` callback fires from `lifecycle.shutdown()` and after `DNS_MAX_RETRIES` exhaustion. Wired to `outboundQueue.failAll` in `channel.ts` so terminal failures reject pending outbound with explicit cause.
+- Outbound lifecycle instrumentation (`submit` / `wait_auth` / `wire_send` / `ack`) correlated by `qid` for failure-mode diagnosis (L1c). Each outbound request emits four `.info` log lines threading a single id from `OutboundQueue.submit` through `WsClient.sendRequest` and `sendRequestInternal`. Direct ws-client callers (`subscribeFileProgress`) skip the lifecycle log via the optional `traceId` parameter.
+
+### Fixed
+- Reconnect-time WS-handshake and auth-response failures (e.g. `ECONNREFUSED`, `Server sent no subprotocol`, `Auth failed: errorCode N`) now park outbound items instead of rejecting them. `lifecycle.start` wraps the auth-barrier rejection as parkable so `waitAuthenticated` callers go through the queue's park-and-drain branch; terminal causes (`DNS_MAX_RETRIES`, `shutdown`) keep their non-parkable form so `onTerminalFailure -> failAll` still flushes pending items on give-up.
+
+### Changed
+- `outbound.ts` migrated from `wsClient.sendRequest` / `sendRequestWithReconnectRetry` to `outboundQueue.submit` for all 5 outbound sites. Helper signatures (`sendText`, `sendTextToChat`, `createP2PChat`, `resolveDirectChat`, `recreateChat`) cascade `outboundQueue` parameter.
+
+### Removed
+- `outbound.ts:sendRequestWithReconnectRetry` and `DISCONNECTED_RETRY_DELAYS_MS` — superseded by `OutboundQueue` (longer parking window, no fixed retry budget).
+
+## 1.2.2
+
+Fixed plugin failing to load against current openclaw versions due to
+reliance on a private SDK subpath (`openclaw/plugin-sdk/mattermost`)
+for `loadOutboundMediaFromUrl`. Internalized the helper in
+`src/load-media.ts` to remove the dependency on non-public openclaw
+internals.
+
+# === Source: docs/design/2026-05-01-l1b-at-least-once-outbound-design.md ===
+
+
+# L1b — At-least-once outbound delivery
+
+**Status:** locked 2026-05-01, ready for plan.
+**Target release:** v1.2.5.
+**Predecessor:** L1a (PR #17, item 26 stale-guard fix, merged in main).
+**Successor:** L2 / v1.3.0 (WS-в-worker, опционально).
+**TECH-DEBT.md:** item 49 (L1b).
+
+---
+
+## 1. Проблема
+
+Из arkatov-логов и анализа 2026-05-01: outbound-доставка ответа пользователю теряется в окне reconnect, превышающем суммарный timeout текущих защит.
+
+Конкретный путь потери:
+
+1. WS умирает (1006 от event-loop-block, либо любой другой close-event).
+2. `lifecycle.start()` начинает заново: `resetAuthBarrier` → `acquireToken` → `connect` → `markAuthenticated`. У arkatov-а полный цикл занял 1m34s.
+3. NEW outbound вызов в этом окне: `WsClient.sendRequest` → `await waitAuthenticated()` (default 30s timeout) → throw через 30s.
+4. Caller `sendRequestWithReconnectRetry` ловит throw, ретраит 2 раза с [1s, 2s] backoff (`outbound.ts:45 DISCONNECTED_RETRY_DELAYS_MS`).
+5. Ещё ~3s, итого окно защиты ~33s. У arkatov-а до конца reconnect 1m34s — окна не хватает.
+6. Caller возвращает `{ ok: false }`, OpenClaw считает ответ не-доставленным. Реальное доказательство потери — отсутствует (failure-case логи не пойманы), но окно пути присутствует.
+
+Дополнительные failure-mode'ы из item 49, которые тот же недостаточный retry-window не покрывает:
+- (iii) Token TTL race — `forceReconnect` для 203 не атомарен с inflight outbound.
+- (v) bookkeeping mismatch — `Shutting down 0 connection(s)` vs последующее `Shutting down connection`.
+- (vi) sendQueue head-of-line — head-блок другого send'а пожирает чужой 30s timeout.
+- (vii) Блокировки от других плагинов (qqbot mid-run lazy-install).
+
+Все они закрываются одной механикой: «помнить отправку до response, перевыстреливать на каждом успешном reconnect».
+
+## 2. Решение
+
+In-memory очередь `OutboundQueue` между `outbound.ts` и `WsClient`. Каждый outbound-запрос регистрируется в pending-Map, отправляется через `WsClient.sendRequest`, и:
+
+- **Response (любой `errorCode`)** → resolve, item покидает очередь, caller разбирается с errorCode на своём слое.
+- **Reconnectable transport-error** (5 паттернов — см. §5) → park (item остаётся в pending). На следующем `WsClient.onAuth` событие — drain в submission order.
+- **Terminal failure** (DNS-5x-fail / lifecycle.shutdown) → `failAll(err)`: reject все pending с указанной причиной, очередь становится dead (новые submit throw'ят). Terminal-сигнал приходит через `LifecycleOptions.onTerminalFailure` callback, который `channel.ts` wir'ит на `outboundQueue.failAll`.
+
+Soft-cap по количеству (anti-pathology guard) — out of MVP. Без cap'а очередь растёт неограниченно ТОЛЬКО в сценарии «reconnect никогда не успешен И terminal не достигнут» (например forever-flapping без 5×DNS подряд) при активном caller'е. В нормальной работе terminal или reconnect drain'ит. Если кто-то репортнёт OOM в pathology — добавим cap отдельным итератом.
+
+Очередь не знает per-chat ordering. Это ответственность вышестоящего `PerChatSendQueue.enqueue(chatId, fn)` — пока fn-A1 паркнут, fn-A2 для того же чата ждёт в `PerChatSendQueue` и не доходит до `OutboundQueue`. Между разными chatId порядок не важен.
+
+Time-TTL не вводим. Token rotation в текущем коде = тот же reconnect через `wsClient.close()`, и item drain'ится автоматически. Дополнительная TTL-логика = код ради не-проявившегося симптома.
+
+Caller-promise остаётся открытым пока item не resolved/rejected. OpenClaw увидит «slow reply 1m34s» в arkatov-кейсе, но не false-positive «доставлено». Это сохраняет семантику текущего `sendRequestWithReconnectRetry`, просто делает retry-window достаточным.
+
+## 3. Scope
+
+**В scope (4 outbound-сайта):**
+
+| Сайт | Метод | Где |
+|---|---|---|
+| `sendMessageRequest` | `sendMessage` | `outbound.ts:216` |
+| `prepareAttachmentUpload` | `uploadFile` | `outbound.ts:539` |
+| `handleOutboundAttachment` (file send) | `sendFile` | `outbound.ts:693`, `:713` |
+| `handleOutboundAttachmentToChat` | `sendFile` | `outbound.ts:805` |
+| `createP2PChat` | `createP2PChat` | `outbound.ts:124` (через `sendRequestWithReconnectRetry`) |
+
+**Не в scope** (inbound-side reads, остаются с bare `wsClient.sendRequest`):
+
+- `getChatByID` — inbound enrichment, retry бесполезен для протухшего pipeline'а.
+- `subscribeFileProgress` — двойная подписка после reconnect = дублирование push'ей.
+- `unsubscribeFileProgress` — fire-and-forget cleanup.
+- `getFileInfo` — inbound metadata lookup.
+- `getChats` — paginated enumeration (setup/cache rebuild).
+
+**Удаляется как dead code после миграции:**
+- `outbound.ts:DISCONNECTED_RETRY_DELAYS_MS`
+- `outbound.ts:sendRequestWithReconnectRetry`
+
+**Остаётся как public utility:** `outbound.ts:isReconnectableSendError`. Используется в 6 местах для классификации failure-reason'а (`isReconnect ? 'reconnect' : 'sendFailed'` и т.п.) — `inbound.ts:584` для file progress subscribe, `outbound.ts:541/679/695/716/807` для media-upload error reasons. После удаления `sendRequestWithReconnectRetry` функция остаётся пригодной для классификации, не для retry-loop'а.
+
+`OutboundQueue.isReconnectable` — отдельный private predicate с расширенным match-set'ом (добавлены `'auth barrier reset:'` и `'New connection started'` сверх двух паттернов из `isReconnectableSendError`). Два предиката намеренно разнесены: `isReconnectableSendError` отвечает на «достаточно ли transient для user-facing reconnect-сообщения», `OutboundQueue.isReconnectable` — на «достаточно ли transient для park'а». Списки overlap'ятся, но не идентичны.
+
+## 4. Архитектура
+
+```
+caller (channel.ts inbound dispatch / always-respond)
+   │
+   ▼
+outbound.ts (sendText / sendTextToChat / handleOutboundAttachment / handleOutboundAttachmentToChat)
+   │  использует
+   ▼
+PerChatSendQueue.enqueue(chatId, fn)            ← per-chat ordering, без изменений
+   │  внутри fn вызывает
+   ▼
+OutboundQueue.submit(method, payload)           ← новый модуль
+   │  использует
+   ▼
+WsClient.sendRequest(method, payload)            ← без изменений
+                                                  (terminal сигнал из LifecycleOptions)
+```
+
+**Новый файл**: `src/outbound-queue.ts` (~120-150 строк).
+
+**Изменения в `src/ws-client.ts`**: ноль. Transport-слой не трогаем. `OutboundQueue` использует существующие `sendRequest` и `onAuth`. На 30s timeout `waitAuthenticated()` мы park'имся (см. §7.1) — pure caller-side политика.
+
+**Изменения в `src/ws-client.ts:LifecycleOptions`** (тип в том же файле):
+```typescript
+interface LifecycleOptions {
+  onConnectionClosed?: (code: number, reason: string) => void
+  onConnected?: () => void
+  onDisconnected?: () => void
+  onTerminalFailure?: (err: Error) => void   // новый callback
+}
+```
+`ConnectionLifecycle` дёргает `options?.onTerminalFailure?.(err)` в двух местах: после DNS_MAX_RETRIES exhaustion и в `shutdown()`. Channel.ts wir'ит callback на `outboundQueue.failAll`.
+
+**Изменения в `src/outbound.ts`**:
+- 4 outbound-сайта переключаются с `wsClient.sendRequest` / `sendRequestWithReconnectRetry` на `outboundQueue.submit`.
+- `sendRequestWithReconnectRetry`, `DISCONNECTED_RETRY_DELAYS_MS` удаляются.
+- `OutboundAttachmentDeps` получает поле `outboundQueue: OutboundQueue`. Существующие поля (`wsClient`, `resolved`, `store`, `channelConfig`, `logger`, `dispatcher`, `limits`, `sendQueue`) сохраняются — `wsClient` остаётся для не-выходящих в очередь операций (HTTP multipart upload использует только `dispatcher`, не `wsClient`, но утилиты `hostPort` и type-imports остаются).
+- `sendText`, `sendTextToChat` сигнатуры расширяются параметром `outboundQueue: OutboundQueue` (не через bag, чтобы не плодить interface'ы для двух-параметрового caller'а).
+- `sendMessageRequest` (private helper) — то же.
+- `createP2PChat`, `resolveDirectChat`, `recreateChat` — каскадно расширяются `outboundQueue` параметром, потому что `createP2PChat` делает `submit('createP2PChat', ...)`. Эти три helper'а вызываются из `sendText` и `handleOutboundAttachment` — оба получают `outboundQueue` сверху, прокидывают вниз.
+
+**Изменения в `src/channel.ts`**:
+- Instantiate `OutboundQueue` сразу после `WsClient` в setup. Передавать в outbound-сайты.
+- При создании `ConnectionLifecycle` передать `onTerminalFailure: (err) => outboundQueue.failAll(err)` в `LifecycleOptions`.
+- В channel teardown (там же где сейчас `lifecycle.shutdown()`) дёргать `outboundQueue.failAll(new Error('channel teardown'))` — для случая, когда teardown идёт не через lifecycle (defensive). Если teardown ВСЕГДА идёт через lifecycle.shutdown → onTerminalFailure → failAll, явный вызов — duplicate (но идемпотентен через `if (this.terminalError) return`).
+
+## 5. Компоненты
+
+### 5.1 `OutboundQueue` (новый)
+
+```typescript
+interface PendingItem {
+  id: string                                    // монотонный счётчик
+  method: string
+  payload: Record<string, unknown>
+  resolve: (response: TrueConfResponse) => void
+  reject: (err: Error) => void
+  attempts: number                              // только для логов
+}
+
+class OutboundQueue {
+  private readonly pending = new Map<string, PendingItem>()   // Map → FIFO insertion order
+  private idCounter = 0
+  private draining = false
+  private terminalError: Error | null = null
+  private offAuth: (() => void) | null = null
+  
+  constructor(
+    private readonly client: WsClient,
+    private readonly logger: Logger,
+  ) {
+    this.offAuth = client.onAuth(() => void this.drain())
+  }
+  
+  async submit(method: string, payload: Record<string, unknown>): Promise<TrueConfResponse> {
+    if (this.terminalError) throw this.terminalError
+    return new Promise<TrueConfResponse>((resolve, reject) => {
+      const item: PendingItem = {
+        id: String(++this.idCounter),
+        method, payload, resolve, reject,
+        attempts: 0,
+      }
+      this.pending.set(item.id, item)
+      void this.attempt(item)
+    })
+  }
+  
+  // Дёргается channel.ts через LifecycleOptions.onTerminalFailure callback,
+  // и из явного teardown'а как defensive duplicate (идемпотентен).
+  failAll(err: Error): void {
+    if (this.terminalError) return                              // уже dead, no-op
+    this.terminalError = err
+    const items = Array.from(this.pending.values())
+    this.pending.clear()
+    if (items.length > 0) {
+      this.logger.warn(
+        `[trueconf] outbound queue terminal: reason=${err.message} drained=${items.length}`,
+      )
+    }
+    for (const item of items) item.reject(err)
+    this.offAuth?.(); this.offAuth = null
+  }
+  
+  private async attempt(item: PendingItem): Promise<void> {
+    if (!this.pending.has(item.id)) return     // terminal between schedule и run
+    item.attempts++
+    try {
+      const response = await this.client.sendRequest(item.method, item.payload)
+      if (this.pending.delete(item.id)) item.resolve(response)
+    } catch (err) {
+      if (this.isReconnectable(err)) {
+        this.logger.info(
+          `[trueconf] outbound parked: method=${item.method} attempt=${item.attempts} ` +
+          `reason=${err instanceof Error ? err.message : String(err)}`,
+        )
+        return                                  // park: item остаётся в pending
+      }
+      if (this.pending.delete(item.id)) {
+        item.reject(err instanceof Error ? err : new Error(String(err)))
+      }
+    }
+  }
+  
+  private isReconnectable(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err)
+    return (
+      message.includes('WebSocket is not connected') ||
+      message.startsWith('WebSocket closed:') ||
+      message.startsWith('auth barrier reset') ||
+      message.startsWith('waitAuthenticated timed out') ||
+      message === 'New connection started'
+    )
+  }
+  
+  private async drain(): Promise<void> {
+    if (this.draining || this.terminalError) return
+    this.draining = true
+    try {
+      const items = Array.from(this.pending.values())
+      for (const item of items) {
+        if (this.terminalError) break
+        if (!this.pending.has(item.id)) continue
+        await this.attempt(item)
+      }
+    } finally {
+      this.draining = false
+    }
+  }
+}
+```
+
+### 5.2 `LifecycleOptions` extension
+
+Добавляем поле в существующий interface (`ws-client.ts:445-449`):
+
+```typescript
+interface LifecycleOptions {
+  onConnectionClosed?: (code: number, reason: string) => void
+  onConnected?: () => void
+  onDisconnected?: () => void
+  onTerminalFailure?: (err: Error) => void   // новый
+}
+```
+
+`ConnectionLifecycle` дёргает `options?.onTerminalFailure?.(err)` рядом с существующим `markAuthFailed`. Один инстанс ошибки, два канала:
+
+```typescript
+// После DNS_MAX_RETRIES exhausted (ws-client.ts:642-649):
+const terminal = new NetworkError(
+  `dns_unreachable: gave up after ${this.dnsRetryCount} retries`,
+  'websocket', undefined, DNS_TERMINAL_CODE,
+)
+this.wsClient.markAuthFailed(terminal)
+this.options?.onTerminalFailure?.(terminal)   // новое
+
+// В shutdown():
+shutdown(): void {
+  this.logger.info('[trueconf] Shutting down connection')
+  this.shuttingDown = true
+  const terminal = new Error('lifecycle shutting down')
+  this.wsClient.markAuthFailed(terminal)
+  this.options?.onTerminalFailure?.(terminal)   // новое
+  this.stopTimers()
+  this.cancelReconnect()
+  this.wsClient.close()
+}
+```
+
+`markAuthFailed` остаётся для transient/terminal обоих типов (auth pending не пришёл — `OutboundQueue` парк'ит на 30s timeout, потом ждёт onAuth). `onTerminalFailure` callback — отдельный канал «не reconnect'нёмся, очередь сворачивается».
+
+Защита от throw в callback — try/catch вокруг вызова, как уже есть для других LifecycleOptions callback'ов (`ws-client.ts:506-509`).
+
+### 5.4 Caller migration (`outbound.ts`)
+
+```typescript
+// Было:
+const response = await client.sendRequest('sendMessage', { chatId, content: { text: chunk, parseMode: 'markdown' } })
+
+// Стало:
+const response = await outboundQueue.submit('sendMessage', { chatId, content: { text: chunk, parseMode: 'markdown' } })
+```
+
+И аналогично для `uploadFile`, `sendFile`, `createP2PChat`. Сигнатура `sendMessageRequest`, `sendText`, `sendTextToChat`, `handleOutboundAttachment`, `handleOutboundAttachmentToChat` расширяется параметром (или через `OutboundAttachmentDeps`-подобный bag).
+
+## 6. Data flow / state machine
+
+### 6.1 Lifecycle одного `PendingItem`
+
+```
+            submit()
+               │
+               ▼
+       ┌──────────────┐
+       │  IN_PENDING  │◄──────┐
+       └──────┬───────┘       │ park (reconnectable error)
+              │               │ или drain нашёл его
+              │ attempt       │
+              ▼               │
+       ┌──────────────┐       │
+       │  TRYING_NOW  │───────┘
+       └──┬────────┬──┘
+          │        │
+response  │        │ non-reconnectable error
+(any code)│        │ или terminal-failure
+          ▼        ▼
+     RESOLVED    REJECTED
+```
+
+`IN_PENDING` = в `Map`, ждёт следующего `attempt`. `TRYING_NOW` = висит на `await client.sendRequest`. Завершено = удалено из `Map`.
+
+### 6.2 Flow 1 — happy path
+
+1. `submit` создаёт item, `pending.set`, дёргает `attempt(item)`.
+2. `attempt` → `client.sendRequest(method, payload)` → response.
+3. `pending.delete(id)` → `item.resolve(response)`. Caller получает response.
+
+### 6.3 Flow 2 — reconnect-окно
+
+1. `submit` → `attempt` → `client.sendRequest` → throw `'WebSocket is not connected'` (или `'WebSocket closed:'`, или `'auth barrier reset:'`).
+2. `attempt` ловит → `isReconnectable(err) === true` → return (item остаётся в pending).
+3. `lifecycle.start()` → `connect()` → `markAuthenticated()` → `authListeners` → `OutboundQueue.drain()`.
+4. `drain` snapshot'ит `pending.values()` (insertion order), последовательно `await attempt(item)` каждый.
+5. Каждый item — `client.sendRequest` уже на свежем сокете → response → resolve.
+
+Per-chat ordering сохраняется автоматически через `PerChatSendQueue` upstream — пока fn-A1 паркнут (внутри fn-A1 пендинг submit), fn-A2 для того же chatId ждёт в `PerChatSendQueue.enqueue(chatA, fn-A2)`.
+
+### 6.4 Flow 3 — terminal failure
+
+1. `lifecycle.scheduleReconnect` после 5 DNS-fail'ов или `lifecycle.shutdown()` → дёргает `options.onTerminalFailure(err)` (LifecycleOptions callback, wired в channel.ts на `outboundQueue.failAll`).
+2. `OutboundQueue.failAll(err)` → `terminalError = err` → snapshot pending → `pending.clear()` → каждому `item.reject(err)` → unsub'аем onAuth.
+3. Все caller-promise завершаются с явной причиной. OpenClaw видит «не доставлено», не висит вечно.
+4. Новые `submit` throw'ят `terminalError` сразу.
+
+### 6.5 Concurrency invariants
+
+- `drain` mutex'нут `draining` флагом — параллельный `onAuth` no-op.
+- `attempt` идемпотентный по resolve/reject через `if (pending.delete(item.id))` check.
+- `submit` после terminal сразу throw, в pending не попадает.
+- `failAll` атомарен: snapshot → clear → reject loop. Race response-vs-failAll безопасен: `attempt` после терминала пытается `pending.delete(id)` → уже удалён → resolve не дёргается.
+
+## 7. Error handling — классификация
+
+### 7.1 Park (item остаётся в pending, ждёт следующего onAuth)
+
+| Match | Когда |
+|---|---|
+| `'WebSocket is not connected'` | `WsClient.send()` обнаружил `ws.readyState !== OPEN` |
+| `'WebSocket closed: '` (prefix) | `RequestMatcher.rejectAll` дёрнут из `ws.on('close')` — мы успели track'нуть id |
+| `'auth barrier reset: '` (prefix) | `lifecycle.start()` или `forceReconnect` сбросили барьер пока ждали |
+| `'waitAuthenticated timed out'` (prefix) | `WsClient.waitAuthenticated()` 30s timeout фирится во время медленного reconnect — мы park'имся и ждём `onAuth`. Throw происходит ДО `sendRequestInternal` → ноль протокол-трафика, ноль matcher entry leak, просто пустая retry-петля каждые 30s до auth-success |
+| `'New connection started'` | `WsClient.connect()` дёрнул `matcher.rejectAll` при swap'е сокета |
+
+### 7.2 Reject (item покидает очередь с error)
+
+1. **Terminal failure** через `LifecycleOptions.onTerminalFailure` callback:
+   - `lifecycle.shutdown()` → `Error('lifecycle shutting down')`.
+   - `lifecycle.scheduleReconnect` после 5 DNS-fail'ов → `NetworkError(DNS_TERMINAL_CODE)`.
+   - OAuth-structural error — пока вне scope (требует отдельной логики разделения transient/structural в `acquireToken`); добавим если впервые проявится.
+2. **Не-reconnectable throw** — anything not matching park-list. De facto не возникает в текущем коде, но defensive.
+
+### 7.3 Resolve (любой response)
+
+- `errorCode === 0` → ok, доставлено.
+- `errorCode === 304 CHAT_NOT_FOUND` → `outbound.ts` уже знает (`:318`, `:709`): `recreateChat` → новый item в очередь. `OutboundQueue` это не знает — caller-policy.
+- `errorCode === 203 CREDENTIALS_EXPIRED` → не доходит до `OutboundQueue`: `WsClient.sendRequest` сам делает `forceReconnect` с свежим токеном и выстреливает второй attempt — `OutboundQueue` видит результат второго.
+- Прочие application-error'ы (`permission_denied`, `invalid_payload`, и т.д.) → resolve, caller surface'ит как `{ ok: false }`. Ретрай тем же payload'ом не поможет.
+
+### 7.4 Логирование (минимум для MVP)
+
+- `'[trueconf] outbound parked: method=X attempt=N reason=Y'` — info, на каждый park.
+- `'[trueconf] outbound queue terminal: reason=X drained=N'` — warn, на failAll.
+
+Не логируем happy-path resolve. L1c (deferred) добавит structured queued/waitAuth/sent/acked logs.
+
+## 8. Testing strategy
+
+TDD-loop по AGENTS.md: каждое изменение — test → vitest+tsc+oxlint → commit.
+
+### 8.1 Unit `tests/unit/outbound-queue.test.ts`
+
+| # | Тест |
+|---|---|
+| 1 | submit → resolve (happy path) |
+| 2 | submit → park on `'WebSocket is not connected'` |
+| 3 | submit → park on `'WebSocket closed:'` prefix |
+| 4 | submit → park on `'auth barrier reset:'` prefix |
+| 5 | submit → park on `'waitAuthenticated timed out'` prefix |
+| 6 | submit → park on `'New connection started'` |
+| 7 | onAuth fires → drain re-attempts parked items |
+| 8 | drain preserves submission order (FIFO) |
+| 9 | drain — параллельный onAuth no-op via `draining` mutex |
+| 10 | failAll(err) → rejects all pending, unsub'ит onAuth |
+| 11 | submit after terminalError → throws immediately |
+| 12 | failAll вызван второй раз → no-op (idempotent) |
+| 13 | response с errorCode≠0 → resolve (не park) |
+| 14 | race response-vs-failAll → не двойной resolve |
+
+Mock `WsClient` через минимальный fake: контролируемый `sendRequest`, `onAuth(listener)` сохраняет listener — тест дёргает руками для имитации auth-event'а.
+
+### 8.2 Unit `tests/unit/ws-client.test.ts` (минимальное расширение)
+
+Только `LifecycleOptions.onTerminalFailure` callback wiring — `WsClient`-сам не меняется.
+
+- `lifecycle.shutdown()` дёргает `options.onTerminalFailure(err)` с `Error('lifecycle shutting down')`.
+- `lifecycle.scheduleReconnect` после 5×DNS-fail подряд дёргает `options.onTerminalFailure(err)` с `NetworkError(DNS_TERMINAL_CODE)`.
+- `options.onTerminalFailure` НЕ дёргается на обычных reconnect-cycle'ах (transient close, single DNS-fail с retry, и т.д.).
+- Throw из `onTerminalFailure` callback'а ловится в lifecycle и логируется (как другие LifecycleOptions callback'и).
+
+### 8.3 Integration `tests/integration/outbound-queue-reconnect.test.ts`
+
+1. Mock-WS server: submit `sendMessage` → server отвечает → resolve.
+2. Mock-WS server: submit → kill server → start fresh server → reconnect → drain → resolve.
+3. Slow reconnect (>30s artificial delay, дольше default `waitAuthenticated`) — очередь держит item, ловит timeout-throw'ы как park'и, drain'ится после auth.
+4. 5x DNS fail (через mock'нутый `acquireToken`) → `onTerminalFailure` стреляет → submit reject'ится с DNS_TERMINAL_CODE.
+
+### 8.4 Migration tests
+
+- Existing `sendText` / `sendTextToChat` / `handleOutboundAttachment` тесты — после миграции на `outboundQueue.submit` поведение на happy path и на 304-recreate цикле должно быть идентично. Прогон без модификации этих тестов = регрессия гарантирована.
+- 304-recreate цикл: `queue.submit` → resolve(304) → caller `recreateChat` → новый `queue.submit` → resolve(0). Подтверждает 304-policy остаётся в caller'е.
+
+### 8.5 Dead code removal verification
+
+- `sendRequestWithReconnectRetry` удалён, импорты подчищены.
+- `DISCONNECTED_RETRY_DELAYS_MS` удалён.
+- `isReconnectableSendError` остаётся (используется в 6 классификационных сайтах вне retry-loop'а — см. §3).
+- Проверка через grep: 0 references на удалённые символы после миграции.
+
+### 8.6 Команды verification
+
+```bash
+npx vitest run tests/unit/outbound-queue.test.ts
+npx vitest run tests/integration/outbound-queue-reconnect.test.ts
+npx vitest run                         # full suite
+npx tsc --noEmit
+npx oxlint
+```
+
+Цель: 0 warnings от oxlint, 0 errors от tsc, все тесты pass.
+
+### 8.7 Out of scope
+
+- L1c instrumentation (отложен до user-report'а «не дошло»).
+- Disk persistence (in-memory MVP; добавится если будет user-report о crash'е gateway'а с потерей очереди).
+- Worker boundary (v1.3.0).
+- Smoke-test на чистой машине — после merge на main, не блокирует PR (как для L1a).
+
+## 9. Какие failure-mode'ы из item 49 закрывает
+
+| Класс | Что было | Что становится |
+|---|---|---|
+| (i) `waitAuthenticated()` 30s timeout | item тимаутит → caller retry 2× с [1s,2s] → fail | item park'ит → drain на onAuth → resolve, сколько бы reconnect ни занял |
+| (iii) Token TTL race | inflight outbound в момент `forceReconnect` для 203 теряется | item висит pending во время forceReconnect'а; drain на onAuth перевыстрелит со свежим токеном |
+| (v) bookkeeping mismatch | при race close-events outbound может потеряться | очередь — единый источник правды, любая транспорт-ошибка → park |
+| (vi) sendQueue head-of-line | head item'а сжирает 30s timeout, блокирует чужие | head park'ится мгновенно (без timeout); tail в `PerChatSendQueue` для того же chatId ждёт ack head'а — это нужно (per-chat ordering); для разных chatId tail независим |
+| (vii) qqbot-class блокировки других плагинов | event-loop-block во время outbound теряет outbound | блок → close → reconnect → drain → доставка. Не уменьшает частоту блок'ов, но делает доставку детерминированной |
+
+(ii) `item 26 stale-guard` — закрыт в L1a (PR #17).
+(iv) `chatId staleness через always-respond rebuild` — в этой версии не закрывается (требует отдельной координации с `always-respond`-кэш-rebuild'ом). Документируем как known gap для v1.2.6+.
+
+## 10. Migration plan (high-level)
+
+Implementation plan детализируется в writing-plans phase. Здесь — порядок шагов для смыслового sequencing:
+
+1. **`LifecycleOptions.onTerminalFailure` callback** + tests: добавляем поле в interface, дёргаем из `lifecycle.shutdown()` и DNS_TERMINAL path. WsClient НЕ меняется. Регрессия = 0.
+2. **`OutboundQueue` модуль** + полный unit-test suite (§8.1). Без интеграции в outbound.ts. Чистая single-file работа с моками.
+3. **`channel.ts`**: instantiate `OutboundQueue`, wire `onTerminalFailure: (err) => outboundQueue.failAll(err)` в `LifecycleOptions`. Передать `outboundQueue` в outbound-сайты.
+4. **Migration outbound.ts call sites** по одному: `sendMessage`, `uploadFile`, `sendFile` (×2 каллера), `createP2PChat`. Каскадные signature changes (`sendText`/`sendTextToChat`/`createP2PChat`/`resolveDirectChat`/`recreateChat`/`OutboundAttachmentDeps`). После каждого call site — full vitest run, регрессия 0.
+5. **Dead code removal**: `sendRequestWithReconnectRetry`, `DISCONNECTED_RETRY_DELAYS_MS`. Grep на 0 references.
+6. **Integration tests** для reconnect и DNS-terminal сценариев (§8.3).
+7. **Final pass**: full vitest + tsc + oxlint clean. CHANGELOG entry. Version bump 1.2.3 → 1.2.5 (npm-публикация v1.2.4 ещё pending по состоянию 2026-05-01; v1.2.4 publish — отдельный action перед началом L1b implementation, чтобы npm-история не пропускала patch-номер). Альтернатива: skip-publish v1.2.4 как «main-only» промежуточная точка, и v1.2.5 включает L1a+L1b. Выбор — на момент plan'инга, не блокирует design.
+
+Squash PR upstream после merge на main. Conventional-commit subject: `feat(outbound): at-least-once delivery via in-memory queue`.
+
+## 11. Открытые вопросы / known gaps
+
+- **failure-case логи от arkatov-а** не получены. Implementation идёт на основе success-case + анализе пути потери. Если после publish v1.2.5 user-report «не дошло» воспроизводится снова — instrumentation L1c (info-level structured logs queued/waitAuth/sent/acked/parked) поднимется в приоритет.
+- **(iv) chatId staleness через always-respond rebuild** — out of scope L1b, отдельный трек.
+- **OAuth-structural errors** (битый client_id и т.п.) — в текущей реализации не классифицированы как terminal. Если проявится — добавить в `acquireToken` + дёрнуть `options.onTerminalFailure`.
+- **Disk persistence** — in-memory достаточно для MVP. Если crash gateway'а во время pending => потеря известна и принимается. Persist на диск — опциональное расширение (v1.2.6+).
+
+## 12. Anti-patterns
+
+Из item 49 «Decision (зафиксирован 2026-05-01)»:
+
+- Не делать только worker без at-least-once — half-measure (L1b делает гарантию доставки независимо от того, в каком треде живёт WS).
+- Не делать только openclaw upstream fix — даже идеальный openclaw runtime fix не закрывает (iii)/(v)/(vi)/(vii).
+- Не пересматривать «делать оба слоя» (L1+L2) без новых данных — это product-decision Sanya'и.
+- Не путать L1b с heartbeat-fix (отложен/downgraded в `project_openclaw_v121_heartbeat.md`) — heartbeat не помогает event-loop-block классу.
+- L1b in-memory достаточно для MVP. Persist на диск — отдельный трек, не блокирует v1.2.5.
+
+# === Source: docs/design/per-chat-memory-isolation.md ===
+
+
+# Per-chat memory isolation — openclaw-trueconf-connector
+
+**Status:** Design draft
+**Date:** 2026-04-25
+**Repo:** `openclaw-trueconf-connector` @ `main` (`36b31a3`)
+**Decision owner:** Sanya
+
+---
+
+## 1. Problem
+
+Today the connector funnels **every** TrueConf inbound — DMs from any user, every group chat — through one OpenClaw session. The agent's conversation memory, recent history, and any persisted state collapse into a single bucket. Two consequences:
+
+1. **Privacy/correctness leak.** A DM from Bob can include context the agent picked up in a DM with Alice, or in a group `#general`. There is no separation between conversations.
+2. **Group context corruption.** A group `@mention` in `#qa-bots` and another in `#engineering` look like the same conversation to the agent. Threading, follow-ups, and "what did we discuss?" all bleed across rooms.
+
+The bug `36b31a3` ("photos go to DM instead of group") fixed **outbound routing** only. Memory routing is unaffected.
+
+## 2. Root cause
+
+`src/channel.ts` (in `gateway.startAccount` → `dispatch`) always calls:
+
+```ts
+await dispatchInboundDirectDmWithRuntime({
+  ...,
+  peer: { kind: 'direct' as const, id: inboundMsg.peerId },
+  ...
+})
+```
+
+The SDK helper is **hard-typed** to `kind: 'direct'`. Internally it calls `runtime.routing.resolveAgentRoute({ peer })`, which forwards to `buildAgentPeerSessionKey`. For `peerKind === 'direct'` with the default `dmScope === 'main'`, the function returns:
+
+```
+agent:main:main          // same key for ALL direct chats
+```
+
+So every DM, regardless of `peerId`, lands in `agent:main:main`. And because we always force `kind: 'direct'`, group inbounds also collapse into the same key.
+
+Reference (verified in `node_modules/openclaw/dist/session-key-CYZxn_Kd.js:192-222`):
+
+| `peerKind` | `dmScope`                    | sessionKey                                                |
+| ---------- | ---------------------------- | --------------------------------------------------------- |
+| direct     | `main` (default)             | `agent:<id>:main`                                         |
+| direct     | `per-peer`                   | `agent:<id>:direct:<peerId>`                              |
+| direct     | `per-channel-peer`           | `agent:<id>:trueconf:direct:<peerId>`                     |
+| direct     | `per-account-channel-peer`   | `agent:<id>:trueconf:<accountId>:direct:<peerId>`         |
+| group      | (n/a)                        | `agent:<id>:trueconf:group:<chatId>`                      |
+| channel    | (n/a)                        | `agent:<id>:trueconf:channel:<chatId>`                    |
+
+Group/channel keys are already per-id by design — we just never send them.
+
+## 3. Target state (product decisions, locked)
+
+- **DMs:** per-peer. Each TrueConf user gets their own session. (`dmScope = 'per-peer'`.)
+- **Groups:** per-chatId. Each group room gets its own session. (Native SDK behavior once we send `kind: 'group'`.)
+- **Channels:** out of scope for v1 — channel inbounds are already dropped in `inbound.ts` (`kind === 'channel' → return`). Revisit only when channel support is added.
+- **Accounts:** memory is implicitly per-account because `accountId` is part of every dispatch frame and `dmScope = 'per-account-channel-peer'` would be the strictest variant. We pick the weaker `per-peer` because TrueConf bots rarely run multi-account in production today; revisit if/when they do.
+
+Resulting session keys for a federated bot `openclaw_test@bots.trueconf.com`:
+
+```
+DM with alice@team.trueconf.com  →  agent:main:direct:alice@team.trueconf.com
+DM with bob@team.trueconf.com    →  agent:main:direct:bob@team.trueconf.com
+Group chat_xyz                    →  agent:main:trueconf:group:chat_xyz
+Group chat_qa                     →  agent:main:trueconf:group:chat_qa
+```
+
+## 4. Design
+
+### 4.1 Branch the dispatch call
+
+`src/channel.ts → gateway.startAccount → dispatch(inboundMsg)`:
+
+```ts
+if (inboundMsg.isGroup) {
+  await dispatchInboundGroupWithRuntime({         // see 4.2 — new helper
+    ...common,
+    peer: { kind: 'group', id: inboundMsg.chatId },
+  })
+} else {
+  await dispatchInboundDirectDmWithRuntime({
+    ...common,
+    peer: { kind: 'direct', id: inboundMsg.peerId },
+    dmScope: 'per-peer',                          // see 4.3
+  })
+}
+```
+
+### 4.2 Group dispatch path
+
+`dispatchInboundDirectDmWithRuntime` is `kind: 'direct'`-only. For groups we need an analogue. SDK exposes the lower-level primitives:
+
+- `runtime.routing.resolveAgentRoute({ peer: { kind: 'group', id: chatId } })` → returns a `route` with the right `sessionKey`.
+- `runtime.channel.session.recordInboundSession(...)` — same recorder used by direct path.
+- `runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher(...)` — same dispatcher.
+- `runtime.channel.reply.finalizeInboundContext(...)` — assembles `ctxPayload`.
+
+The Signal channel plugin (in `node_modules/openclaw/dist/pi-embedded-BaSvmUpW.js` near `resolveSignalInboundRoute`) does this composition by hand. We can do the same:
+
+```ts
+async function dispatchInboundGroupWithRuntime(params) {
+  const route = params.runtime.channel.routing.resolveAgentRoute({
+    cfg: params.cfg,
+    channel: params.channel,
+    accountId: params.accountId,
+    peer: params.peer,
+  })
+  const storePath = params.runtime.channel.session.resolveStorePath(...)
+  const ctxPayload = params.runtime.channel.reply.finalizeInboundContext({
+    Body: ..., RawBody: ..., From: senderJid,
+    SessionKey: route.sessionKey,
+    AccountId: route.accountId ?? params.accountId,
+    ChatType: 'group',
+    GroupChannel: params.conversationLabel,        // "Group <chatId>"
+    GroupSubject: params.groupSubject,             // optional, see 4.4
+    ...,
+  })
+  await recordInboundSessionAndDispatchReply({ ... })
+}
+```
+
+This stays inside our repo (no SDK PR needed) and uses only public `plugin-sdk/*` exports.
+
+### 4.3 dmScope
+
+Two viable options for surfacing the scope:
+
+| Option | What                                                                                | Pros                                  | Cons                              |
+| ------ | ----------------------------------------------------------------------------------- | ------------------------------------- | --------------------------------- |
+| **A**  | Hardcode `dmScope: 'per-peer'` in our dispatch call                                 | Zero config, zero surprise            | Not user-tweakable                |
+| **B**  | Read from `channelConfig.dmScope`, default `'per-peer'`                             | Power-user can change                 | One more config knob, one more test matrix |
+
+**Recommended: A.** TrueConf is a single-tenant corporate messenger; the per-peer choice is the universally correct default. If we ever hear demand for the shared-DM-bucket variant, escalate to B.
+
+### 4.4 Group display label
+
+`buildAgentPeerSessionKey` only consumes the `id`, so memory keying doesn't depend on a friendly name. But `ctxPayload.GroupChannel` / `GroupSubject` flow into the agent's prompt envelope. To give the agent a human label ("Group #qa-bots" instead of "Group chat_xyz"):
+
+- Cache `getChatByID.title` alongside `chatType` in `chatTypeByChatId` (currently we throw the title away).
+- Pass cached title as `GroupSubject`/`conversationLabel` in dispatch.
+
+This is a nice-to-have, not load-bearing for the memory fix. Ship in the same PR or a follow-up.
+
+### 4.5 Migration of existing sessions
+
+There are existing sessions on disk for `agent:main:main` (the current shared bucket). After this change, they will not be touched by any new inbound — DMs/groups create fresh keys. We have three options:
+
+1. **Drop on the floor.** Existing memory becomes orphaned; first message in each chat starts cold. **Recommended for v1** — TrueConf bot is in early UAT, no production memory worth migrating.
+2. **One-shot migration script.** Read `agent:main:main` history, slice by `From` field, write into new per-peer/per-group keys. Risky (sessions don't always have clean `From` boundaries); not worth the engineering for current adoption.
+3. **Compat shim.** Read both old and new key on every inbound, prefer new. Adds permanent complexity.
+
+Pick (1). Add a single warning log on first inbound after upgrade so we can spot orphans if anyone screams.
+
+## 5. Test plan
+
+New integration tests in `tests/integration/per-chat-memory.test.ts` (vitest + fake-server harness):
+
+1. **DM session key per peer.** Two DMs from different users → two distinct `dispatch.mock.calls[i].sessionKey` values matching `agent:main:direct:<peerId>`.
+2. **Group session key per chatId.** Two groups → two distinct `agent:main:trueconf:group:<chatId>` values.
+3. **DM and group don't collide.** Same `peerId` sending a DM and being member of a group → DM key ≠ group key.
+4. **Same peer, repeated DMs.** Five DMs from the same user → all share one key (peer-stable, not message-unique).
+5. **Group dispatch goes through finalizeInboundContext, not dispatchInboundDirectDmWithRuntime.** Mock both; assert direct path is NOT called for group inbounds.
+
+All existing 71 tests must stay green. Some will need updates because they currently assert `peer.kind === 'direct'` for group inbounds (`group-mention.test.ts:341`); after the fix that assertion flips to `kind: 'group'`.
+
+## 6. Acceptance criteria (UAT)
+
+Run on `bots.trueconf.com` against `openclaw_test@bots.trueconf.com`:
+
+- [ ] DM with user A → ask "what's my name?" → bot remembers across turns.
+- [ ] Switch to DM with user B → bot does **not** know user A's name.
+- [ ] Switch to group `#qa-bots`, @mention bot, share fact X → @mention bot in `#engineering` → bot does **not** know fact X.
+- [ ] Old shared-memory artifacts (if any) don't leak into new sessions — no unexpected references in first reply.
+- [ ] Existing fixes still work: DM photos go to DM, group photos go to group (`36b31a3` not regressed).
+
+## 7. Risk register
+
+| Risk                                                                 | Likelihood | Mitigation                                                                                                       |
+| -------------------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------- |
+| Hand-rolled `dispatchInboundGroupWithRuntime` drifts from SDK semantics | Medium     | Mirror the Signal plugin pattern exactly; cite line numbers in comments; revisit on each `openclaw` upgrade.       |
+| `resolveAgentRoute` not exposed via the runtime injection we use     | Low        | Inspect `params.runtime.channel.routing` shape during implementation; if missing, escalate to upstream openclaw. |
+| Migration drops existing UAT memory                                  | Low (UAT)  | Document explicitly in changelog; warn-log first inbound so we notice if a real user is affected.                |
+| Group `chatId` rotates on TrueConf side (e.g. server cluster move)   | Low        | If observed, switch to a stable group identifier (subject hash?). Not known to happen on TrueConf 5.5+.            |
+| `dmScope: 'per-peer'` becomes wrong default for some deployment      | Low        | Promote to config (option B) only if asked. Cheap to do later.                                                  |
+
+## 8. Out of scope
+
+- Channel chats (currently dropped at inbound).
+- Cross-account memory linking (identity links).
+- Memory pruning/TTL — orthogonal to keying.
+- A migration tool for existing `agent:main:main` data.
+
+## 9. Estimate
+
+- Implementation: ~150 LOC in `channel.ts` + new `dispatchInboundGroupWithRuntime` helper (~80 LOC).
+- Tests: 5 new integration tests + updates to 1-2 existing.
+- Doc: update CLAUDE.md `## Architecture` section with new dispatch fork.
+
+Half-day of focused work, plus UAT round on the live bot.
+
+## 10. Open questions
+
+- **Q1.** Should `senderId` (group) influence the session key in any way (e.g. per-user-per-group)? **ANSWERED — no.** Group = room is the unit, regardless of who spoke.
+- **Q2.** Do we want the friendly group title in `ctxPayload.GroupSubject` shipped now or as a follow-up? **ANSWERED — same PR.** Small, isolated change, easier to UAT once.
+
+---
+
+## 11. Review findings (2026-04-25)
+
+Design reviewed against actual SDK source (`node_modules/openclaw/dist/...`) and current `~/.openclaw/openclaw.json`. Apply these corrections before implementing:
+
+### 11.1 §2 framing is wrong premise — rewrite
+
+§2 assumes default `dmScope = 'main'` causing the agent:main:main collapse. **Actual gateway config already has** `dmScope: 'per-channel-peer'` (now updated to `per-account-channel-peer` as part of Phase 0). Under the actual config, DMs and groups are ALREADY isolated by peerId/chatId — the privacy leak described in §2 does not happen on this gateway.
+
+The real motivation for this design is **semantic**, not privacy:
+- Currently every TrueConf inbound dispatches with `kind: 'direct'`. The agent prompt receives `ChatType: 'direct'` even for group messages — agent doesn't know it's in a group.
+- Session keys for groups land under `direct:<chatId>` instead of `group:<chatId>` — cosmetically wrong but functionally fine.
+
+Rewrite §2 as: "Connector hard-codes `kind: 'direct'` for all inbounds. Groups inherit a misleading prompt envelope and a `direct:` session-key prefix. This blocks the agent from adapting style to group context."
+
+### 11.2 §4.3 — Option A is impossible, drop it
+
+`dmScope` is read by SDK from `cfg.session.dmScope` only — there is **no per-call parameter** for `dispatchInboundDirectDmWithRuntime`. Verified in `pi-embedded-BaSvmUpW.js:11669` and `channel.runtime-Dto237Iv.js:1257`. Inline `dmScope: 'per-peer'` in dispatch params silently does nothing.
+
+→ Option A removed. Only Option B (gateway-level config) is viable. **Already done in Phase 0** — see §11.5.
+
+### 11.3 §4.4 — single title cache
+
+Always-respond resolver (PR #6, `~/trueconf-openclaw-channel/src/always-respond.ts`) already maintains `titleByChatId: Map<string, string>` populated from `getChats` enumerate + `editChatTitle` push events. Don't introduce a second cache in `chatTypeByChatId`.
+
+Two clean options:
+1. **Promote `AlwaysRespondResolver.titleByChatId` to a shared accessor.** Expose a method `getTitle(chatId): string | undefined`. Channel.ts queries it when building `ctxPayload.GroupSubject`. Resolver remains source of truth.
+2. **Extract a separate `ChatMetaCache` module** owning both `chatType` and `title`. Both inbound resolveChatType and AlwaysRespondResolver consume it. Cleaner factoring but bigger refactor.
+
+Sanya picked option 1 (single shared module). Implementation choice between (1) and (2) is left to the implementer — keep it minimal.
+
+### 11.4 §3 — switch to `per-account-channel-peer` for DMs
+
+Per Sanya's product decision (2026-04-25): two TrueConf accounts of the same bot DM-ing the same external user (e.g. both reach `alice@team.trueconf.com`) should have **two separate memory contexts**, not one shared. This is `dmScope: 'per-account-channel-peer'` (the strictest variant in §3's table).
+
+Update §3 line: change `dmScope = 'per-peer'` → `dmScope = 'per-account-channel-peer'`. Resulting key examples:
+
+```
+DM with alice via account A → agent:main:trueconf:account-a:direct:alice@team.trueconf.com
+DM with alice via account B → agent:main:trueconf:account-b:direct:alice@team.trueconf.com
+Group chat_xyz (any account) → agent:main:trueconf:group:chat_xyz   (groups stay shared per chatId)
+```
+
+Group keys stay per-chatId regardless of account — which matches "the room is the unit" answer to Q1.
+
+### 11.5 §4.5 — migration: Phase 0 already orphaned existing sessions
+
+`~/.openclaw/openclaw.json` was updated 2026-04-25 from `dmScope: 'per-channel-peer'` → `per-account-channel-peer` (Phase 0 of the rollout plan). After this change + gateway restart, every existing session key has changed shape (now includes `<accountId>` segment). Existing memory files at the old keys are orphaned.
+
+This is **already accepted** — Sanya is in early UAT, no production memory worth preserving. The §4.5 recommendation (option 1: drop on the floor, single warning log on first inbound) still applies — but the orphaning happens at Phase 0 (config flip), not at this PR's merge.
+
+This PR's merge will orphan again for groups specifically (key prefix flips from `direct:<chatId>` to `group:<chatId>`). Mention in PR body / changelog.
+
+### 11.6 New: upstream openclaw issue
+
+Hand-rolling `dispatchInboundGroupWithRuntime` is the biggest mid-term risk. Mitigation: file an issue in openclaw's repo asking for a public `dispatchInboundGroupWithRuntime` helper paralleling the DM one. If accepted, our self-rolled version becomes a temporary shim until the openclaw release lands.
+
+Action item: open issue with motivation (Signal channel does the same thing internally; TrueConf is the second connector to need it). File before or alongside this PR's merge so the upstream conversation can run in parallel.
+
+### 11.7 §9 estimate — calibration
+
+Half-day is optimistic. Realistic:
+- Reading openclaw dist + understanding `resolveAgentRoute` / `recordInboundSession` / `finalizeInboundContext`: 2-3h
+- Implementation in `channel.ts` + new helper: 2-3h
+- New tests + mock updates (`vi.mock` needs to cover the new helper): 2h
+- UAT round on live bot: 1-2h depending on how quickly bots.trueconf.com is reachable
+
+Budget: 1-1.5 days end-to-end. Not blocking — just calibrate so it doesn't get committed to as "polf-day" in a review.
+
+### 11.8 §5 test plan — addendum
+
+Add: tests must mock both `dispatchInboundDirectDmWithRuntime` AND the new `dispatchInboundGroupWithRuntime`. Existing test infrastructure only mocks the DM path. Without the group mock, group tests will hit the real SDK and either fail or produce flaky output. Update `tests/integration/group-mention.test.ts` and any new file accordingly.
+
+---
+
+## 12. Phased rollout plan (2026-04-25)
+
+| Phase | What | Where | Status |
+|---|---|---|---|
+| **0** | Flip `dmScope` `per-channel-peer` → `per-account-channel-peer` | `~/.openclaw/openclaw.json` (one line) + gateway restart | ✅ Config edited 2026-04-25; awaiting gateway restart |
+| **1** | This design — group dispatch fork + `kind:'group'` + correct session-key prefix + GroupSubject from shared title cache | `connector` repo, separate PR | ⏳ Pending |
+| **2** | Per-session workspace (`MEMORY.md` + supporting files isolated per chat) | `connector` repo, separate PR | ⏳ Pending — needs research on `params.workspaceDir` SDK support |
+
+Tracks running in parallel:
+- **always-respond v1.1.0 UAT** — independent of this work, waiting for network access to bots.trueconf.com.
+- **openclaw upstream issue** for public `dispatchInboundGroupWithRuntime` — file when convenient.
+
+**Do not bundle Phase 1 and Phase 2 in the same PR.** Different risk surfaces (Phase 1: SDK drift; Phase 2: workspace migration). UAT between them.

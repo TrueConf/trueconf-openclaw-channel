@@ -385,7 +385,7 @@ describe('WsClient.sendRequest — 203 recovery', () => {
       client.resetAuthBarrier('forced reconnect')
       client.markAuthenticated()
     })
-    vi.spyOn(client as unknown as { sendRequestInternal: (m: string, p: Record<string, unknown>, t?: string) => Promise<{ type: 2; id: number; payload?: Record<string, unknown> }> }, 'sendRequestInternal')
+    const internalSpy = vi.spyOn(client as unknown as { sendRequestInternal: (m: string, p: Record<string, unknown>, t?: string) => Promise<{ type: 2; id: number; payload?: Record<string, unknown> }> }, 'sendRequestInternal')
       .mockResolvedValueOnce({ type: 2, id: 1, payload: { errorCode: 203 } })
       .mockResolvedValueOnce({ type: 2, id: 2, payload: { errorCode: 0 } })
 
@@ -403,6 +403,11 @@ describe('WsClient.sendRequest — 203 recovery', () => {
       '[trueconf] outbound wait_auth: qid=42 method=sendMessage chatId=abc',
       '[trueconf] outbound ack: qid=42 method=sendMessage chatId=abc errorCode=0',
     ])
+
+    // Lock traceId passthrough on BOTH internal calls — guards against a future
+    // refactor that drops the 3rd arg from the retry-branch sendRequestInternal call.
+    expect(internalSpy).toHaveBeenCalledTimes(2)
+    expect(internalSpy).toHaveBeenNthCalledWith(2, 'sendMessage', { chatId: 'abc' }, '42')
   })
 
   it('does NOT log wire_send when send() throws (WebSocket not connected)', async () => {

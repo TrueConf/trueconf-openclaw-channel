@@ -19,26 +19,17 @@ import type {
   Logger,
 } from './types'
 
-// Read a positive-integer millisecond ENV var with default fallback.
-// Returns `defaultMs` when the var is unset, empty, non-numeric, or <= 0.
+// Read a positive-integer ENV var with default fallback.
+// Returns `defaultValue` when the var is unset, empty, non-numeric, or <= 0.
 // Mirrors the conservative trim+parseInt idiom in src/channel-setup.ts:842-855.
 // Module-level: evaluated once at load — not per-tick.
-export function readEnvMs(name: string, defaultMs: number): number {
+// Used for both millisecond timers and plain integer counters; the framing
+// comment at each call-site carries the unit semantics.
+export function readEnvMs(name: string, defaultValue: number): number {
   const raw = process.env[name]?.trim()
-  if (!raw) return defaultMs
+  if (!raw) return defaultValue
   const parsed = Number.parseInt(raw, 10)
-  if (!Number.isFinite(parsed) || parsed <= 0) return defaultMs
-  return parsed
-}
-
-// Same fallback contract as readEnvMs but for plain integer counters
-// (no millisecond semantics). Sibling helper for clarity at call-sites:
-// DNS_FAIL_LIMIT and OAUTH_FAIL_LIMIT read like counts, not durations.
-function readEnvLimit(name: string, defaultLimit: number): number {
-  const raw = process.env[name]?.trim()
-  if (!raw) return defaultLimit
-  const parsed = Number.parseInt(raw, 10)
-  if (!Number.isFinite(parsed) || parsed <= 0) return defaultLimit
+  if (!Number.isFinite(parsed) || parsed <= 0) return defaultValue
   return parsed
 }
 
@@ -59,16 +50,17 @@ const OAUTH_TIMEOUT_MS = readEnvMs('TRUECONF_OAUTH_TIMEOUT_MS', 15_000)
 // path so the existing reconnect/backoff loop runs.
 const WS_HANDSHAKE_TIMEOUT_MS = readEnvMs('TRUECONF_WS_HANDSHAKE_TIMEOUT_MS', 20_000)
 
-// DNS terminal threshold — was a static class constant, hoisted to module
-// level so it joins the ENV-tunable family. Behavior unchanged: 5 cumulative
-// DNS-class failures during scheduleReconnect's catch trigger the
-// dns_exhausted terminal path.
-const DNS_FAIL_LIMIT = readEnvLimit('TRUECONF_DNS_FAIL_LIMIT', 5)
+// DNS terminal threshold (count, not ms) — was a static class constant,
+// hoisted to module level so it joins the ENV-tunable family. Behavior
+// unchanged: 5 cumulative DNS-class failures during scheduleReconnect's
+// catch trigger the dns_exhausted terminal path.
+const DNS_FAIL_LIMIT = readEnvMs('TRUECONF_DNS_FAIL_LIMIT', 5)
 
-// OAuth terminal threshold — N consecutive 401/403 from the OAuth endpoint
-// trip the auth_exhausted terminal path. Default 3 detects genuine creds
-// rotation quickly without false-positives on a single 401 hiccup.
-const OAUTH_FAIL_LIMIT = readEnvLimit('TRUECONF_OAUTH_FAIL_LIMIT', 3)
+// OAuth terminal threshold (count, not ms) — N consecutive 401/403 from the
+// OAuth endpoint trip the auth_exhausted terminal path. Default 3 detects
+// genuine creds rotation quickly without false-positives on a single 401
+// hiccup.
+const OAUTH_FAIL_LIMIT = readEnvMs('TRUECONF_OAUTH_FAIL_LIMIT', 3)
 
 export function hostPort(config: { serverUrl: string; useTls: boolean; port?: number }): string {
   if (typeof config.serverUrl !== 'string' || config.serverUrl.length === 0) {

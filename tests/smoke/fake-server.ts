@@ -87,6 +87,11 @@ export interface FakeServer {
   respondTemporalFileId: (value: string) => void
   setChatType: (chatId: string, chatType: number) => void
   setOauthResponse: (response: FakeOAuthResponse) => void
+  // When true, the OAuth POST handler accepts the request body but never
+  // writes a response — used by integration tests that need AbortSignal.timeout
+  // on acquireToken to fire. Subsequent setHangOauth(false) makes new requests
+  // respond normally; in-flight hung requests are released when the server closes.
+  setHangOauth: (value: boolean) => void
   close: () => Promise<void>
 }
 
@@ -156,6 +161,7 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
   const httpUploads: FakeHttpUpload[] = []
   const oauthRequests: FakeOAuthRequest[] = []
   let oauthResponse: FakeOAuthResponse = opts.oauthResponse ?? makeDefaultOAuthResponse()
+  let oauthHangs = false
   const clientAcks: number[] = []
   let pendingAuthFailures = opts.failAuthOnce ? 1 : 0
   let authDelayMs = 0
@@ -173,6 +179,7 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
           headers: { ...req.headers } as Record<string, string | undefined>,
           body: body.toString('utf8'),
         })
+        if (oauthHangs) return
         res.writeHead(oauthResponse.status, { 'content-type': 'application/json' })
         res.end(JSON.stringify(oauthResponse.body ?? {}))
       })
@@ -384,6 +391,7 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
     delayAuthBy: (ms) => { authDelayMs = ms },
     failNextAuth: (count) => { pendingAuthFailures = count },
     setOauthResponse(value) { oauthResponse = value },
+    setHangOauth(value) { oauthHangs = value },
     setChatType(chatId, chatType) { chatTypeOverrides.set(chatId, chatType) },
     pushInbound(envelope) {
       const id = nextServerRequestId++

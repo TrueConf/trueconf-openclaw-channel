@@ -8,6 +8,8 @@ import {
   NetworkError,
   DNS_ERROR_CODES,
   DNS_TERMINAL_CODE,
+  isAuthTerminalCode,
+  OAUTH_TERMINAL_CODE,
 } from './types'
 import type {
   TrueConfAccountConfig,
@@ -17,11 +19,48 @@ import type {
   Logger,
 } from './types'
 
+// Read a positive-integer ENV var with default fallback.
+// Returns `defaultValue` when the var is unset, empty, non-numeric, or <= 0.
+// Mirrors the conservative trim+parseInt idiom in src/channel-setup.ts:842-855.
+// Module-level: evaluated once at load — not per-tick.
+// Used for both millisecond timers and plain integer counters; the framing
+// comment at each call-site carries the unit semantics.
+export function readEnvMs(name: string, defaultValue: number): number {
+  const raw = process.env[name]?.trim()
+  if (!raw) return defaultValue
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) return defaultValue
+  return parsed
+}
+
 // Match TrueConf's own python-trueconf-bot SDK (websockets.connect
 // ping_interval=30, ping_timeout=10) — production-tested against the same
-// servers we talk to.
-const HEARTBEAT_INTERVAL_MS = 30_000
-const HEARTBEAT_PONG_TIMEOUT_MS = 10_000
+// servers we talk to. Tunable via ENV for corporate NATs with sub-30s
+// idle-timeouts that drop our connection between heartbeats.
+const HEARTBEAT_INTERVAL_MS = readEnvMs('TRUECONF_HEARTBEAT_INTERVAL_MS', 30_000)
+const HEARTBEAT_PONG_TIMEOUT_MS = readEnvMs('TRUECONF_HEARTBEAT_PONG_TIMEOUT_MS', 10_000)
+
+// OAuth POST timeout — used as AbortSignal.timeout on the fetch in
+// acquireToken. Caps the time we hold the lifecycle waiting on a hung
+// reverse-proxy or molasses-slow auth endpoint before backoff retries.
+const OAUTH_TIMEOUT_MS = readEnvMs('TRUECONF_OAUTH_TIMEOUT_MS', 15_000)
+
+// WS handshake timeout — wall-clock budget from `new WebSocket(...)` to
+// the first 'open' event. After this, ws.terminate() forces the close
+// path so the existing reconnect/backoff loop runs.
+const WS_HANDSHAKE_TIMEOUT_MS = readEnvMs('TRUECONF_WS_HANDSHAKE_TIMEOUT_MS', 20_000)
+
+// DNS terminal threshold (count, not ms) — was a static class constant,
+// hoisted to module level so it joins the ENV-tunable family. Behavior
+// unchanged: 5 cumulative DNS-class failures during scheduleReconnect's
+// catch trigger the dns_exhausted terminal path.
+const DNS_FAIL_LIMIT = readEnvMs('TRUECONF_DNS_FAIL_LIMIT', 5)
+
+// OAuth terminal threshold (count, not ms) — N consecutive 401/403 from the
+// OAuth endpoint trip the auth_exhausted terminal path. Default 3 detects
+// genuine creds rotation quickly without false-positives on a single 401
+// hiccup.
+const OAUTH_FAIL_LIMIT = readEnvMs('TRUECONF_OAUTH_FAIL_LIMIT', 3)
 
 export function hostPort(config: { serverUrl: string; useTls: boolean; port?: number }): string {
   if (typeof config.serverUrl !== 'string' || config.serverUrl.length === 0) {
@@ -65,6 +104,16 @@ export async function acquireToken(
   config: TrueConfAccountConfig,
   options?: { dispatcher?: Dispatcher },
 ): Promise<OAuthTokenResponse> {
+  // Defence-in-depth at the runtime boundary: TrueConfAccountConfig.password
+  // is typed as `string | { useEnv: string }`, but if an upstream caller
+  // forgets to resolve the useEnv indirection, JSON.stringify would silently
+  // serialise `"password":{"useEnv":"X"}`, the server would 401, and the
+  // operator would chase bogus 'bad creds' instead of the real type bug.
+  if (typeof config.password !== 'string') {
+    throw new Error(
+      `OAuth: password must be resolved to a string before acquireToken (got ${typeof config.password})`,
+    )
+  }
   let response: Response
   try {
     response = await fetch(buildTokenUrl(config), {
@@ -78,8 +127,22 @@ export async function acquireToken(
         password: config.password,
       }),
       ...(options?.dispatcher && { dispatcher: options.dispatcher }),
+      signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
     } as RequestInit)
   } catch (err) {
+    // AbortSignal.timeout fires as DOMException with name='TimeoutError'
+    // (per WHATWG; undici uses globalThis.AbortSignal which surfaces this
+    // shape). Promote it to a NetworkError with a synthetic code so the
+    // lifecycle catch can classify it as retryable, distinct from auth
+    // failure (which carries the HTTP status as code).
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      throw new NetworkError(
+        `OAuth token request timed out after ${OAUTH_TIMEOUT_MS}ms`,
+        'oauth',
+        err,
+        'OAUTH_TIMEOUT',
+      )
+    }
     const meta = extractFetchCauseMeta(err)
     const outerMsg = err instanceof Error ? err.message : String(err)
     const causeMsg = err instanceof Error && err.cause instanceof Error ? err.cause.message : ''
@@ -102,12 +165,29 @@ export async function acquireToken(
     } catch {
       // non-JSON error body (reverse-proxy HTML etc.)
     }
-    throw new Error(`OAuth token acquisition failed (${response.status}): ${detail}`)
+    throw new NetworkError(
+      `OAuth token acquisition failed (${response.status}): ${detail}`,
+      'oauth',
+      undefined,
+      String(response.status),
+    )
   }
 
   const json = (await response.json()) as Record<string, unknown>
   if (typeof json.access_token !== 'string' || typeof json.expires_at !== 'number') {
-    throw new Error('Invalid OAuth response: missing access_token or expires_at')
+    // Promote to NetworkError(phase='oauth') so scheduleReconnect's catch
+    // classifies it the same way as every other oauth-phase failure. A plain
+    // Error fell into the else branch, reset oauthFailCount, and would loop
+    // silently forever on a misconfigured bridge that returns malformed token
+    // bodies. OAUTH_INVALID_RESPONSE is a non-numeric code, so the
+    // isAuthTerminalError parseInt guard treats it as transient (NaN), same
+    // safe behavior as OAUTH_TIMEOUT.
+    throw new NetworkError(
+      'Invalid OAuth response: missing access_token or expires_at',
+      'oauth',
+      undefined,
+      'OAUTH_INVALID_RESPONSE',
+    )
   }
   return json as unknown as OAuthTokenResponse
 }
@@ -258,9 +338,43 @@ export class WsClient {
 
     return new Promise<void>((resolve, reject) => {
       let settled = false
-      const settle = (fn: () => void) => { if (!settled) { settled = true; fn() } }
+      let handshakeTimer: ReturnType<typeof setTimeout> | undefined
+
+      const settle = (fn: () => void) => {
+        if (settled) return
+        settled = true
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer)
+          handshakeTimer = undefined
+        }
+        fn()
+      }
+
+      // Bound the wall-clock budget from socket construction to the first
+      // 'open' event (TLS + WS upgrade). If the upgrade never arrives
+      // (silent reverse-proxy, misconfigured firewall), terminate the
+      // socket and surface a NetworkError so the lifecycle backoff loop
+      // runs. Cleared in 'open' so the auth round-trip runs under
+      // RequestMatcher's own 30s timeout, not under this budget.
+      handshakeTimer = setTimeout(() => {
+        try { ws.terminate() } catch { /* ws may already be torn down */ }
+        settle(() => reject(new NetworkError(
+          `WS handshake timed out after ${WS_HANDSHAKE_TIMEOUT_MS}ms`,
+          'ws-handshake',
+          undefined,
+          'WS_HANDSHAKE_TIMEOUT',
+        )))
+      }, WS_HANDSHAKE_TIMEOUT_MS)
+      handshakeTimer.unref?.()
 
       ws.on('open', () => {
+        // Handshake completed — release the handshake budget so a slow
+        // auth round-trip is not punished by a timer that was meant to
+        // bound the upgrade alone.
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer)
+          handshakeTimer = undefined
+        }
         const authId = this.idCounter.next()
         const authPromise = this.matcher.track(authId)
         ws.send(JSON.stringify(buildAuthRequest(authId, token)))
@@ -352,9 +466,18 @@ export class WsClient {
       })
 
       ws.on('error', (err: Error) => {
-        const code = 'code' in err ? String((err as { code: unknown }).code) : undefined
-        const syscall = 'syscall' in err ? String((err as { syscall: unknown }).syscall) : undefined
-        const hostname = 'hostname' in err ? String((err as { hostname: unknown }).hostname) : undefined
+        // `'code' in err` returns true even when the property is defined-but-
+        // undefined; String(undefined) is the literal string 'undefined' which
+        // would propagate into NetworkError.code and mislead any downstream
+        // telemetry that branches on err.code != null. Mirror the
+        // extractFetchCauseMeta idiom (===undefined) so the WS error path
+        // surfaces real codes only.
+        const codeRaw = (err as { code?: unknown }).code
+        const code = codeRaw === undefined ? undefined : String(codeRaw)
+        const syscallRaw = (err as { syscall?: unknown }).syscall
+        const syscall = syscallRaw === undefined ? undefined : String(syscallRaw)
+        const hostnameRaw = (err as { hostname?: unknown }).hostname
+        const hostname = hostnameRaw === undefined ? undefined : String(hostnameRaw)
         settle(() => reject(new NetworkError(
           `WebSocket error: ${err.message}`,
           'websocket',
@@ -475,6 +598,7 @@ export class WsClient {
 export type TerminalCause =
   | { kind: 'shutdown'; cause: Error }
   | { kind: 'dns_exhausted'; retries: number; cause: NetworkError }
+  | { kind: 'auth_exhausted'; retries: number; cause: NetworkError }
 
 interface LifecycleOptions {
   onConnectionClosed?: (code: number, reason: string) => void
@@ -498,10 +622,17 @@ export class ConnectionLifecycle {
   private backoffMs = 1000
   private shuttingDown = false
   private reconnecting = false
+  // Re-entry guard for start() itself, distinct from `reconnecting` (which
+  // handleClose sets to gate its own re-entry while a reconnect timer is
+  // armed). Prevents the boot-path race where the handshake-timeout-driven
+  // ws.terminate() emits a close event that handleClose would otherwise
+  // turn into a second scheduleReconnect() while start()'s catch is still
+  // re-throwing to the bootstrap caller.
+  private startInFlight = false
   private dnsRetryCount = 0
+  private oauthFailCount = 0
   private reconnectInflight: Promise<void> | null = null
   private suppressNextCloseReconnect = false
-  private static readonly DNS_MAX_RETRIES = 5
 
   constructor(
     private wsClient: WsClient,
@@ -511,45 +642,57 @@ export class ConnectionLifecycle {
   ) {}
 
   async start(): Promise<void> {
-    // Re-arm the auth barrier at the top of every start() so requests issued
-    // during the reconnect window queue on the new attempt rather than seeing
-    // the stale resolved promise from the previous session.
-    this.wsClient.resetAuthBarrier('lifecycle.start')
-    let tokenResponse: OAuthTokenResponse
+    // Synchronous re-entry guard: a second start() while the first is still
+    // running would race the auth barrier and the connect()/acquireToken
+    // promises. The boot path is the exposed seam — see startInFlight
+    // declaration. Returning silently is safe because the in-flight call
+    // will resolve or reject on its own.
+    if (this.startInFlight) return
+    this.startInFlight = true
     try {
-      tokenResponse = await acquireToken(this.config, { dispatcher: this.options?.dispatcher })
-    } catch (err) {
-      // Mark parkable so OutboundQueue items waiting on the auth barrier
-      // park instead of rejecting; scheduleReconnect's catch decides
-      // terminal-vs-retry and fires onTerminalFailure -> failAll for the
-      // give-up cases.
-      this.wsClient.markAuthFailed(NetworkError.asParkable(err))
-      throw err
-    }
-    // Register lifecycle handlers BEFORE connect so a close event that fires
-    // between auth completion and the first post-connect line still routes
-    // through handleClose → scheduleReconnect.
-    this.wsClient.onClose = (code, reason) => this.handleClose(code, reason)
-    this.wsClient.onPong = () => { this.lastPongAt = Date.now() }
-    try {
-      await this.wsClient.connect(this.config, tokenResponse.access_token)
-    } catch (err) {
-      this.wsClient.markAuthFailed(NetworkError.asParkable(err))
-      throw err
-    }
+      // Re-arm the auth barrier at the top of every start() so requests issued
+      // during the reconnect window queue on the new attempt rather than seeing
+      // the stale resolved promise from the previous session.
+      this.wsClient.resetAuthBarrier('lifecycle.start')
+      let tokenResponse: OAuthTokenResponse
+      try {
+        tokenResponse = await acquireToken(this.config, { dispatcher: this.options?.dispatcher })
+      } catch (err) {
+        // Mark parkable so OutboundQueue items waiting on the auth barrier
+        // park instead of rejecting; scheduleReconnect's catch decides
+        // terminal-vs-retry and fires onTerminalFailure -> failAll for the
+        // give-up cases.
+        this.wsClient.markAuthFailed(NetworkError.asParkable(err))
+        throw err
+      }
+      // Register lifecycle handlers BEFORE connect so a close event that fires
+      // between auth completion and the first post-connect line still routes
+      // through handleClose → scheduleReconnect.
+      this.wsClient.onClose = (code, reason) => this.handleClose(code, reason)
+      this.wsClient.onPong = () => { this.lastPongAt = Date.now() }
+      try {
+        await this.wsClient.connect(this.config, tokenResponse.access_token)
+      } catch (err) {
+        this.wsClient.markAuthFailed(NetworkError.asParkable(err))
+        throw err
+      }
 
-    this.backoffMs = 1000
-    this.reconnecting = false
-    this.dnsRetryCount = 0
-    this.wsClient.markAuthenticated()
-    this.logger.info('[trueconf] Connected and authenticated')
-    try {
-      this.options?.onConnected?.()
-    } catch (err) {
-      this.logger.warn(`[trueconf] onConnected callback failed: ${err instanceof Error ? err.message : String(err)}`)
-    }
+      this.backoffMs = 1000
+      this.reconnecting = false
+      this.dnsRetryCount = 0
+      this.oauthFailCount = 0
+      this.wsClient.markAuthenticated()
+      this.logger.info('[trueconf] Connected and authenticated')
+      try {
+        this.options?.onConnected?.()
+      } catch (err) {
+        this.logger.warn(`[trueconf] onConnected callback failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
 
-    this.startTimers(tokenResponse.expires_at)
+      this.startTimers(tokenResponse.expires_at)
+    } finally {
+      this.startInFlight = false
+    }
   }
 
   shutdown(): void {
@@ -625,7 +768,7 @@ export class ConnectionLifecycle {
     } catch (err) {
       this.logger.warn(`[trueconf] onDisconnected callback failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-    if (this.shuttingDown || this.reconnecting) return
+    if (this.shuttingDown || this.reconnecting || this.startInFlight) return
     if (this.suppressNextCloseReconnect) {
       // forceReconnect owns the next start() — do not race it with our own
       // scheduleReconnect. One-shot: cleared by the inflight finally block.
@@ -666,16 +809,26 @@ export class ConnectionLifecycle {
     return err instanceof NetworkError && typeof err.code === 'string' && DNS_ERROR_CODES.has(err.code)
   }
 
+  private isAuthTerminalError(err: unknown): boolean {
+    if (!(err instanceof NetworkError)) return false
+    if (err.phase !== 'oauth') return false
+    if (typeof err.code !== 'string') return false
+    const status = Number.parseInt(err.code, 10)
+    if (!Number.isFinite(status)) return false
+    return isAuthTerminalCode(status)
+  }
+
   private scheduleReconnect(): void {
     this.reconnectTimer = setTimeout(async () => {
       try {
         await this.start()
         this.dnsRetryCount = 0
+        this.oauthFailCount = 0
       } catch (err) {
         this.logger.warn(`[trueconf] Reconnect attempt failed: ${err instanceof Error ? err.message : String(err)}`)
         if (this.isDnsError(err)) {
           this.dnsRetryCount++
-          if (this.dnsRetryCount >= ConnectionLifecycle.DNS_MAX_RETRIES) {
+          if (this.dnsRetryCount >= DNS_FAIL_LIMIT) {
             this.logger.error(
               `[trueconf] DNS resolve failed ${this.dnsRetryCount} times; check serverUrl. Giving up.`,
             )
@@ -687,7 +840,7 @@ export class ConnectionLifecycle {
             // NetworkError` can distinguish a terminal DNS failure from a
             // retryable one without spinning further.
             const cause = new NetworkError(
-              `dns_unreachable: gave up after ${this.dnsRetryCount} retries`,
+              `dns_unreachable: gave up after ${this.dnsRetryCount} attempts`,
               'websocket',
               undefined,
               DNS_TERMINAL_CODE,
@@ -695,12 +848,39 @@ export class ConnectionLifecycle {
             this.wsClient.markAuthFailed(cause)
             try {
               this.options?.onTerminalFailure?.({ kind: 'dns_exhausted', retries: this.dnsRetryCount, cause })
-            } catch (err) {
-              this.logger.warn(`[trueconf] onTerminalFailure callback failed: ${err instanceof Error ? err.message : String(err)}`)
+            } catch (cbErr) {
+              this.logger.warn(`[trueconf] onTerminalFailure callback failed: ${cbErr instanceof Error ? cbErr.message : String(cbErr)}`)
             }
             this.wsClient.close()
             return
           }
+        } else if (this.isAuthTerminalError(err)) {
+          this.oauthFailCount++
+          if (this.oauthFailCount >= OAUTH_FAIL_LIMIT) {
+            this.logger.error(
+              `[trueconf] OAuth authentication failed ${this.oauthFailCount} times; check bot credentials (username/password) on TrueConf Server. Giving up.`,
+            )
+            try { this.options?.onConnectionClosed?.(0, 'oauth_unauthorized') } catch { /* swallow */ }
+            const cause = new NetworkError(
+              `oauth_unauthorized: gave up after ${this.oauthFailCount} consecutive 401/403`,
+              'oauth',
+              err instanceof Error ? err : undefined,
+              OAUTH_TERMINAL_CODE,
+            )
+            this.wsClient.markAuthFailed(cause)
+            try {
+              this.options?.onTerminalFailure?.({ kind: 'auth_exhausted', retries: this.oauthFailCount, cause })
+            } catch (cbErr) {
+              this.logger.warn(`[trueconf] onTerminalFailure callback failed: ${cbErr instanceof Error ? cbErr.message : String(cbErr)}`)
+            }
+            this.wsClient.close()
+            return
+          }
+        } else {
+          // D-07 consecutive-only counter: any non-401/403 outcome (network
+          // error, 500, timeout, etc.) resets the OAuth fail counter to 0.
+          // dnsRetryCount stays cumulative — that's the existing DNS contract.
+          this.oauthFailCount = 0
         }
         this.backoffMs = Math.min(this.backoffMs * 2, 60_000)
         this.scheduleReconnect()

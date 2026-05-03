@@ -12,19 +12,12 @@
 //
 // No new dependencies — uses node:fs, node:path, node:url. AGENTS.md §10.
 
-import { readdirSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, resolve, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..')
 
-// Files that npm publish would include. Mirror package.json `files: []`
-// minus the docs (non-code). The scanner only reads .ts/.mjs/.cjs/.mts/.cts
-// /.jsx/.tsx files anyway (its SCANNABLE_EXTENSIONS set), so README/LICENSE/
-// openclaw.plugin.json/llms*.txt are no-ops; we filter explicitly for
-// readability + to keep the file count bounded.
-const PUBLISHED_DIRS = ['bin', 'src']
-const PUBLISHED_FILES = ['index.ts']
 const SCANNABLE_EXT = new Set(['.js', '.ts', '.mjs', '.cjs', '.mts', '.cts', '.jsx', '.tsx'])
 
 function hasScannableExt(filename) {
@@ -32,6 +25,33 @@ function hasScannableExt(filename) {
   if (dot < 0) return false
   return SCANNABLE_EXT.has(filename.slice(dot))
 }
+
+// Derive the published file set from package.json `files: []` so the scan
+// scope cannot drift from what npm actually publishes. Directories (entries
+// ending in `/`) are walked for scannable extensions; non-directory entries
+// with a scannable extension are forced files; everything else (LICENSE,
+// README, openclaw.plugin.json, llms*.txt) is a non-code no-op for the
+// scanner and skipped here.
+const { PUBLISHED_DIRS, PUBLISHED_FILES } = (() => {
+  const pkgPath = resolve(REPO_ROOT, 'package.json')
+  let pkg
+  try {
+    pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+  } catch (err) {
+    throw new Error(`scan-tarball: could not read ${pkgPath} (${err.message}).`)
+  }
+  const dirs = []
+  const files = []
+  for (const entry of pkg.files ?? []) {
+    if (typeof entry !== 'string') continue
+    if (entry.endsWith('/')) {
+      dirs.push(entry.slice(0, -1))
+    } else if (hasScannableExt(entry)) {
+      files.push(entry)
+    }
+  }
+  return { PUBLISHED_DIRS: dirs, PUBLISHED_FILES: files }
+})()
 
 // Walk a directory, return all scannable files (absolute paths). Skips
 // dotfiles + node_modules to mirror what npm-pack would include from a

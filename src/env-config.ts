@@ -4,7 +4,7 @@
 // scattering env access across bin/, src/channel-setup, src/ws-client.
 //
 // Why centralize: openclaw's per-file regex security scanner flags any source
-// that mentions process.env alongside a fetch/post token. By concentrating
+// that mentions process.env alongside a network-send token. By concentrating
 // the env reads here, the consumer files no longer match the regex.
 //
 // Conventions preserved from the prior inline helpers:

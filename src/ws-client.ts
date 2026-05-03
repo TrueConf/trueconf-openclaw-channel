@@ -452,9 +452,18 @@ export class WsClient {
       })
 
       ws.on('error', (err: Error) => {
-        const code = 'code' in err ? String((err as { code: unknown }).code) : undefined
-        const syscall = 'syscall' in err ? String((err as { syscall: unknown }).syscall) : undefined
-        const hostname = 'hostname' in err ? String((err as { hostname: unknown }).hostname) : undefined
+        // `'code' in err` returns true even when the property is defined-but-
+        // undefined; String(undefined) is the literal string 'undefined' which
+        // would propagate into NetworkError.code and mislead any downstream
+        // telemetry that branches on err.code != null. Mirror the
+        // extractFetchCauseMeta idiom (===undefined) so the WS error path
+        // surfaces real codes only.
+        const codeRaw = (err as { code?: unknown }).code
+        const code = codeRaw === undefined ? undefined : String(codeRaw)
+        const syscallRaw = (err as { syscall?: unknown }).syscall
+        const syscall = syscallRaw === undefined ? undefined : String(syscallRaw)
+        const hostnameRaw = (err as { hostname?: unknown }).hostname
+        const hostname = hostnameRaw === undefined ? undefined : String(hostnameRaw)
         settle(() => reject(new NetworkError(
           `WebSocket error: ${err.message}`,
           'websocket',

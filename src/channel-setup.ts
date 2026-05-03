@@ -839,9 +839,6 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
   }
 
   const useTlsHint = readUseTls()
-  // readPort() returns undefined when unset and may return NaN when the env
-  // var is set to a non-numeric value — preserves the prior behaviour that
-  // surfaced the bad value via Number.parseInt downstream.
   const portHint = readPort()
 
   let resolvedUseTls = useTlsHint

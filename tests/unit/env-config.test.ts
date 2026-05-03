@@ -159,9 +159,9 @@ describe('env-config readPort (parseInt or undefined)', () => {
     process.env.TRUECONF_PORT = '4309'
     expect(readPort()).toBe(4309)
   })
-  it('returns NaN on non-numeric (preserves prior semantics)', () => {
+  it('returns undefined on non-numeric (downstream falls back to default)', () => {
     process.env.TRUECONF_PORT = 'abc'
-    expect(readPort()).toBeNaN()
+    expect(readPort()).toBeUndefined()
   })
   it('returns undefined when empty', () => {
     process.env.TRUECONF_PORT = ''

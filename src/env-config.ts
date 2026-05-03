@@ -72,13 +72,15 @@ export function readUseTls(): boolean | undefined {
   return undefined
 }
 
-// TRUECONF_PORT — parsed as base-10 int; returns undefined when unset/empty,
-// returns NaN when set to non-numeric (caller decides — matches prior
-// channel-setup `Number.parseInt(portEnv, 10)` semantics on bad input).
+// TRUECONF_PORT — parsed as base-10 int. Returns undefined when unset, empty,
+// or non-numeric. The same fail-loud doctrine as readSetupLocale applies: a
+// misconfigured CI value should not leak through as NaN and end up serialized
+// as `null` in the persisted cfg.
 export function readPort(): number | undefined {
   const raw = process.env.TRUECONF_PORT
   if (!raw) return undefined
-  return Number.parseInt(raw, 10)
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) ? parsed : undefined
 }
 
 // TRUECONF_TLS_VERIFY — three-state: returns the trimmed string when set

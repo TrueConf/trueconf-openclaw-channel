@@ -147,6 +147,85 @@ describe('acquireToken', () => {
     expect(ne.syscall).toBe('getaddrinfo')
     expect(ne.hostname).toBe('missing.example.com')
   })
+
+  it('throws NetworkError(code="OAUTH_TIMEOUT") when fetch aborts via AbortSignal.timeout', async () => {
+    vi.mocked(undiciFetch).mockImplementationOnce(async () => {
+      const err = new Error('The operation was aborted due to timeout')
+      err.name = 'TimeoutError'
+      throw err
+    })
+    let caught: unknown = null
+    try {
+      await acquireToken({
+        serverUrl: 'tc.example.com',
+        username: 'bot',
+        password: 'secret',
+        useTls: true,
+        port: 443,
+      })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(NetworkError)
+    const ne = caught as NetworkError
+    expect(ne.phase).toBe('oauth')
+    expect(ne.code).toBe('OAUTH_TIMEOUT')
+    expect(ne.message).toMatch(/timed out/i)
+  })
+
+  it('throws NetworkError(code=String(status)) on non-ok response (401)', async () => {
+    vi.mocked(undiciFetch).mockImplementationOnce(async () => ({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      json: async () => ({ error_description: 'bad creds' }),
+    }) as unknown as Response)
+
+    let caught: unknown = null
+    try {
+      await acquireToken({
+        serverUrl: 'tc.example.com',
+        username: 'bot',
+        password: 'secret',
+        useTls: true,
+        port: 443,
+      })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(NetworkError)
+    const ne = caught as NetworkError
+    expect(ne.phase).toBe('oauth')
+    expect(ne.code).toBe('401')
+    expect(ne.message).toMatch(/\(401\)/)
+    expect(ne.message).toMatch(/bad creds/)
+  })
+
+  it('throws NetworkError(code="500") on non-ok 500 response (transient, NOT auth-terminal)', async () => {
+    vi.mocked(undiciFetch).mockImplementationOnce(async () => ({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      json: async () => { throw new Error('not json') },
+    }) as unknown as Response)
+
+    let caught: unknown = null
+    try {
+      await acquireToken({
+        serverUrl: 'tc.example.com',
+        username: 'bot',
+        password: 'secret',
+        useTls: true,
+        port: 443,
+      })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(NetworkError)
+    const ne = caught as NetworkError
+    expect(ne.phase).toBe('oauth')
+    expect(ne.code).toBe('500')
+  })
 })
 
 // Integration helper: a tiny in-process plaintext WS server that speaks the
@@ -293,6 +372,56 @@ describe('WsClient connect — typed errors', () => {
     // The exact code depends on platform/libuv timing — accept either an empty
     // code or a known transient marker, but the wrapper itself is what we test.
     expect(typeof (ne.code ?? '')).toBe('string')
+  })
+
+  it('rejects with NetworkError(phase="ws-handshake", code="WS_HANDSHAKE_TIMEOUT") when no open/error/close fires within WS_HANDSHAKE_TIMEOUT_MS', async () => {
+    // TCP server that accepts the connection and holds it open without ever
+    // sending a WebSocket upgrade response. Mimics a silent reverse-proxy
+    // that swallows the upgrade request.
+    const heldSockets: Array<{ destroy: () => void }> = []
+    server = createServer()
+    server.on('connection', (sock) => {
+      heldSockets.push(sock)
+      // Pause the socket so libuv doesn't pump bytes our way; the WS library
+      // sees no upgrade response, no error, no close. Pure hang.
+      sock.pause()
+    })
+    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', () => resolve()))
+    const port = (server.address() as AddressInfo).port
+
+    // Spy on the ws library's terminate so we can verify the timer-callback
+    // tore the socket down before rejecting.
+    const terminateSpy = vi.spyOn(WsServerSocket.prototype, 'terminate')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const client = new WsClient()
+      const connectPromise = client.connect(makeConfig(port), 'fake-token')
+      // Pre-attach catch so vitest's unhandled-rejection guard doesn't fire
+      // while we drain the timer.
+      const settled = connectPromise.then(() => ({ ok: true as const }), (err: Error) => ({ ok: false as const, err }))
+
+      // Advance past the 20_000ms handshake budget; let pending microtasks run.
+      await vi.advanceTimersByTimeAsync(21_000)
+
+      const result = await settled
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.err).toBeInstanceOf(NetworkError)
+        const ne = result.err as NetworkError
+        expect(ne.phase).toBe('ws-handshake')
+        expect(ne.code).toBe('WS_HANDSHAKE_TIMEOUT')
+        expect(ne.message).toMatch(/handshake timed out/i)
+      }
+      expect(terminateSpy).toHaveBeenCalled()
+    } finally {
+      terminateSpy.mockRestore()
+      vi.useRealTimers()
+      // Force-destroy the held server-side sockets so the http.close() in
+      // afterEach can drain promptly.
+      for (const sock of heldSockets) {
+        try { sock.destroy() } catch { /* already gone */ }
+      }
+    }
   })
 })
 

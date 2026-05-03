@@ -36,6 +36,16 @@ export function readEnvMs(name: string, defaultMs: number): number {
 const HEARTBEAT_INTERVAL_MS = readEnvMs('TRUECONF_HEARTBEAT_INTERVAL_MS', 30_000)
 const HEARTBEAT_PONG_TIMEOUT_MS = readEnvMs('TRUECONF_HEARTBEAT_PONG_TIMEOUT_MS', 10_000)
 
+// OAuth POST timeout — used as AbortSignal.timeout on the fetch in
+// acquireToken. Caps the time we hold the lifecycle waiting on a hung
+// reverse-proxy or molasses-slow auth endpoint before backoff retries.
+const OAUTH_TIMEOUT_MS = readEnvMs('TRUECONF_OAUTH_TIMEOUT_MS', 15_000)
+
+// WS handshake timeout — wall-clock budget from `new WebSocket(...)` to
+// the first 'open' event. After this, ws.terminate() forces the close
+// path so the existing reconnect/backoff loop runs.
+const WS_HANDSHAKE_TIMEOUT_MS = readEnvMs('TRUECONF_WS_HANDSHAKE_TIMEOUT_MS', 20_000)
+
 export function hostPort(config: { serverUrl: string; useTls: boolean; port?: number }): string {
   if (typeof config.serverUrl !== 'string' || config.serverUrl.length === 0) {
     throw new Error('hostPort: serverUrl must be a non-empty string')
@@ -91,8 +101,22 @@ export async function acquireToken(
         password: config.password,
       }),
       ...(options?.dispatcher && { dispatcher: options.dispatcher }),
+      signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
     } as RequestInit)
   } catch (err) {
+    // AbortSignal.timeout fires as DOMException with name='TimeoutError'
+    // (per WHATWG; undici uses globalThis.AbortSignal which surfaces this
+    // shape). Promote it to a NetworkError with a synthetic code so the
+    // lifecycle catch can classify it as retryable, distinct from auth
+    // failure (which carries the HTTP status as code).
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      throw new NetworkError(
+        `OAuth token request timed out after ${OAUTH_TIMEOUT_MS}ms`,
+        'oauth',
+        err,
+        'OAUTH_TIMEOUT',
+      )
+    }
     const meta = extractFetchCauseMeta(err)
     const outerMsg = err instanceof Error ? err.message : String(err)
     const causeMsg = err instanceof Error && err.cause instanceof Error ? err.cause.message : ''
@@ -115,7 +139,12 @@ export async function acquireToken(
     } catch {
       // non-JSON error body (reverse-proxy HTML etc.)
     }
-    throw new Error(`OAuth token acquisition failed (${response.status}): ${detail}`)
+    throw new NetworkError(
+      `OAuth token acquisition failed (${response.status}): ${detail}`,
+      'oauth',
+      undefined,
+      String(response.status),
+    )
   }
 
   const json = (await response.json()) as Record<string, unknown>
@@ -271,7 +300,32 @@ export class WsClient {
 
     return new Promise<void>((resolve, reject) => {
       let settled = false
-      const settle = (fn: () => void) => { if (!settled) { settled = true; fn() } }
+      let handshakeTimer: ReturnType<typeof setTimeout> | undefined
+
+      const settle = (fn: () => void) => {
+        if (settled) return
+        settled = true
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer)
+          handshakeTimer = undefined
+        }
+        fn()
+      }
+
+      // Bound the wall-clock budget from socket construction to the first
+      // open event. If the upgrade never arrives (silent reverse-proxy,
+      // misconfigured firewall), terminate the socket and surface a
+      // NetworkError so the lifecycle backoff loop runs.
+      handshakeTimer = setTimeout(() => {
+        try { ws.terminate() } catch { /* ws may already be torn down */ }
+        settle(() => reject(new NetworkError(
+          `WS handshake timed out after ${WS_HANDSHAKE_TIMEOUT_MS}ms`,
+          'ws-handshake',
+          undefined,
+          'WS_HANDSHAKE_TIMEOUT',
+        )))
+      }, WS_HANDSHAKE_TIMEOUT_MS)
+      handshakeTimer.unref?.()
 
       ws.on('open', () => {
         const authId = this.idCounter.next()

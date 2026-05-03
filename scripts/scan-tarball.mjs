@@ -1,16 +1,7 @@
 #!/usr/bin/env node
-// Programmatic openclaw-scanner runner. Used by:
-//   1. tests/unit/scanner-check.test.ts (imports scanPublishedFiles)
-//   2. package.json scripts.prepack (CLI entry — exits non-zero on critical)
-//
-// Resolves the openclaw scanner from node_modules. The scanner lives at a
-// hashed-filename internal chunk (./dist/skill-scanner-{8 chars}.js); the
-// hash rotates on every openclaw release, so we glob-find it instead of
-// hard-coding the filename. If a future openclaw version adds a public
-// re-export through openclaw/plugin-sdk/*, this resolver picks that up via
-// the named-export try first.
-//
-// No new dependencies — uses node:fs, node:path, node:url. AGENTS.md §10.
+// Programmatic openclaw-scanner runner — dual purpose:
+//   - imported library: scanPublishedFiles() returns the summary
+//   - CLI (npm pack prepack hook): exits 1 on critical, 2 on error
 
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { join, resolve, relative } from 'node:path'
@@ -26,38 +17,20 @@ function hasScannableExt(filename) {
   return SCANNABLE_EXT.has(filename.slice(dot))
 }
 
-// Derive the published file set from package.json `files: []` so the scan
-// scope cannot drift from what npm actually publishes. Directories (entries
-// ending in `/`) are walked for scannable extensions; non-directory entries
-// with a scannable extension are forced files; everything else (LICENSE,
-// README, openclaw.plugin.json, llms*.txt) is a non-code no-op for the
-// scanner and skipped here.
-const { PUBLISHED_DIRS, PUBLISHED_FILES } = (() => {
-  const pkgPath = resolve(REPO_ROOT, 'package.json')
-  let pkg
-  try {
-    pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
-  } catch (err) {
-    throw new Error(`scan-tarball: could not read ${pkgPath} (${err.message}).`)
-  }
-  const dirs = []
-  const files = []
-  for (const entry of pkg.files ?? []) {
-    if (typeof entry !== 'string') continue
-    if (entry.endsWith('/')) {
-      dirs.push(entry.slice(0, -1))
-    } else if (hasScannableExt(entry)) {
-      files.push(entry)
-    }
-  }
-  return { PUBLISHED_DIRS: dirs, PUBLISHED_FILES: files }
-})()
+// Derived from package.json:files at module load so the scan scope cannot
+// drift from what npm publishes. Non-scannable entries (LICENSE, README,
+// llms*.txt, openclaw.plugin.json) are filtered out.
+const pkgRaw = readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8')
+const PUBLISHED_DIRS = []
+const PUBLISHED_FILES = []
+for (const entry of (JSON.parse(pkgRaw).files ?? [])) {
+  if (typeof entry !== 'string') continue
+  if (entry.endsWith('/')) PUBLISHED_DIRS.push(entry.slice(0, -1))
+  else if (hasScannableExt(entry)) PUBLISHED_FILES.push(entry)
+}
 
-// Walk a directory, return all scannable files (absolute paths). Skips
-// dotfiles + node_modules to mirror what npm-pack would include from a
-// directory listed in package.json `files`. ENOENT on a stale entry is
-// tolerated; permission/IO errors must surface — a published file the
-// scanner cannot read is a security gap, not a skip-able anomaly.
+// ENOENT on a stale entry is tolerated; permission/IO errors must surface —
+// a published file the scanner cannot read is a security gap, not a skip.
 function walkScannable(dirAbs) {
   const out = []
   const stack = [dirAbs]
@@ -80,9 +53,9 @@ function walkScannable(dirAbs) {
   return out
 }
 
-// The openclaw scanner ships as a minified internal chunk
-// `node_modules/openclaw/dist/skill-scanner-{8 chars}.js` exposing only
-// `t` (no named API). Hash rotates per release, so glob-find it.
+// The openclaw scanner ships as a minified chunk at
+// node_modules/openclaw/dist/skill-scanner-{8 chars}.js exposing only `t`.
+// Hash rotates per release, so glob-find it.
 export async function resolveScannerModule() {
   const distDir = resolve(REPO_ROOT, 'node_modules', 'openclaw', 'dist')
   let hashedFile
@@ -112,22 +85,12 @@ export async function resolveScannerModule() {
   return { scanDirectoryWithSummary: mod.t, source: `hashed-t:${hashedFile}` }
 }
 
-// Scan the file set that `npm pack` would publish. Returns:
-//   { scannedFiles, critical, warn, info, findings: SkillScanFinding[] }
-//
-// The scanner's scanDirectoryWithSummary walks the directory by default and
-// adds `includeFiles` as forced files. To scan ONLY the published file set
-// (not the whole repo — which would also pick up scripts/, tests/, etc.), we
-// set `maxFiles` to the count of forced files. Per the scanner source, when
-// forcedFiles.length >= maxFiles the walker short-circuits and returns just
-// the forced set.
+// Setting maxFiles to filesAbs.length short-circuits the upstream walker
+// (forcedFiles.length >= maxFiles) so it returns only the forced set
+// instead of walking the whole repo.
 export async function scanPublishedFiles(rootDir = REPO_ROOT) {
   const resolved = await resolveScannerModule()
 
-  // Build the includeFiles list (relative paths within rootDir). ENOENT
-  // is tolerated (a stale entry in package.json files: list); other errors
-  // surface so a permission-denied file in the published tree fails loud
-  // instead of silently exiting the scan scope.
   const filesAbs = []
   for (const dir of PUBLISHED_DIRS) {
     const dirAbs = resolve(rootDir, dir)
@@ -152,9 +115,8 @@ export async function scanPublishedFiles(rootDir = REPO_ROOT) {
     }
   }
 
-  // Empty file set means package.json files: list is stale or the source
-  // tree has drifted. Refuse to pass — without this guard the upstream
-  // scanner walks REPO_ROOT with maxFiles=1 and the gate passes vacuously.
+  // Refuse to pass on empty: upstream maxFiles=Math.max(1,…) would walk
+  // REPO_ROOT and the gate would pass vacuously.
   if (filesAbs.length === 0) {
     throw new Error(
       `scan-tarball: no scannable files found under published file set ` +
@@ -171,10 +133,7 @@ export async function scanPublishedFiles(rootDir = REPO_ROOT) {
   return summary
 }
 
-// CLI entry — run scan, print summary, exit non-zero on critical.
-// realpathSync resolves any symlink shim that npm/npx may interpose, mirroring
-// the bin/trueconf-setup.mjs guard so behavior is uniform across invocation
-// paths (direct node, prepack, future npx exposure).
+// CLI entry — realpathSync resolves any symlink shim npm/npx may interpose.
 const isCliEntry = (() => {
   if (!process.argv[1]) return false
   try {
@@ -187,10 +146,8 @@ if (isCliEntry) {
   try {
     const summary = await scanPublishedFiles()
     if (summary.critical > 0) {
-      // Print rule + path + line only — not findings[].evidence. The evidence
-      // string is the matched source line, which can contain real secrets if a
-      // future regression introduces one. The operator can grep the file at
-      // the reported line to inspect the trigger themselves.
+      // Print rule + path + line only — never findings[].evidence (matched
+      // source line; could leak real secrets if a regression introduces one).
       process.stderr.write(`\n[scan-tarball] FAIL — ${summary.critical} critical finding(s) in published files:\n`)
       for (const f of summary.findings) {
         if (f.severity !== 'critical') continue

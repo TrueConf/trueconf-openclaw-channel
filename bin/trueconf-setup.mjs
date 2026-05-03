@@ -45,9 +45,6 @@ async function loadI18n() {
   return { t: mod.t }
 }
 
-// Loads the env-config readers via jiti. Centralizing every TRUECONF_* env
-// read in src/env-config.ts keeps this file free of inline env access so
-// the openclaw security scanner's per-file regex returns no findings here.
 async function loadEnvConfig() {
   const mod = await jiti.import(join(REPO_ROOT, 'src/env-config.ts'))
   return {

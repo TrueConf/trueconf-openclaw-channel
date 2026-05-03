@@ -1,43 +1,18 @@
-// Single source of truth for every TRUECONF_* environment variable read in
-// this package. Setup wizard env (10 names) and runtime tunables (6 names)
-// live together so callers import named readers from one module instead of
-// scattering env access across bin/, src/channel-setup, src/ws-client.
-//
-// Why centralize: openclaw's per-file regex security scanner flags any source
-// that mentions process.env alongside a network-send token. By concentrating
-// the env reads here, the consumer files no longer match the regex.
-//
-// Conventions preserved from the prior inline helpers:
-//   - String readers trim whitespace and collapse empty/whitespace-only to
-//     undefined (matches the existing channel-setup convention).
-//   - Numeric readers fall back to a default on unset / empty / non-numeric /
-//     <= 0 (matches the prior ws-client readEnvMs helper).
-//   - readSetupLocale throws on invalid values so misconfigured CI fails
-//     loud instead of silently picking a default.
-//   - readPasswordRaw deliberately does NOT trim — the openclaw plugin-sdk
-//     receives the literal bytes the operator set, preserving byte-for-byte
-//     runtime semantics for the rare case of a password that legitimately
-//     starts or ends with whitespace.
+// Centralized TRUECONF_* env reads. The openclaw security scanner's per-file
+// regex flags any source mentioning process.env alongside a network-send
+// token; concentrating reads here keeps the consumer files clean.
 
 import type { Locale } from './i18n'
 import { DEFAULT_LOCALE, t } from './i18n'
 
-// =============================================================================
-// Setup wizard env vars (10)
-// =============================================================================
-
-// Trim+collapse-empty-to-undefined idiom for plain string env vars. Empty or
-// whitespace-only is treated as unset.
 function readTrimmed(name: string): string | undefined {
   const raw = process.env[name]?.trim()
   return raw ? raw : undefined
 }
 
-// TRUECONF_SETUP_LOCALE — throws on invalid values so misconfigured CI fails
-// loud instead of silently picking a default the operator did not pick.
-// Returns null when unset (matches the bin's prior null sentinel; channel-
-// setup's `?? cfgLocale ?? 'en'` chain absorbs `null` and `undefined`
-// identically at every call site).
+// Throws on invalid so misconfigured CI fails loud instead of silently picking
+// a default the operator did not pick. null vs undefined matches the bin's
+// prior sentinel — channel-setup's `?? cfgLocale ?? 'en'` absorbs both.
 export function readSetupLocale(): Locale | null {
   const raw = process.env.TRUECONF_SETUP_LOCALE
   if (raw === undefined) return null
@@ -48,23 +23,14 @@ export function readSetupLocale(): Locale | null {
 export function readServerUrl(): string | undefined { return readTrimmed('TRUECONF_SERVER_URL') }
 export function readUsername(): string | undefined { return readTrimmed('TRUECONF_USERNAME') }
 
-// TRUECONF_PASSWORD has TWO readers:
-//
-// readPassword() — TRIMMED. Empty/whitespace-only collapses to undefined.
-// Use this reader for boolean checks like `readPassword() !== undefined`.
-//
-// readPasswordRaw() — UNTRIMMED. Returns the literal env value with leading
-// and trailing whitespace preserved; only `undefined` (var unset) collapses
-// to `undefined`. Use this reader anywhere the openclaw plugin-sdk receives
-// the password as `envValue`, preserving byte-for-byte runtime semantics
-// from before this refactor.
+// Twin readers: readPassword() trims (use for boolean presence checks);
+// readPasswordRaw() preserves bytes (the openclaw plugin-sdk receives
+// envValue literally, so leading/trailing whitespace must survive).
 export function readPassword(): string | undefined { return readTrimmed('TRUECONF_PASSWORD') }
 export function readPasswordRaw(): string | undefined { return process.env.TRUECONF_PASSWORD }
 
 export function readCaPath(): string | undefined { return readTrimmed('TRUECONF_CA_PATH') }
 
-// TRUECONF_USE_TLS — accepts only the literal strings 'true' / 'false'.
-// Anything else (including unset) returns undefined (caller's default applies).
 export function readUseTls(): boolean | undefined {
   const raw = process.env.TRUECONF_USE_TLS
   if (raw === 'true') return true
@@ -72,10 +38,6 @@ export function readUseTls(): boolean | undefined {
   return undefined
 }
 
-// TRUECONF_PORT — parsed as base-10 int. Returns undefined when unset, empty,
-// or non-numeric. The same fail-loud doctrine as readSetupLocale applies: a
-// misconfigured CI value should not leak through as NaN and end up serialized
-// as `null` in the persisted cfg.
 export function readPort(): number | undefined {
   const raw = process.env.TRUECONF_PORT
   if (!raw) return undefined
@@ -83,38 +45,25 @@ export function readPort(): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
-// TRUECONF_TLS_VERIFY — three-state: returns the trimmed string when set
-// (caller compares to 'false' explicitly to opt into insecure mode), or
-// undefined for unset/empty (caller's default-verify applies). The
-// throw-on-invalid guard lives in the caller, not here, to preserve the
-// existing channel-setup `envTlsVerify !== 'false'` check shape.
+// Three-state: caller compares to 'false' explicitly to opt into insecure
+// mode. The throw-on-invalid guard lives in the caller, not here, to preserve
+// channel-setup's `envTlsVerify !== 'false'` check shape.
 export function readTlsVerify(): string | undefined { return readTrimmed('TRUECONF_TLS_VERIFY') }
 
-// TRUECONF_ACCEPT_UNTRUSTED_CA — boolean opt-in; only literal 'true' counts.
 export function readAcceptUntrustedCa(): boolean {
   return process.env.TRUECONF_ACCEPT_UNTRUSTED_CA === 'true'
 }
 
-// TRUECONF_ACCEPT_ROTATED_CERT — boolean opt-in; only literal 'true' counts.
 export function readAcceptRotatedCert(): boolean {
   return process.env.TRUECONF_ACCEPT_ROTATED_CERT === 'true'
 }
 
-// Headless-shortcut detector — TRUE when serverUrl + username + password are
-// all set non-empty. Mirrors the prior bin `hasEnvShortcut` and the
-// `envShortcut.isAvailable` arrow in channel-setup.
 export function hasSetupShortcut(): boolean {
   return Boolean(readServerUrl() && readUsername() && readPassword())
 }
 
-// =============================================================================
-// Runtime tunables (6) — module-load semantics preserved at call sites in
-// ws-client.ts (those keep `const X = readX()` at module top, evaluated once).
-// =============================================================================
-
-// Read a positive-integer env var with default fallback. Returns defaultValue
-// when unset, empty, non-numeric, or <= 0. Same shape as the prior
-// ws-client.ts readEnvMs helper.
+// Returns defaultValue on unset/empty/non-numeric/<=0 — matches the prior
+// ws-client readEnvMs helper.
 function readPositiveIntWithDefault(name: string, defaultValue: number): number {
   const raw = process.env[name]?.trim()
   if (!raw) return defaultValue
@@ -129,12 +78,6 @@ export function readOauthTimeoutMs(): number { return readPositiveIntWithDefault
 export function readWsHandshakeTimeoutMs(): number { return readPositiveIntWithDefault('TRUECONF_WS_HANDSHAKE_TIMEOUT_MS', 20_000) }
 export function readOauthFailLimit(): number { return readPositiveIntWithDefault('TRUECONF_OAUTH_FAIL_LIMIT', 3) }
 export function readDnsFailLimit(): number { return readPositiveIntWithDefault('TRUECONF_DNS_FAIL_LIMIT', 5) }
-
-// =============================================================================
-// Public env contract registry — used by tests/unit/env-config.test.ts to
-// snapshot the surface. Adding/removing/renaming a reader requires updating
-// this registry, which makes the diff visible at PR review.
-// =============================================================================
 
 export const PUBLIC_ENV_CONTRACT = {
   setup: [

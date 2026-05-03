@@ -35,7 +35,7 @@ function clearAllTrueConfEnv(): void {
 beforeEach(() => clearAllTrueConfEnv())
 afterEach(() => clearAllTrueConfEnv())
 
-describe('env-config public contract (Phase 03 D-12 snapshot)', () => {
+describe('env-config public contract', () => {
   it('setup contract lists exactly the 10 wizard env vars', () => {
     expect(PUBLIC_ENV_CONTRACT.setup).toEqual([
       'TRUECONF_SETUP_LOCALE',
@@ -93,7 +93,7 @@ describe('env-config readSetupLocale', () => {
   })
 })
 
-describe('env-config readServerUrl / readUsername (trim+collapse)', () => {
+describe('env-config readServerUrl / readUsername', () => {
   it('returns undefined when unset', () => {
     expect(readServerUrl()).toBeUndefined()
     expect(readUsername()).toBeUndefined()
@@ -112,7 +112,7 @@ describe('env-config readServerUrl / readUsername (trim+collapse)', () => {
   })
 })
 
-describe('env-config readPassword vs readPasswordRaw (trim semantics divergence)', () => {
+describe('env-config readPassword vs readPasswordRaw', () => {
   it('readPassword trims whitespace; readPasswordRaw preserves it', () => {
     process.env.TRUECONF_PASSWORD = '  hunter2  '
     expect(readPassword()).toBe('hunter2')
@@ -129,7 +129,7 @@ describe('env-config readPassword vs readPasswordRaw (trim semantics divergence)
   })
 })
 
-describe('env-config readUseTls (literal "true"/"false" only)', () => {
+describe('env-config readUseTls', () => {
   it('returns undefined when unset', () => {
     expect(readUseTls()).toBeUndefined()
   })
@@ -151,7 +151,7 @@ describe('env-config readUseTls (literal "true"/"false" only)', () => {
   })
 })
 
-describe('env-config readPort (parseInt or undefined)', () => {
+describe('env-config readPort', () => {
   it('returns undefined when unset', () => {
     expect(readPort()).toBeUndefined()
   })
@@ -169,7 +169,7 @@ describe('env-config readPort (parseInt or undefined)', () => {
   })
 })
 
-describe('env-config readCaPath (trim+collapse)', () => {
+describe('env-config readCaPath', () => {
   it('returns undefined when unset', () => {
     expect(readCaPath()).toBeUndefined()
   })
@@ -179,7 +179,7 @@ describe('env-config readCaPath (trim+collapse)', () => {
   })
 })
 
-describe('env-config readTlsVerify (trimmed string forwarded to caller)', () => {
+describe('env-config readTlsVerify', () => {
   it('returns undefined when unset', () => {
     expect(readTlsVerify()).toBeUndefined()
   })
@@ -193,7 +193,7 @@ describe('env-config readTlsVerify (trimmed string forwarded to caller)', () => 
   })
 })
 
-describe('env-config readAcceptUntrustedCa / readAcceptRotatedCert (literal "true" only)', () => {
+describe('env-config readAcceptUntrustedCa / readAcceptRotatedCert', () => {
   it('return false when unset', () => {
     expect(readAcceptUntrustedCa()).toBe(false)
     expect(readAcceptRotatedCert()).toBe(false)
@@ -232,7 +232,7 @@ describe('env-config hasSetupShortcut', () => {
   })
 })
 
-describe('env-config readPositiveIntWithDefault semantics (via readHeartbeatIntervalMs)', () => {
+describe('env-config readPositiveIntWithDefault (via readHeartbeatIntervalMs)', () => {
   it('returns default 30_000 when unset', () => {
     expect(readHeartbeatIntervalMs()).toBe(30_000)
   })
@@ -288,7 +288,7 @@ describe('env-config runtime tunable defaults', () => {
   })
 })
 
-describe('env-config does not log secrets (T-03-01 watchman)', () => {
+describe('env-config does not log secrets', () => {
   it('readPassword does not write to console', () => {
     process.env.TRUECONF_PASSWORD = 'super-secret-do-not-log'
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})

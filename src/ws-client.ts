@@ -27,13 +27,10 @@ import {
   readOauthFailLimit,
 } from './env-config.js'
 
-// Module-load: each tunable is read once at import time. The env reads
-// live in src/env-config.ts so this file no longer references env access
-// directly (see Phase 03 scanner-friendly-install). Defaults match
-// TrueConf's python-trueconf-bot SDK production semantics; tunable via
-// the matching TRUECONF_* env vars for corporate-NAT sub-30s idle-timeouts
-// (heartbeats), hung reverse-proxy auth endpoints (OAuth timeout), the
-// WS handshake budget, and the DNS / OAuth terminal thresholds.
+// Each tunable is read once at module load. Defaults match TrueConf's
+// python-trueconf-bot SDK production semantics; override via the matching
+// TRUECONF_* env vars for corporate-NAT idle timeouts, hung reverse-proxy
+// auth, the WS handshake budget, and DNS / OAuth terminal thresholds.
 const HEARTBEAT_INTERVAL_MS = readHeartbeatIntervalMs()
 const HEARTBEAT_PONG_TIMEOUT_MS = readHeartbeatPongTimeoutMs()
 const OAUTH_TIMEOUT_MS = readOauthTimeoutMs()

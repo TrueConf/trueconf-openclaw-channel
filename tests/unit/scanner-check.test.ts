@@ -28,20 +28,18 @@ const scanPublishedFiles = tarballModule.scanPublishedFiles as (
   }>
 }>
 
-describe('scanner-check (Phase 03 D-04 acceptance bar half 1)', () => {
-  it('finds zero critical findings in the published file set (post-Plan-01)', async () => {
+describe('scanner-check', () => {
+  it('finds zero critical findings in the published file set', async () => {
     const summary = await scanPublishedFiles()
     if (summary.critical > 0) {
-      // Print only ruleId + file:line + message — never findings[].evidence.
-      // The evidence string contains the offending source line and could leak
-      // secrets if the scanner's truncation ever changes (T-03-08).
+      // Print ruleId + file:line + message — never findings[].evidence.
       const offenders = summary.findings
         .filter((f) => f.severity === 'critical')
         .map((f) => `${f.ruleId} at ${f.file}:${f.line} — ${f.message}`)
         .join('\n  ')
       throw new Error(
         `Scanner found ${summary.critical} critical finding(s):\n  ${offenders}\n` +
-          `Fix the source file(s) above; do NOT bypass this check (Plan 02 T-03-05).`,
+          `Fix the source file(s) above; do NOT bypass this check.`,
       )
     }
     expect(summary.critical).toBe(0)
@@ -72,11 +70,9 @@ describe('scanner-check (Phase 03 D-04 acceptance bar half 1)', () => {
   })
 
   it('regression net: poisoned file inside the published tree raises critical', async () => {
-    // Codifies the manual negative-path proof from Phase 03 Plan 02. If a
-    // future change weakens scanPublishedFiles (e.g., resolver returns a
-    // wrong scanner, walk skips a published dir), this asserts that an
-    // env-harvesting pattern in src/ is still caught against the REAL
-    // published file set, not just a tmpdir.
+    // Asserts an env-harvesting pattern in src/ is caught against the REAL
+    // published file set (not just a tmpdir), so a future weakening of
+    // scanPublishedFiles (wrong resolver, walk skipping a dir) is detected.
     const harvesterPath = join(REPO_ROOT, 'src', '__scan_regression_DO_NOT_COMMIT__.tmp.ts')
     writeFileSync(
       harvesterPath,

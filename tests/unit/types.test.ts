@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NetworkError, DNS_ERROR_CODES, EnvelopeType, buildAuthRequest } from '../../src/types'
+import { NetworkError, DNS_ERROR_CODES, EnvelopeType, buildAuthRequest, isAuthTerminalCode, OAUTH_TERMINAL_CODE } from '../../src/types'
 
 describe('NetworkError', () => {
   it('preserves cause, code, syscall, hostname', () => {
@@ -33,6 +33,33 @@ describe('DNS_ERROR_CODES', () => {
     expect(DNS_ERROR_CODES.has('ECONNREFUSED')).toBe(false)
     expect(DNS_ERROR_CODES.has('ETIMEDOUT')).toBe(false)
     expect(DNS_ERROR_CODES.has('ECONNRESET')).toBe(false)
+  })
+})
+
+describe('isAuthTerminalCode', () => {
+  it('returns true for 401', () => {
+    expect(isAuthTerminalCode(401)).toBe(true)
+  })
+  it('returns true for 403', () => {
+    expect(isAuthTerminalCode(403)).toBe(true)
+  })
+  it('returns false for 400', () => {
+    expect(isAuthTerminalCode(400)).toBe(false)
+  })
+  it('returns false for 404', () => {
+    expect(isAuthTerminalCode(404)).toBe(false)
+  })
+  it('returns false for 500', () => {
+    expect(isAuthTerminalCode(500)).toBe(false)
+  })
+  it('returns false for 502', () => {
+    expect(isAuthTerminalCode(502)).toBe(false)
+  })
+})
+
+describe('OAUTH_TERMINAL_CODE', () => {
+  it('is the literal "OAUTH_GIVEUP"', () => {
+    expect(OAUTH_TERMINAL_CODE).toBe('OAUTH_GIVEUP')
   })
 })
 

@@ -8,6 +8,8 @@ import {
   NetworkError,
   DNS_ERROR_CODES,
   DNS_TERMINAL_CODE,
+  isAuthTerminalCode,
+  OAUTH_TERMINAL_CODE,
 } from './types'
 import type {
   TrueConfAccountConfig,
@@ -29,6 +31,17 @@ export function readEnvMs(name: string, defaultMs: number): number {
   return parsed
 }
 
+// Same fallback contract as readEnvMs but for plain integer counters
+// (no millisecond semantics). Sibling helper for clarity at call-sites:
+// DNS_FAIL_LIMIT and OAUTH_FAIL_LIMIT read like counts, not durations.
+function readEnvLimit(name: string, defaultLimit: number): number {
+  const raw = process.env[name]?.trim()
+  if (!raw) return defaultLimit
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) return defaultLimit
+  return parsed
+}
+
 // Match TrueConf's own python-trueconf-bot SDK (websockets.connect
 // ping_interval=30, ping_timeout=10) — production-tested against the same
 // servers we talk to. Tunable via ENV for corporate NATs with sub-30s
@@ -45,6 +58,17 @@ const OAUTH_TIMEOUT_MS = readEnvMs('TRUECONF_OAUTH_TIMEOUT_MS', 15_000)
 // the first 'open' event. After this, ws.terminate() forces the close
 // path so the existing reconnect/backoff loop runs.
 const WS_HANDSHAKE_TIMEOUT_MS = readEnvMs('TRUECONF_WS_HANDSHAKE_TIMEOUT_MS', 20_000)
+
+// DNS terminal threshold — was a static class constant, hoisted to module
+// level so it joins the ENV-tunable family. Behavior unchanged: 5 cumulative
+// DNS-class failures during scheduleReconnect's catch trigger the
+// dns_exhausted terminal path.
+const DNS_FAIL_LIMIT = readEnvLimit('TRUECONF_DNS_FAIL_LIMIT', 5)
+
+// OAuth terminal threshold — N consecutive 401/403 from the OAuth endpoint
+// trip the auth_exhausted terminal path. Default 3 detects genuine creds
+// rotation quickly without false-positives on a single 401 hiccup.
+const OAUTH_FAIL_LIMIT = readEnvLimit('TRUECONF_OAUTH_FAIL_LIMIT', 3)
 
 export function hostPort(config: { serverUrl: string; useTls: boolean; port?: number }): string {
   if (typeof config.serverUrl !== 'string' || config.serverUrl.length === 0) {
@@ -542,6 +566,7 @@ export class WsClient {
 export type TerminalCause =
   | { kind: 'shutdown'; cause: Error }
   | { kind: 'dns_exhausted'; retries: number; cause: NetworkError }
+  | { kind: 'auth_exhausted'; retries: number; cause: NetworkError }
 
 interface LifecycleOptions {
   onConnectionClosed?: (code: number, reason: string) => void
@@ -566,9 +591,9 @@ export class ConnectionLifecycle {
   private shuttingDown = false
   private reconnecting = false
   private dnsRetryCount = 0
+  private oauthFailCount = 0
   private reconnectInflight: Promise<void> | null = null
   private suppressNextCloseReconnect = false
-  private static readonly DNS_MAX_RETRIES = 5
 
   constructor(
     private wsClient: WsClient,
@@ -608,6 +633,7 @@ export class ConnectionLifecycle {
     this.backoffMs = 1000
     this.reconnecting = false
     this.dnsRetryCount = 0
+    this.oauthFailCount = 0
     this.wsClient.markAuthenticated()
     this.logger.info('[trueconf] Connected and authenticated')
     try {
@@ -733,16 +759,26 @@ export class ConnectionLifecycle {
     return err instanceof NetworkError && typeof err.code === 'string' && DNS_ERROR_CODES.has(err.code)
   }
 
+  private isAuthTerminalError(err: unknown): boolean {
+    if (!(err instanceof NetworkError)) return false
+    if (err.phase !== 'oauth') return false
+    if (typeof err.code !== 'string') return false
+    const status = Number.parseInt(err.code, 10)
+    if (!Number.isFinite(status)) return false
+    return isAuthTerminalCode(status)
+  }
+
   private scheduleReconnect(): void {
     this.reconnectTimer = setTimeout(async () => {
       try {
         await this.start()
         this.dnsRetryCount = 0
+        this.oauthFailCount = 0
       } catch (err) {
         this.logger.warn(`[trueconf] Reconnect attempt failed: ${err instanceof Error ? err.message : String(err)}`)
         if (this.isDnsError(err)) {
           this.dnsRetryCount++
-          if (this.dnsRetryCount >= ConnectionLifecycle.DNS_MAX_RETRIES) {
+          if (this.dnsRetryCount >= DNS_FAIL_LIMIT) {
             this.logger.error(
               `[trueconf] DNS resolve failed ${this.dnsRetryCount} times; check serverUrl. Giving up.`,
             )
@@ -762,12 +798,39 @@ export class ConnectionLifecycle {
             this.wsClient.markAuthFailed(cause)
             try {
               this.options?.onTerminalFailure?.({ kind: 'dns_exhausted', retries: this.dnsRetryCount, cause })
-            } catch (err) {
-              this.logger.warn(`[trueconf] onTerminalFailure callback failed: ${err instanceof Error ? err.message : String(err)}`)
+            } catch (cbErr) {
+              this.logger.warn(`[trueconf] onTerminalFailure callback failed: ${cbErr instanceof Error ? cbErr.message : String(cbErr)}`)
             }
             this.wsClient.close()
             return
           }
+        } else if (this.isAuthTerminalError(err)) {
+          this.oauthFailCount++
+          if (this.oauthFailCount >= OAUTH_FAIL_LIMIT) {
+            this.logger.error(
+              `[trueconf] OAuth authentication failed ${this.oauthFailCount} times; check bot credentials (username/password) on TrueConf Server. Giving up.`,
+            )
+            try { this.options?.onConnectionClosed?.(0, 'oauth_unauthorized') } catch { /* swallow */ }
+            const cause = new NetworkError(
+              `oauth_unauthorized: gave up after ${this.oauthFailCount} consecutive 401/403`,
+              'oauth',
+              err instanceof Error ? err : undefined,
+              OAUTH_TERMINAL_CODE,
+            )
+            this.wsClient.markAuthFailed(cause)
+            try {
+              this.options?.onTerminalFailure?.({ kind: 'auth_exhausted', retries: this.oauthFailCount, cause })
+            } catch (cbErr) {
+              this.logger.warn(`[trueconf] onTerminalFailure callback failed: ${cbErr instanceof Error ? cbErr.message : String(cbErr)}`)
+            }
+            this.wsClient.close()
+            return
+          }
+        } else {
+          // D-07 consecutive-only counter: any non-401/403 outcome (network
+          // error, 500, timeout, etc.) resets the OAuth fail counter to 0.
+          // dnsRetryCount stays cumulative — that's the existing DNS contract.
+          this.oauthFailCount = 0
         }
         this.backoffMs = Math.min(this.backoffMs * 2, 60_000)
         this.scheduleReconnect()

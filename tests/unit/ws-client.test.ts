@@ -869,6 +869,138 @@ describe('ConnectionLifecycle DNS retry policy', () => {
   })
 })
 
+describe('ConnectionLifecycle OAuth retry policy', () => {
+  // Mirrors the DNS retry policy block above. The pattern is the same:
+  // useFakeTimers + spy on lifecycle.start() to throw a chosen NetworkError
+  // shape + spy on client.close + invoke scheduleReconnect via the
+  // `as unknown as { ... }` accessor + drain timers.
+
+  it('fires onTerminalFailure with kind=auth_exhausted after OAUTH_FAIL_LIMIT consecutive 401s', async () => {
+    vi.useFakeTimers()
+    try {
+      const onTerminalFailure = vi.fn()
+      const client = new WsClient()
+      const config = { serverUrl: 'srv.example.com', useTls: true, port: 443, username: 'u', password: 'p', clientId: 'chat_bot', clientSecret: 's' } satisfies TrueConfAccountConfig
+      const lifecycle = new ConnectionLifecycle(client, config, silentLogger, { onTerminalFailure })
+
+      vi.spyOn(lifecycle, 'start').mockImplementation(async () => {
+        throw new NetworkError(
+          'OAuth token acquisition failed (401): bad creds',
+          'oauth',
+          undefined,
+          '401',
+        )
+      })
+      const closeSpy = vi.spyOn(client, 'close').mockImplementation(() => {})
+
+      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+
+      for (let i = 0; i < 10; i++) {
+        await vi.advanceTimersByTimeAsync(120_000)
+      }
+
+      expect(onTerminalFailure).toHaveBeenCalledTimes(1)
+      const arg = onTerminalFailure.mock.calls[0][0]
+      expect(arg.kind).toBe('auth_exhausted')
+      expect(arg.retries).toBeGreaterThanOrEqual(3)
+      expect(arg.cause).toBeInstanceOf(NetworkError)
+      expect(arg.cause.code).toBe('OAUTH_GIVEUP')
+      expect(arg.cause.message).toMatch(/oauth_unauthorized/)
+      expect(closeSpy).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rejects the auth barrier so pending senders fail fast on auth_exhausted', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new WsClient()
+      const config = { serverUrl: 'srv.example.com', useTls: true, port: 443, username: 'u', password: 'p', clientId: 'chat_bot', clientSecret: 's' } satisfies TrueConfAccountConfig
+      const lifecycle = new ConnectionLifecycle(client, config, silentLogger)
+
+      vi.spyOn(lifecycle, 'start').mockImplementation(async () => {
+        throw new NetworkError('401', 'oauth', undefined, '401')
+      })
+      vi.spyOn(client, 'close').mockImplementation(() => {})
+
+      // Pre-attach swallow before driving timers (mirror DNS test line 643).
+      const authPromise = client.waitAuthenticated(60_000)
+      authPromise.catch(() => {})
+
+      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+
+      for (let i = 0; i < 10; i++) {
+        await vi.advanceTimersByTimeAsync(120_000)
+      }
+
+      let caught: unknown
+      try { await authPromise } catch (e) { caught = e }
+      expect(caught).toBeInstanceOf(Error)
+      expect((caught as Error).message).toMatch(/OAUTH_GIVEUP|oauth_unauthorized|OAuth authentication failed/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps retrying past the limit when OAuth returns transient 5xx', async () => {
+    vi.useFakeTimers()
+    try {
+      const onTerminalFailure = vi.fn()
+      const client = new WsClient()
+      const config = { serverUrl: 'srv.example.com', useTls: true, port: 443, username: 'u', password: 'p', clientId: 'chat_bot', clientSecret: 's' } satisfies TrueConfAccountConfig
+      const lifecycle = new ConnectionLifecycle(client, config, silentLogger, { onTerminalFailure })
+
+      const startSpy = vi.spyOn(lifecycle, 'start').mockImplementation(async () => {
+        throw new NetworkError('OAuth 500', 'oauth', undefined, '500')
+      })
+      vi.spyOn(client, 'close').mockImplementation(() => {})
+
+      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+
+      for (let i = 0; i < 10; i++) {
+        await vi.advanceTimersByTimeAsync(120_000)
+      }
+
+      expect(onTerminalFailure).not.toHaveBeenCalled()
+      // OAUTH_FAIL_LIMIT default is 3; expect more than that many start() attempts.
+      expect(startSpy.mock.calls.length).toBeGreaterThan(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('resets the consecutive counter on a non-401/403 outcome between 401s (D-07)', async () => {
+    vi.useFakeTimers()
+    try {
+      const onTerminalFailure = vi.fn()
+      const client = new WsClient()
+      const config = { serverUrl: 'srv.example.com', useTls: true, port: 443, username: 'u', password: 'p', clientId: 'chat_bot', clientSecret: 's' } satisfies TrueConfAccountConfig
+      const lifecycle = new ConnectionLifecycle(client, config, silentLogger, { onTerminalFailure })
+
+      vi.spyOn(lifecycle, 'start')
+        .mockImplementationOnce(async () => { throw new NetworkError('401', 'oauth', undefined, '401') })
+        .mockImplementationOnce(async () => { throw new NetworkError('500', 'oauth', undefined, '500') })
+        .mockImplementationOnce(async () => { throw new NetworkError('401', 'oauth', undefined, '401') })
+        .mockImplementationOnce(async () => { throw new NetworkError('500', 'oauth', undefined, '500') })
+        .mockImplementationOnce(async () => { throw new NetworkError('401', 'oauth', undefined, '401') })
+        .mockImplementation(async () => { throw new NetworkError('500', 'oauth', undefined, '500') })
+      vi.spyOn(client, 'close').mockImplementation(() => {})
+
+      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+
+      for (let i = 0; i < 10; i++) {
+        await vi.advanceTimersByTimeAsync(120_000)
+      }
+
+      // Three 401s total but never 3 consecutive — counter resets each 500.
+      expect(onTerminalFailure).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('ConnectionLifecycle.shutdown — auth barrier', () => {
   it('rejects pending waitAuthenticated() callers fast with a shutdown reason (no per-call timeout)', async () => {
     const client = new WsClient()

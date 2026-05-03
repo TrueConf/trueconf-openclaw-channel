@@ -328,6 +328,20 @@ export const DNS_ERROR_CODES: ReadonlySet<string> = new Set(['ENOTFOUND', 'EAI_A
 // isDnsError() classifies it as terminal (no further reconnect spin).
 export const DNS_TERMINAL_CODE = 'DNS_GIVEUP' as const
 
+// HTTP statuses from the OAuth endpoint that mean "creds are wrong / not
+// allowed" — bounded set used by the lifecycle's auth-terminal classifier.
+// 400/404/5xx are explicitly NOT in here: those are server-side / network
+// glitches that retry. Function (not Set) so adding 402 etc. tomorrow is
+// a one-line change.
+export function isAuthTerminalCode(status: number): boolean {
+  return status === 401 || status === 403
+}
+
+// Terminal counterpart emitted on the NetworkError after auth-retry
+// exhaustion. Pattern mirror of DNS_TERMINAL_CODE; consumers branching on
+// err.code can distinguish a terminal auth failure from a transient one.
+export const OAUTH_TERMINAL_CODE = 'OAUTH_GIVEUP' as const
+
 export function buildAck(serverRequestId: number): TrueConfResponse {
   return { type: 2, id: serverRequestId }
 }

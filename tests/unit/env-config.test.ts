@@ -62,7 +62,7 @@ describe('env-config public contract (Phase 03 D-12 snapshot)', () => {
     ])
   })
 
-  it('all 16 readers + readPasswordRaw twin + hasSetupShortcut are exported as functions', () => {
+  it('all 17 readers (10 setup + readPasswordRaw twin + 6 runtime) and hasSetupShortcut are exported as functions', () => {
     for (const fn of [
       readSetupLocale, readServerUrl, readUsername, readPassword, readPasswordRaw,
       readUseTls, readPort, readCaPath, readTlsVerify,

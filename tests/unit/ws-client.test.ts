@@ -999,6 +999,45 @@ describe('ConnectionLifecycle OAuth retry policy', () => {
       vi.useRealTimers()
     }
   })
+
+  it('OAUTH_TIMEOUT does not count toward the 401/403 terminal threshold (D-08)', async () => {
+    // The non-numeric code 'OAUTH_TIMEOUT' goes through isAuthTerminalError's
+    // parseInt → NaN → not-finite guard, classified as transient. Interleave
+    // it with 401s so we drive 5 OAuth-phase failures total but never 3
+    // consecutive 401s; the consecutive counter resets each timeout.
+    // Without the parseInt guard a 'looser' code-classifier would mistake
+    // OAUTH_TIMEOUT for a terminal status and trip onTerminalFailure.
+    vi.useFakeTimers()
+    try {
+      const onTerminalFailure = vi.fn()
+      const client = new WsClient()
+      const config = { serverUrl: 'srv.example.com', useTls: true, port: 443, username: 'u', password: 'p', clientId: 'chat_bot', clientSecret: 's' } satisfies TrueConfAccountConfig
+      const lifecycle = new ConnectionLifecycle(client, config, silentLogger, { onTerminalFailure })
+
+      const startSpy = vi.spyOn(lifecycle, 'start')
+        .mockImplementationOnce(async () => { throw new NetworkError('401', 'oauth', undefined, '401') })
+        .mockImplementationOnce(async () => { throw new NetworkError('OAuth timeout', 'oauth', undefined, 'OAUTH_TIMEOUT') })
+        .mockImplementationOnce(async () => { throw new NetworkError('401', 'oauth', undefined, '401') })
+        .mockImplementationOnce(async () => { throw new NetworkError('OAuth timeout', 'oauth', undefined, 'OAUTH_TIMEOUT') })
+        .mockImplementationOnce(async () => { throw new NetworkError('401', 'oauth', undefined, '401') })
+        .mockImplementation(async () => { throw new NetworkError('OAuth timeout', 'oauth', undefined, 'OAUTH_TIMEOUT') })
+      vi.spyOn(client, 'close').mockImplementation(() => {})
+
+      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+
+      for (let i = 0; i < 10; i++) {
+        await vi.advanceTimersByTimeAsync(120_000)
+      }
+
+      // Strictly more than OAUTH_FAIL_LIMIT (3) attempts proves the lifecycle
+      // kept retrying past the threshold, and onTerminalFailure was never
+      // tripped because no three 401s were consecutive.
+      expect(startSpy.mock.calls.length).toBeGreaterThan(3)
+      expect(onTerminalFailure).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('ConnectionLifecycle.shutdown — auth barrier', () => {

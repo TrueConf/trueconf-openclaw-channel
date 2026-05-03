@@ -3,7 +3,7 @@ import { fetch as undiciFetch } from 'undici'
 import { createServer, type Server } from 'node:http'
 import { AddressInfo } from 'node:net'
 import { WebSocketServer, WebSocket as WsServerSocket } from 'ws'
-import { acquireToken, WsClient, ConnectionLifecycle } from '../../src/ws-client'
+import { acquireToken, readEnvMs, WsClient, ConnectionLifecycle } from '../../src/ws-client'
 import { NetworkError, type Logger, type TrueConfAccountConfig } from '../../src/types'
 
 vi.mock('undici', async (importOriginal) => {
@@ -16,6 +16,53 @@ const silentLogger: Logger = {
   warn: () => {},
   error: () => {},
 }
+
+describe('readEnvMs', () => {
+  const ORIGINAL_ENV = process.env
+
+  beforeEach(() => {
+    process.env = { ...ORIGINAL_ENV }
+    delete process.env.TRUECONF_TEST_MS
+  })
+
+  afterEach(() => {
+    process.env = ORIGINAL_ENV
+  })
+
+  it('returns default when env var is unset', () => {
+    expect(readEnvMs('TRUECONF_TEST_MS', 30_000)).toBe(30_000)
+  })
+
+  it('parses a valid positive integer', () => {
+    process.env.TRUECONF_TEST_MS = '5000'
+    expect(readEnvMs('TRUECONF_TEST_MS', 30_000)).toBe(5000)
+  })
+
+  it('trims surrounding whitespace', () => {
+    process.env.TRUECONF_TEST_MS = '  5000  '
+    expect(readEnvMs('TRUECONF_TEST_MS', 30_000)).toBe(5000)
+  })
+
+  it('falls back to default on NaN', () => {
+    process.env.TRUECONF_TEST_MS = 'abc'
+    expect(readEnvMs('TRUECONF_TEST_MS', 30_000)).toBe(30_000)
+  })
+
+  it('falls back to default on empty string', () => {
+    process.env.TRUECONF_TEST_MS = ''
+    expect(readEnvMs('TRUECONF_TEST_MS', 30_000)).toBe(30_000)
+  })
+
+  it('falls back to default on zero', () => {
+    process.env.TRUECONF_TEST_MS = '0'
+    expect(readEnvMs('TRUECONF_TEST_MS', 30_000)).toBe(30_000)
+  })
+
+  it('falls back to default on negative integer', () => {
+    process.env.TRUECONF_TEST_MS = '-1'
+    expect(readEnvMs('TRUECONF_TEST_MS', 30_000)).toBe(30_000)
+  })
+})
 
 describe('WsClient TLS options', () => {
   it('defaults tlsVerify to true (system trust)', () => {

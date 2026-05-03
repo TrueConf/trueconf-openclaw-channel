@@ -17,11 +17,24 @@ import type {
   Logger,
 } from './types'
 
+// Read a positive-integer millisecond ENV var with default fallback.
+// Returns `defaultMs` when the var is unset, empty, non-numeric, or <= 0.
+// Mirrors the conservative trim+parseInt idiom in src/channel-setup.ts:842-855.
+// Module-level: evaluated once at load — not per-tick.
+export function readEnvMs(name: string, defaultMs: number): number {
+  const raw = process.env[name]?.trim()
+  if (!raw) return defaultMs
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) return defaultMs
+  return parsed
+}
+
 // Match TrueConf's own python-trueconf-bot SDK (websockets.connect
 // ping_interval=30, ping_timeout=10) — production-tested against the same
-// servers we talk to.
-const HEARTBEAT_INTERVAL_MS = 30_000
-const HEARTBEAT_PONG_TIMEOUT_MS = 10_000
+// servers we talk to. Tunable via ENV for corporate NATs with sub-30s
+// idle-timeouts that drop our connection between heartbeats.
+const HEARTBEAT_INTERVAL_MS = readEnvMs('TRUECONF_HEARTBEAT_INTERVAL_MS', 30_000)
+const HEARTBEAT_PONG_TIMEOUT_MS = readEnvMs('TRUECONF_HEARTBEAT_PONG_TIMEOUT_MS', 10_000)
 
 export function hostPort(config: { serverUrl: string; useTls: boolean; port?: number }): string {
   if (typeof config.serverUrl !== 'string' || config.serverUrl.length === 0) {

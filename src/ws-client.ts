@@ -337,9 +337,11 @@ export class WsClient {
       }
 
       // Bound the wall-clock budget from socket construction to the first
-      // open event. If the upgrade never arrives (silent reverse-proxy,
-      // misconfigured firewall), terminate the socket and surface a
-      // NetworkError so the lifecycle backoff loop runs.
+      // 'open' event (TLS + WS upgrade). If the upgrade never arrives
+      // (silent reverse-proxy, misconfigured firewall), terminate the
+      // socket and surface a NetworkError so the lifecycle backoff loop
+      // runs. Cleared in 'open' so the auth round-trip runs under
+      // RequestMatcher's own 30s timeout, not under this budget.
       handshakeTimer = setTimeout(() => {
         try { ws.terminate() } catch { /* ws may already be torn down */ }
         settle(() => reject(new NetworkError(
@@ -352,6 +354,13 @@ export class WsClient {
       handshakeTimer.unref?.()
 
       ws.on('open', () => {
+        // Handshake completed — release the handshake budget so a slow
+        // auth round-trip is not punished by a timer that was meant to
+        // bound the upgrade alone.
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer)
+          handshakeTimer = undefined
+        }
         const authId = this.idCounter.next()
         const authPromise = this.matcher.track(authId)
         ws.send(JSON.stringify(buildAuthRequest(authId, token)))

@@ -138,7 +138,8 @@ const isCliEntry = (() => {
   if (!process.argv[1]) return false
   try {
     return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
-  } catch {
+  } catch (err) {
+    process.stderr.write(`[scan-tarball] realpath check failed (${err.code ?? err.name}); not running CLI block\n`)
     return false
   }
 })()

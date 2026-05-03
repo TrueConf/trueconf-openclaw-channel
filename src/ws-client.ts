@@ -599,6 +599,13 @@ export class ConnectionLifecycle {
   private backoffMs = 1000
   private shuttingDown = false
   private reconnecting = false
+  // Re-entry guard for start() itself, distinct from `reconnecting` (which
+  // handleClose sets to gate its own re-entry while a reconnect timer is
+  // armed). Prevents the boot-path race where the handshake-timeout-driven
+  // ws.terminate() emits a close event that handleClose would otherwise
+  // turn into a second scheduleReconnect() while start()'s catch is still
+  // re-throwing to the bootstrap caller.
+  private startInFlight = false
   private dnsRetryCount = 0
   private oauthFailCount = 0
   private reconnectInflight: Promise<void> | null = null
@@ -612,46 +619,57 @@ export class ConnectionLifecycle {
   ) {}
 
   async start(): Promise<void> {
-    // Re-arm the auth barrier at the top of every start() so requests issued
-    // during the reconnect window queue on the new attempt rather than seeing
-    // the stale resolved promise from the previous session.
-    this.wsClient.resetAuthBarrier('lifecycle.start')
-    let tokenResponse: OAuthTokenResponse
+    // Synchronous re-entry guard: a second start() while the first is still
+    // running would race the auth barrier and the connect()/acquireToken
+    // promises. The boot path is the exposed seam — see startInFlight
+    // declaration. Returning silently is safe because the in-flight call
+    // will resolve or reject on its own.
+    if (this.startInFlight) return
+    this.startInFlight = true
     try {
-      tokenResponse = await acquireToken(this.config, { dispatcher: this.options?.dispatcher })
-    } catch (err) {
-      // Mark parkable so OutboundQueue items waiting on the auth barrier
-      // park instead of rejecting; scheduleReconnect's catch decides
-      // terminal-vs-retry and fires onTerminalFailure -> failAll for the
-      // give-up cases.
-      this.wsClient.markAuthFailed(NetworkError.asParkable(err))
-      throw err
-    }
-    // Register lifecycle handlers BEFORE connect so a close event that fires
-    // between auth completion and the first post-connect line still routes
-    // through handleClose → scheduleReconnect.
-    this.wsClient.onClose = (code, reason) => this.handleClose(code, reason)
-    this.wsClient.onPong = () => { this.lastPongAt = Date.now() }
-    try {
-      await this.wsClient.connect(this.config, tokenResponse.access_token)
-    } catch (err) {
-      this.wsClient.markAuthFailed(NetworkError.asParkable(err))
-      throw err
-    }
+      // Re-arm the auth barrier at the top of every start() so requests issued
+      // during the reconnect window queue on the new attempt rather than seeing
+      // the stale resolved promise from the previous session.
+      this.wsClient.resetAuthBarrier('lifecycle.start')
+      let tokenResponse: OAuthTokenResponse
+      try {
+        tokenResponse = await acquireToken(this.config, { dispatcher: this.options?.dispatcher })
+      } catch (err) {
+        // Mark parkable so OutboundQueue items waiting on the auth barrier
+        // park instead of rejecting; scheduleReconnect's catch decides
+        // terminal-vs-retry and fires onTerminalFailure -> failAll for the
+        // give-up cases.
+        this.wsClient.markAuthFailed(NetworkError.asParkable(err))
+        throw err
+      }
+      // Register lifecycle handlers BEFORE connect so a close event that fires
+      // between auth completion and the first post-connect line still routes
+      // through handleClose → scheduleReconnect.
+      this.wsClient.onClose = (code, reason) => this.handleClose(code, reason)
+      this.wsClient.onPong = () => { this.lastPongAt = Date.now() }
+      try {
+        await this.wsClient.connect(this.config, tokenResponse.access_token)
+      } catch (err) {
+        this.wsClient.markAuthFailed(NetworkError.asParkable(err))
+        throw err
+      }
 
-    this.backoffMs = 1000
-    this.reconnecting = false
-    this.dnsRetryCount = 0
-    this.oauthFailCount = 0
-    this.wsClient.markAuthenticated()
-    this.logger.info('[trueconf] Connected and authenticated')
-    try {
-      this.options?.onConnected?.()
-    } catch (err) {
-      this.logger.warn(`[trueconf] onConnected callback failed: ${err instanceof Error ? err.message : String(err)}`)
-    }
+      this.backoffMs = 1000
+      this.reconnecting = false
+      this.dnsRetryCount = 0
+      this.oauthFailCount = 0
+      this.wsClient.markAuthenticated()
+      this.logger.info('[trueconf] Connected and authenticated')
+      try {
+        this.options?.onConnected?.()
+      } catch (err) {
+        this.logger.warn(`[trueconf] onConnected callback failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
 
-    this.startTimers(tokenResponse.expires_at)
+      this.startTimers(tokenResponse.expires_at)
+    } finally {
+      this.startInFlight = false
+    }
   }
 
   shutdown(): void {
@@ -727,7 +745,7 @@ export class ConnectionLifecycle {
     } catch (err) {
       this.logger.warn(`[trueconf] onDisconnected callback failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-    if (this.shuttingDown || this.reconnecting) return
+    if (this.shuttingDown || this.reconnecting || this.startInFlight) return
     if (this.suppressNextCloseReconnect) {
       // forceReconnect owns the next start() — do not race it with our own
       // scheduleReconnect. One-shot: cleared by the inflight finally block.

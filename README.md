@@ -371,6 +371,19 @@ This channel is wire-compatible with [python-trueconf-bot](https://github.com/tr
 
 The `setChatMutationHandler` callback (edit / remove / clearHistory events) is not currently exposed; the underlying push events are parsed and logged but not dispatched.
 
+## Environment variables
+
+Six tunables expose the network-resilience knobs that ship with sensible defaults. All are read **at module load** (when the gateway imports the plugin), so they must be set before the gateway starts. Changing them at runtime requires a gateway restart. Invalid values (non-numeric, zero, negative) silently fall back to the default.
+
+| Variable | Default | Unit | Semantics |
+|---|---|---|---|
+| `TRUECONF_HEARTBEAT_INTERVAL_MS` | `30000` | ms | Interval between WebSocket ping frames sent to TrueConf Server. Lower it for corporate NATs whose idle-connection timeout is below 30s. |
+| `TRUECONF_HEARTBEAT_PONG_TIMEOUT_MS` | `10000` | ms | If two pongs in a row don't arrive within this window, the connection is declared dead and reconnected. |
+| `TRUECONF_OAUTH_TIMEOUT_MS` | `15000` | ms | Wall-clock budget for the OAuth token POST. Caps the time the lifecycle holds on a hung reverse-proxy before backing off. |
+| `TRUECONF_WS_HANDSHAKE_TIMEOUT_MS` | `20000` | ms | Wall-clock budget from `new WebSocket(...)` to the first `'open'` event (TLS + WS upgrade). After this, the socket is terminated and the reconnect loop runs. |
+| `TRUECONF_DNS_FAIL_LIMIT` | `5` | count | Cumulative DNS-class failures (`ENOTFOUND`, `EAI_AGAIN`, `EAI_NODATA`, `EAI_NONAME`) during reconnect that trip the `dns_unreachable` terminal path. |
+| `TRUECONF_OAUTH_FAIL_LIMIT` | `3` | count | Consecutive 401/403 responses from the OAuth endpoint that trip the `oauth_unauthorized` terminal path. Counter resets on any non-401/403 outcome. |
+
 ## Troubleshooting
 
 ### `fetch failed` on startup

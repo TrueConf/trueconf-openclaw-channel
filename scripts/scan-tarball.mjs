@@ -77,30 +77,10 @@ function walkScannable(dirAbs) {
   return out
 }
 
-// Returns whichever scanner API openclaw exposes. The current openclaw build
-// (verified: `node_modules/openclaw/dist/skill-scanner-{8 chars}.js`) only
-// exposes `scanDirectoryWithSummary` as the minified `t` export. Future
-// openclaw versions may add a public `scanSource`/`scanDirectoryWithSummary`
-// named export — if so, the resolver returns that instead. Both shapes flow
-// through the same scanPublishedFiles() call site.
+// The openclaw scanner ships as a minified internal chunk
+// `node_modules/openclaw/dist/skill-scanner-{8 chars}.js` exposing only
+// `t` (no named API). Hash rotates per release, so glob-find it.
 export async function resolveScannerModule() {
-  // Strategy 1: named export from any plugin-sdk subpath. Try security-runtime
-  // first (most likely future home). Iterate over the documented subpaths
-  // we know about; ignore failures (subpath may not exist).
-  const namedSubpaths = [
-    'openclaw/plugin-sdk/security-runtime',
-    'openclaw/plugin-sdk',
-  ]
-  for (const subpath of namedSubpaths) {
-    try {
-      const mod = await import(subpath)
-      if (typeof mod.scanDirectoryWithSummary === 'function') {
-        return { scanDirectoryWithSummary: mod.scanDirectoryWithSummary, source: `named:${subpath}` }
-      }
-    } catch { /* subpath absent in this openclaw version — fall through */ }
-  }
-
-  // Strategy 2: glob the hashed scanner file.
   const distDir = resolve(REPO_ROOT, 'node_modules', 'openclaw', 'dist')
   let hashedFile
   try {
@@ -115,30 +95,18 @@ export async function resolveScannerModule() {
   if (!hashedFile) {
     throw new Error(
       `scan-tarball: no skill-scanner-*.js found in ${distDir}. ` +
-      `openclaw may have moved the scanner to a different path. Inspect ` +
-      `node_modules/openclaw/dist/ and openclaw/plugin-sdk/* exports, then ` +
-      `update scripts/scan-tarball.mjs.`,
+      `openclaw may have moved the scanner — update scripts/scan-tarball.mjs.`,
     )
   }
   const hashedPath = join(distDir, hashedFile)
-  const hashedUrl = pathToFileURL(hashedPath).href
-  const mod = await import(hashedUrl)
-
-  // Future openclaw versions may add a named scanDirectoryWithSummary export
-  // alongside the minified `t`. Try it first; fall back to `t` for current
-  // builds where only the minified alias exists.
-  if (typeof mod.scanDirectoryWithSummary === 'function') {
-    return { scanDirectoryWithSummary: mod.scanDirectoryWithSummary, source: `hashed-named:${hashedFile}` }
+  const mod = await import(pathToFileURL(hashedPath).href)
+  if (typeof mod.t !== 'function') {
+    throw new Error(
+      `scan-tarball: ${hashedPath} exports ${Object.keys(mod).join(', ') || '(nothing)'}; ` +
+      `expected minified \`t\` function. Update scripts/scan-tarball.mjs.`,
+    )
   }
-  if (typeof mod.t === 'function') {
-    return { scanDirectoryWithSummary: mod.t, source: `hashed-t:${hashedFile}` }
-  }
-
-  throw new Error(
-    `scan-tarball: openclaw scanner module shape unrecognized at ${hashedPath}. ` +
-    `Module exports: ${Object.keys(mod).join(', ')}. ` +
-    `Update scripts/scan-tarball.mjs to match the new shape.`,
-  )
+  return { scanDirectoryWithSummary: mod.t, source: `hashed-t:${hashedFile}` }
 }
 
 // Scan the file set that `npm pack` would publish. Returns:

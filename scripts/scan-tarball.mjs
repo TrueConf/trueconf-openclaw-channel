@@ -12,7 +12,7 @@
 //
 // No new dependencies — uses node:fs, node:path, node:url. AGENTS.md §10.
 
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { join, resolve, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -183,7 +183,17 @@ export async function scanPublishedFiles(rootDir = REPO_ROOT) {
 }
 
 // CLI entry — run scan, print summary, exit non-zero on critical.
-const isCliEntry = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
+// realpathSync resolves any symlink shim that npm/npx may interpose, mirroring
+// the bin/trueconf-setup.mjs guard so behavior is uniform across invocation
+// paths (direct node, prepack, future npx exposure).
+const isCliEntry = (() => {
+  if (!process.argv[1]) return false
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
+  } catch {
+    return false
+  }
+})()
 if (isCliEntry) {
   try {
     const summary = await scanPublishedFiles()

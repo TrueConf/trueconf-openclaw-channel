@@ -112,6 +112,16 @@ export async function acquireToken(
   config: TrueConfAccountConfig,
   options?: { dispatcher?: Dispatcher },
 ): Promise<OAuthTokenResponse> {
+  // Defence-in-depth at the runtime boundary: TrueConfAccountConfig.password
+  // is typed as `string | { useEnv: string }`, but if an upstream caller
+  // forgets to resolve the useEnv indirection, JSON.stringify would silently
+  // serialise `"password":{"useEnv":"X"}`, the server would 401, and the
+  // operator would chase bogus 'bad creds' instead of the real type bug.
+  if (typeof config.password !== 'string') {
+    throw new Error(
+      `OAuth: password must be resolved to a string before acquireToken (got ${typeof config.password})`,
+    )
+  }
   let response: Response
   try {
     response = await fetch(buildTokenUrl(config), {
@@ -173,7 +183,19 @@ export async function acquireToken(
 
   const json = (await response.json()) as Record<string, unknown>
   if (typeof json.access_token !== 'string' || typeof json.expires_at !== 'number') {
-    throw new Error('Invalid OAuth response: missing access_token or expires_at')
+    // Promote to NetworkError(phase='oauth') so scheduleReconnect's catch
+    // classifies it the same way as every other oauth-phase failure. A plain
+    // Error fell into the else branch, reset oauthFailCount, and would loop
+    // silently forever on a misconfigured bridge that returns malformed token
+    // bodies. OAUTH_INVALID_RESPONSE is a non-numeric code, so the
+    // isAuthTerminalError parseInt guard treats it as transient (NaN), same
+    // safe behavior as OAUTH_TIMEOUT.
+    throw new NetworkError(
+      'Invalid OAuth response: missing access_token or expires_at',
+      'oauth',
+      undefined,
+      'OAUTH_INVALID_RESPONSE',
+    )
   }
   return json as unknown as OAuthTokenResponse
 }

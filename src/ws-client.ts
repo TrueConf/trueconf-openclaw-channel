@@ -826,7 +826,7 @@ export class ConnectionLifecycle {
             // NetworkError` can distinguish a terminal DNS failure from a
             // retryable one without spinning further.
             const cause = new NetworkError(
-              `dns_unreachable: gave up after ${this.dnsRetryCount} retries`,
+              `dns_unreachable: gave up after ${this.dnsRetryCount} attempts`,
               'websocket',
               undefined,
               DNS_TERMINAL_CODE,

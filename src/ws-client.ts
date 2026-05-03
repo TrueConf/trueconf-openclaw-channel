@@ -18,49 +18,28 @@ import type {
   OAuthTokenResponse,
   Logger,
 } from './types'
+import {
+  readHeartbeatIntervalMs,
+  readHeartbeatPongTimeoutMs,
+  readOauthTimeoutMs,
+  readWsHandshakeTimeoutMs,
+  readDnsFailLimit,
+  readOauthFailLimit,
+} from './env-config.js'
 
-// Read a positive-integer ENV var with default fallback.
-// Returns `defaultValue` when the var is unset, empty, non-numeric, or <= 0.
-// Mirrors the conservative trim+parseInt idiom in src/channel-setup.ts:842-855.
-// Module-level: evaluated once at load — not per-tick.
-// Used for both millisecond timers and plain integer counters; the framing
-// comment at each call-site carries the unit semantics.
-export function readEnvMs(name: string, defaultValue: number): number {
-  const raw = process.env[name]?.trim()
-  if (!raw) return defaultValue
-  const parsed = Number.parseInt(raw, 10)
-  if (!Number.isFinite(parsed) || parsed <= 0) return defaultValue
-  return parsed
-}
-
-// Match TrueConf's own python-trueconf-bot SDK (websockets.connect
-// ping_interval=30, ping_timeout=10) — production-tested against the same
-// servers we talk to. Tunable via ENV for corporate NATs with sub-30s
-// idle-timeouts that drop our connection between heartbeats.
-const HEARTBEAT_INTERVAL_MS = readEnvMs('TRUECONF_HEARTBEAT_INTERVAL_MS', 30_000)
-const HEARTBEAT_PONG_TIMEOUT_MS = readEnvMs('TRUECONF_HEARTBEAT_PONG_TIMEOUT_MS', 10_000)
-
-// OAuth POST timeout — used as AbortSignal.timeout on the fetch in
-// acquireToken. Caps the time we hold the lifecycle waiting on a hung
-// reverse-proxy or molasses-slow auth endpoint before backoff retries.
-const OAUTH_TIMEOUT_MS = readEnvMs('TRUECONF_OAUTH_TIMEOUT_MS', 15_000)
-
-// WS handshake timeout — wall-clock budget from `new WebSocket(...)` to
-// the first 'open' event. After this, ws.terminate() forces the close
-// path so the existing reconnect/backoff loop runs.
-const WS_HANDSHAKE_TIMEOUT_MS = readEnvMs('TRUECONF_WS_HANDSHAKE_TIMEOUT_MS', 20_000)
-
-// DNS terminal threshold (count, not ms) — was a static class constant,
-// hoisted to module level so it joins the ENV-tunable family. Behavior
-// unchanged: 5 cumulative DNS-class failures during scheduleReconnect's
-// catch trigger the dns_exhausted terminal path.
-const DNS_FAIL_LIMIT = readEnvMs('TRUECONF_DNS_FAIL_LIMIT', 5)
-
-// OAuth terminal threshold (count, not ms) — N consecutive 401/403 from the
-// OAuth endpoint trip the auth_exhausted terminal path. Default 3 detects
-// genuine creds rotation quickly without false-positives on a single 401
-// hiccup.
-const OAUTH_FAIL_LIMIT = readEnvMs('TRUECONF_OAUTH_FAIL_LIMIT', 3)
+// Module-load: each tunable is read once at import time. The env reads
+// live in src/env-config.ts so this file no longer references env access
+// directly (see Phase 03 scanner-friendly-install). Defaults match
+// TrueConf's python-trueconf-bot SDK production semantics; tunable via
+// the matching TRUECONF_* env vars for corporate-NAT sub-30s idle-timeouts
+// (heartbeats), hung reverse-proxy auth endpoints (OAuth timeout), the
+// WS handshake budget, and the DNS / OAuth terminal thresholds.
+const HEARTBEAT_INTERVAL_MS = readHeartbeatIntervalMs()
+const HEARTBEAT_PONG_TIMEOUT_MS = readHeartbeatPongTimeoutMs()
+const OAUTH_TIMEOUT_MS = readOauthTimeoutMs()
+const WS_HANDSHAKE_TIMEOUT_MS = readWsHandshakeTimeoutMs()
+const DNS_FAIL_LIMIT = readDnsFailLimit()
+const OAUTH_FAIL_LIMIT = readOauthFailLimit()
 
 export function hostPort(config: { serverUrl: string; useTls: boolean; port?: number }): string {
   if (typeof config.serverUrl !== 'string' || config.serverUrl.length === 0) {

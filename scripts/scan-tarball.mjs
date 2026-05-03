@@ -55,7 +55,9 @@ const { PUBLISHED_DIRS, PUBLISHED_FILES } = (() => {
 
 // Walk a directory, return all scannable files (absolute paths). Skips
 // dotfiles + node_modules to mirror what npm-pack would include from a
-// directory listed in package.json `files`.
+// directory listed in package.json `files`. ENOENT on a stale entry is
+// tolerated; permission/IO errors must surface — a published file the
+// scanner cannot read is a security gap, not a skip-able anomaly.
 function walkScannable(dirAbs) {
   const out = []
   const stack = [dirAbs]
@@ -64,8 +66,9 @@ function walkScannable(dirAbs) {
     let entries
     try {
       entries = readdirSync(cur, { withFileTypes: true })
-    } catch {
-      continue
+    } catch (err) {
+      if (err.code === 'ENOENT') continue
+      throw new Error(`scan-tarball: cannot read ${cur} (${err.code ?? err.name}: ${err.message})`)
     }
     for (const e of entries) {
       if (e.name.startsWith('.') || e.name === 'node_modules') continue
@@ -121,31 +124,49 @@ export async function resolveScannerModule() {
 export async function scanPublishedFiles(rootDir = REPO_ROOT) {
   const resolved = await resolveScannerModule()
 
-  // Build the includeFiles list (relative paths within rootDir).
+  // Build the includeFiles list (relative paths within rootDir). ENOENT
+  // is tolerated (a stale entry in package.json files: list); other errors
+  // surface so a permission-denied file in the published tree fails loud
+  // instead of silently exiting the scan scope.
   const filesAbs = []
   for (const dir of PUBLISHED_DIRS) {
     const dirAbs = resolve(rootDir, dir)
     try {
       const st = statSync(dirAbs)
       if (st.isDirectory()) filesAbs.push(...walkScannable(dirAbs))
-    } catch { /* dir missing — skip */ }
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        throw new Error(`scan-tarball: cannot stat ${dirAbs} (${err.code ?? err.name}: ${err.message})`)
+      }
+    }
   }
   for (const f of PUBLISHED_FILES) {
     const abs = resolve(rootDir, f)
     try {
       const st = statSync(abs)
       if (st.isFile() && hasScannableExt(f)) filesAbs.push(abs)
-    } catch { /* file missing — skip */ }
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        throw new Error(`scan-tarball: cannot stat ${abs} (${err.code ?? err.name}: ${err.message})`)
+      }
+    }
+  }
+
+  // Empty file set means package.json files: list is stale or the source
+  // tree has drifted. Refuse to pass — without this guard the upstream
+  // scanner walks REPO_ROOT with maxFiles=1 and the gate passes vacuously.
+  if (filesAbs.length === 0) {
+    throw new Error(
+      `scan-tarball: no scannable files found under published file set ` +
+      `(dirs=[${PUBLISHED_DIRS.join(', ')}] files=[${PUBLISHED_FILES.join(', ')}]). ` +
+      `Either package.json "files" is stale or the source tree is missing.`,
+    )
   }
 
   const includeFiles = filesAbs.map((abs) => relative(rootDir, abs))
-  // maxFiles must be >= 1 (Math.max(1, opts.maxFiles) in normalizeScanOptions
-  // upstream). When the published code set is empty, fall through with 1 —
-  // the scanner will return zero findings against an empty forced set.
-  const maxFiles = Math.max(1, includeFiles.length)
   const summary = await resolved.scanDirectoryWithSummary(rootDir, {
     includeFiles,
-    maxFiles,
+    maxFiles: includeFiles.length,
   })
   return summary
 }

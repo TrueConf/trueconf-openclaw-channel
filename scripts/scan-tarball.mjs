@@ -168,12 +168,15 @@ if (isCliEntry) {
   try {
     const summary = await scanPublishedFiles()
     if (summary.critical > 0) {
+      // Print rule + path + line only — not findings[].evidence. The evidence
+      // string is the matched source line, which can contain real secrets if a
+      // future regression introduces one. The operator can grep the file at
+      // the reported line to inspect the trigger themselves.
       process.stderr.write(`\n[scan-tarball] FAIL — ${summary.critical} critical finding(s) in published files:\n`)
       for (const f of summary.findings) {
         if (f.severity !== 'critical') continue
         process.stderr.write(`  ${f.severity.toUpperCase()} ${f.ruleId} at ${f.file}:${f.line}\n`)
         process.stderr.write(`    ${f.message}\n`)
-        process.stderr.write(`    evidence: ${f.evidence}\n`)
       }
       process.stderr.write(`\nFix the source file(s) above; do NOT bypass this check.\n`)
       process.exit(1)

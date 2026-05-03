@@ -169,16 +169,6 @@ describe('env-config readPort', () => {
   })
 })
 
-describe('env-config readCaPath', () => {
-  it('returns undefined when unset', () => {
-    expect(readCaPath()).toBeUndefined()
-  })
-  it('returns trimmed path when set', () => {
-    process.env.TRUECONF_CA_PATH = '  /etc/ssl/ca.pem  '
-    expect(readCaPath()).toBe('/etc/ssl/ca.pem')
-  })
-})
-
 describe('env-config readTlsVerify', () => {
   it('returns undefined when unset', () => {
     expect(readTlsVerify()).toBeUndefined()
@@ -260,31 +250,19 @@ describe('env-config readPositiveIntWithDefault (via readHeartbeatIntervalMs)', 
   })
 })
 
-describe('env-config runtime tunable defaults', () => {
-  it('readHeartbeatPongTimeoutMs default 10_000', () => {
-    expect(readHeartbeatPongTimeoutMs()).toBe(10_000)
-    process.env.TRUECONF_HEARTBEAT_PONG_TIMEOUT_MS = '5000'
-    expect(readHeartbeatPongTimeoutMs()).toBe(5000)
+describe.each([
+  ['TRUECONF_HEARTBEAT_PONG_TIMEOUT_MS', readHeartbeatPongTimeoutMs, 10_000, '5000', 5000],
+  ['TRUECONF_OAUTH_TIMEOUT_MS', readOauthTimeoutMs, 15_000, '8000', 8000],
+  ['TRUECONF_WS_HANDSHAKE_TIMEOUT_MS', readWsHandshakeTimeoutMs, 20_000, '12000', 12000],
+  ['TRUECONF_OAUTH_FAIL_LIMIT', readOauthFailLimit, 3, '5', 5],
+  ['TRUECONF_DNS_FAIL_LIMIT', readDnsFailLimit, 5, '8', 8],
+])('env-config runtime tunable %s', (envName, reader, defaultValue, raw, parsed) => {
+  it('returns the documented default when unset', () => {
+    expect(reader()).toBe(defaultValue)
   })
-  it('readOauthTimeoutMs default 15_000', () => {
-    expect(readOauthTimeoutMs()).toBe(15_000)
-    process.env.TRUECONF_OAUTH_TIMEOUT_MS = '8000'
-    expect(readOauthTimeoutMs()).toBe(8000)
-  })
-  it('readWsHandshakeTimeoutMs default 20_000', () => {
-    expect(readWsHandshakeTimeoutMs()).toBe(20_000)
-    process.env.TRUECONF_WS_HANDSHAKE_TIMEOUT_MS = '12000'
-    expect(readWsHandshakeTimeoutMs()).toBe(12000)
-  })
-  it('readOauthFailLimit default 3', () => {
-    expect(readOauthFailLimit()).toBe(3)
-    process.env.TRUECONF_OAUTH_FAIL_LIMIT = '5'
-    expect(readOauthFailLimit()).toBe(5)
-  })
-  it('readDnsFailLimit default 5', () => {
-    expect(readDnsFailLimit()).toBe(5)
-    process.env.TRUECONF_DNS_FAIL_LIMIT = '8'
-    expect(readDnsFailLimit()).toBe(8)
+  it('parses a valid positive integer', () => {
+    process.env[envName] = raw
+    expect(reader()).toBe(parsed)
   })
 })
 

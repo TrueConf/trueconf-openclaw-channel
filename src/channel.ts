@@ -645,17 +645,17 @@ export const channelPlugin = {
       // at call time routes the reply through whichever lifecycle is currently
       // registered — symmetric with the live-lookup that channel.outbound.sendText
       // already performs.
-      // Only `entry` needs the live lookup: logger, channelConfig, resolved/
-      // resolvedForTransport, accountId, store, and inbound are stable across
-      // registerFull/health-monitor cycles, so capturing them here is safe.
+      // Only `liveEntry` needs the live lookup: logger, channelConfig, resolved/
+      // resolvedForTransport, accountId, store, and inbound are stable for the
+      // lifetime of this closure, so capturing them here is safe.
       // Transport shape differs per branch: the DM branch layers `store` onto
       // liveTransport for the direct-chat cache; the group branch does not.
       const deliver = (inbound: InboundMessage) => async (payload: OutboundReplyPayload): Promise<void> => {
         const reply = resolveSendableOutboundReplyParts(payload)
         if (!reply.hasContent) return
 
-        const entry = store.accounts.get(accountId)
-        if (!entry) {
+        const liveEntry = store.accounts.get(accountId)
+        if (!liveEntry) {
           logger.warn(
             `[trueconf] deliver: account ${accountId} no longer registered, dropping reply ` +
             `(likely health-monitor restart race)`,
@@ -663,27 +663,29 @@ export const channelPlugin = {
           return
         }
         const liveTransport = {
-          outboundQueue: entry.outboundQueue,
+          outboundQueue: liveEntry.outboundQueue,
           resolved: resolvedForTransport,
           channelConfig,
           logger,
-          dispatcher: entry.dispatcher,
-          limits: entry.limits,
-          sendQueue: entry.sendQueue,
+          dispatcher: liveEntry.dispatcher,
+          limits: liveEntry.limits,
+          sendQueue: liveEntry.sendQueue,
         }
 
+        // Routes via the SDK's text/media split so a media-only payload reaches
+        // sendFile instead of being JSON-stringified into the chat as text.
         await deliverTextOrMediaReply({
           payload,
           text: reply.text,
           sendText: async (chunk) => {
             const result = inbound.isGroup
-              ? await sendTextToChat(entry.outboundQueue, inbound.chatId, chunk, logger, entry.sendQueue)
+              ? await sendTextToChat(liveEntry.outboundQueue, inbound.chatId, chunk, logger, liveEntry.sendQueue)
               : await sendText(inbound.peerId, chunk, logger, {
                   fallbackUserId: inbound.peerId,
                   directChatStore: store,
                   accountId,
-                  sendQueue: entry.sendQueue,
-                  outboundQueue: entry.outboundQueue,
+                  sendQueue: liveEntry.sendQueue,
+                  outboundQueue: liveEntry.outboundQueue,
                 })
             if (!result.ok) {
               logger.warn(`[trueconf] deliver: text chunk send failed (peer=${inbound.peerId}, isGroup=${inbound.isGroup})`)
@@ -748,6 +750,12 @@ export const channelPlugin = {
           // attachment fetch. Resolve at call time so prepareInboundAttachment
           // talks to the live wsClient/queues, not the dead ones.
           const liveEntry = store.accounts.get(accountId)
+          // No dedicated test for this branch: dispatch is not exposed as a
+          // callable like deliver is (it lives behind wsClient.onInboundMessage,
+          // which stops pumping once the account is torn down), so the
+          // missing-entry race window cannot be reached deterministically
+          // without a new test-only seam. Behavior mirrors the tested
+          // deliver-side branch above.
           if (!liveEntry) {
             logger.warn(
               `[trueconf] dispatch: account ${accountId} no longer registered, dropping inbound ` +

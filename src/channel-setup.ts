@@ -12,16 +12,20 @@ import { resolveSecret } from './config'
 import type { Locale } from './i18n'
 import { DEFAULT_LOCALE, t } from './i18n'
 import { readTrueConfSection } from './types'
-
-// Read TRUECONF_SETUP_LOCALE env once and validate. Throws if set to anything
-// other than 'en'/'ru' so misconfigured CI fails loud instead of silently
-// falling back to a default the operator did not pick.
-function readEnvLocale(): Locale | undefined {
-  const raw = process.env.TRUECONF_SETUP_LOCALE
-  if (raw === undefined) return undefined
-  if (raw === 'en' || raw === 'ru') return raw
-  throw new Error(t('locale.invalidEnv', DEFAULT_LOCALE, { value: raw }))
-}
+import {
+  readSetupLocale,
+  readServerUrl,
+  readUsername,
+  readPassword,
+  readPasswordRaw,
+  readUseTls,
+  readPort,
+  readCaPath,
+  readTlsVerify,
+  readAcceptUntrustedCa,
+  readAcceptRotatedCert,
+  hasSetupShortcut,
+} from './env-config.js'
 
 // Brand-mint for CA bytes produced by the TOFU path. The wizard just
 // downloaded these from the server and wrote them to disk atomically, so
@@ -170,12 +174,7 @@ export function buildSetupWizardDescriptor(
     envShortcut: {
       prompt: translate('wizard.envShortcut.prompt', locale),
       preferredEnvVar: 'TRUECONF_PASSWORD',
-      isAvailable: () =>
-        Boolean(
-          process.env.TRUECONF_SERVER_URL?.trim() &&
-            process.env.TRUECONF_USERNAME?.trim() &&
-            process.env.TRUECONF_PASSWORD?.trim(),
-        ),
+      isAvailable: () => hasSetupShortcut(),
       apply: async ({ cfg }) => runHeadlessFinalize(cfg),
     },
 
@@ -266,13 +265,13 @@ export function buildSetupWizardDescriptor(
         envPrompt: translate('wizard.credential.password.envPrompt', locale),
         keepPrompt: translate('wizard.credential.password.keepPrompt', locale),
         inputPrompt: translate('wizard.credential.password.inputPrompt', locale),
-        allowEnv: () => Boolean(process.env.TRUECONF_PASSWORD?.trim()),
+        allowEnv: () => readPassword() !== undefined,
         inspect: ({ cfg }) => {
           const pwd = readTrueConfSection(cfg).password
           return {
             accountConfigured: hasConfiguredSecretInput(pwd),
             hasConfiguredValue: hasConfiguredSecretInput(pwd),
-            envValue: process.env.TRUECONF_PASSWORD,
+            envValue: readPasswordRaw(),
           }
         },
         applyUseEnv: ({ cfg }) =>
@@ -656,7 +655,7 @@ export async function interactiveFinalize(params: {
   // Resolve locale before any prompter call. Precedence: env > cfg > prompt.
   // Env raw-read here (not via resolveAccount) to keep the precedence check
   // simple and avoid threading through normalize().
-  const envLocale = readEnvLocale()
+  const envLocale = readSetupLocale()
   let locale: Locale
   if (envLocale) {
     locale = envLocale
@@ -695,7 +694,7 @@ export async function interactiveFinalize(params: {
   // Rationale: operators bootstrapping via CI / Ansible / Kubernetes need a
   // deterministic trust path that doesn't depend on any UI interaction, and
   // that wins over whatever is currently on disk.
-  const envPath = process.env.TRUECONF_CA_PATH?.trim()
+  const envPath = readCaPath()
   if (envPath) {
     const loaded = await loadAndValidateEnvCa({ envPath, host: serverUrl, port: port ?? 443, locale })
     useTls = true
@@ -826,24 +825,21 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
 
   // Resolve locale at top of function. Headless never prompts; if neither env
   // nor cfg sets it, fall back to DEFAULT_LOCALE ('en'). Invalid env throws.
-  const envLocale = readEnvLocale()
+  const envLocale = readSetupLocale()
   const locale: Locale = envLocale
     ?? (cfgTc.setupLocale === 'en' || cfgTc.setupLocale === 'ru' ? cfgTc.setupLocale : DEFAULT_LOCALE)
 
-  const serverUrl = process.env.TRUECONF_SERVER_URL?.trim()
-  const username = process.env.TRUECONF_USERNAME?.trim()
-  const password = process.env.TRUECONF_PASSWORD?.trim()
+  const serverUrl = readServerUrl()
+  const username = readUsername()
+  const password = readPassword()
   if (!serverUrl || !username || !password) {
     throw new Error(
       'runHeadlessFinalize requires TRUECONF_SERVER_URL, TRUECONF_USERNAME, TRUECONF_PASSWORD',
     )
   }
 
-  const useTlsEnv = process.env.TRUECONF_USE_TLS
-  const useTlsHint: boolean | undefined =
-    useTlsEnv === 'true' ? true : useTlsEnv === 'false' ? false : undefined
-  const portEnv = process.env.TRUECONF_PORT
-  const portHint: number | undefined = portEnv ? Number.parseInt(portEnv, 10) : undefined
+  const useTlsHint = readUseTls()
+  const portHint = readPort()
 
   let resolvedUseTls = useTlsHint
   let resolvedPort = portHint
@@ -851,8 +847,8 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
   let caBytes: ValidatedCaBytes | undefined
   let tlsVerify: boolean | undefined
 
-  const envCaPath = process.env.TRUECONF_CA_PATH?.trim()
-  const envTlsVerify = process.env.TRUECONF_TLS_VERIFY?.trim()
+  const envCaPath = readCaPath()
+  const envTlsVerify = readTlsVerify()
 
   // Operator-acknowledged insecure mode via env. Only `'false'` or unset
   // are accepted — `'true'`/anything else throws so a typo doesn't silently
@@ -927,7 +923,7 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
         resolvedUseTls = probe.useTls
         resolvedPort = resolvedPort ?? probe.port
         if (probe.caUntrusted) {
-          if (process.env.TRUECONF_ACCEPT_UNTRUSTED_CA !== 'true') {
+          if (!readAcceptUntrustedCa()) {
             throw new Error(
               'Self-signed / untrusted cert detected; set TRUECONF_ACCEPT_UNTRUSTED_CA=true to auto-download chain, or set TRUECONF_CA_PATH to point to the admin-provided CA file.',
             )
@@ -937,7 +933,7 @@ export async function runHeadlessFinalize(cfg: OpenClawConfig): Promise<OpenClaw
             port: resolvedPort,
             mode: 'headless-auto',
             expected: probe.cert ?? null,
-            acceptRotated: process.env.TRUECONF_ACCEPT_ROTATED_CERT === 'true',
+            acceptRotated: readAcceptRotatedCert(),
             locale,
           })
           caPath = dl.nextCaPath

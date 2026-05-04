@@ -96,6 +96,6 @@
     "typecheck": "tsc --noEmit",
     "setup": "node ./bin/trueconf-setup.mjs",
     "build:llms": "node scripts/build-llms-full.mjs",
-    "prepack": "node scripts/build-llms-full.mjs"
+    "prepack": "node scripts/build-llms-full.mjs && node scripts/scan-tarball.mjs"
   }
 }

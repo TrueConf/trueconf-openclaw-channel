@@ -78,6 +78,7 @@ export function readOauthTimeoutMs(): number { return readPositiveIntWithDefault
 export function readWsHandshakeTimeoutMs(): number { return readPositiveIntWithDefault('TRUECONF_WS_HANDSHAKE_TIMEOUT_MS', 20_000) }
 export function readOauthFailLimit(): number { return readPositiveIntWithDefault('TRUECONF_OAUTH_FAIL_LIMIT', 3) }
 export function readDnsFailLimit(): number { return readPositiveIntWithDefault('TRUECONF_DNS_FAIL_LIMIT', 5) }
+export function readTcpKeepaliveMs(): number { return readPositiveIntWithDefault('TRUECONF_TCP_KEEPALIVE_MS', 15_000) }
 
 export const PUBLIC_ENV_CONTRACT = {
   setup: [
@@ -99,5 +100,6 @@ export const PUBLIC_ENV_CONTRACT = {
     'TRUECONF_WS_HANDSHAKE_TIMEOUT_MS',
     'TRUECONF_OAUTH_FAIL_LIMIT',
     'TRUECONF_DNS_FAIL_LIMIT',
+    'TRUECONF_TCP_KEEPALIVE_MS',
   ],
 } as const

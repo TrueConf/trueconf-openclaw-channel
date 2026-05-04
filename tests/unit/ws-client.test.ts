@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fetch as undiciFetch } from 'undici'
 import { createServer, type Server } from 'node:http'
-import { AddressInfo } from 'node:net'
+import { AddressInfo, Socket } from 'node:net'
 import { WebSocketServer, WebSocket as WsServerSocket } from 'ws'
 import { acquireToken, WsClient, ConnectionLifecycle } from '../../src/ws-client'
 import { NetworkError, type Logger, type TrueConfAccountConfig } from '../../src/types'
@@ -715,6 +715,39 @@ describe('WsClient — message handling on captured ws', () => {
     await new Promise<void>((r) => setTimeout(r, 50))
     expect(pushSpy).toHaveBeenCalledTimes(1)
     expect(pushSpy).toHaveBeenCalledWith('roleChanged', {})
+
+    client.close()
+  })
+})
+
+describe('WsClient SO_KEEPALIVE on the underlying socket', () => {
+  let server: FakeWsServer | null = null
+  let setKeepAliveSpy: ReturnType<typeof vi.spyOn> | null = null
+
+  beforeEach(async () => {
+    server = await startFakeWsServer()
+    setKeepAliveSpy = vi.spyOn(Socket.prototype, 'setKeepAlive')
+  })
+
+  afterEach(async () => {
+    setKeepAliveSpy?.mockRestore()
+    setKeepAliveSpy = null
+    if (server) await server.close()
+    server = null
+  })
+
+  it('enables SO_KEEPALIVE with the default 15s initial delay after WS handshake', async () => {
+    const client = new WsClient()
+    client.logger = silentLogger
+    await client.connect(makeConfig(server!.port), 'fake-token')
+
+    // Among all setKeepAlive calls observed during the connect (the kernel
+    // may also call internally), at least one must come from our handler
+    // with (true, 15000). Anchor on the (true, 15000) shape.
+    const ourCall = setKeepAliveSpy!.mock.calls.find(
+      (args) => args[0] === true && args[1] === 15_000,
+    )
+    expect(ourCall).toBeDefined()
 
     client.close()
   })

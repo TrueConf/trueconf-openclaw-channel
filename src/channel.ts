@@ -627,37 +627,70 @@ export const channelPlugin = {
       )
       lifecycleRef = lifecycle
 
-      // Hoisted so the dep bag isn't rebuilt per turn. The DM branch layers
-      // `store` on top because handleOutboundAttachment needs the direct-chat
-      // cache; handleOutboundAttachmentToChat does not.
-      const transport = {
-        outboundQueue,
-        resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
-        channelConfig,
-        logger,
-        dispatcher,
-        limits,
-        sendQueue,
+      // Hoisted out of the deliver closure so TypeScript keeps the
+      // `resolved.serverUrl` narrowing from the early-return guard above
+      // (control-flow narrowing on property accesses is lost across closure
+      // boundaries).
+      const resolvedForTransport = {
+        serverUrl: resolved.serverUrl,
+        useTls: resolved.useTls ?? true,
+        port: resolved.port,
       }
 
-      // Routes via the SDK's text/media split so a media-only payload reaches
-      // sendFile instead of being JSON-stringified into the chat as text.
+      // The agent runtime can hold this callback across an openclaw
+      // health-monitor restart (LLM runs of 4m+ have been observed in the
+      // wild while a 1006 -> OAuth-timeout chain prompts a channel restart).
+      // The original startAccount closure's outboundQueue/sendQueue/dispatcher
+      // would by then point at a dead AccountEntry. Resolving via store.accounts
+      // at call time routes the reply through whichever lifecycle is currently
+      // registered — symmetric with the live-lookup that channelPlugin.outbound.sendText
+      // already performs.
+      // Only `liveEntry` needs the live lookup: logger, channelConfig, resolved/
+      // resolvedForTransport, accountId, store, and inbound are stable for the
+      // lifetime of this closure, so capturing them here is safe.
+      // Transport shape differs per branch: the DM branch layers `store` onto
+      // liveTransport for the direct-chat cache; the group branch does not.
+      // Note: a second health-monitor restart that lands inside this coroutine
+      // (between the lookup and the inner queue.submit) still hits the dead
+      // entry. The window shrinks from minutes to milliseconds; not eliminated.
       const deliver = (inbound: InboundMessage) => async (payload: OutboundReplyPayload): Promise<void> => {
         const reply = resolveSendableOutboundReplyParts(payload)
         if (!reply.hasContent) return
 
+        const liveEntry = store.accounts.get(accountId)
+        if (!liveEntry) {
+          logger.warn(
+            `[trueconf] event=health_monitor_drop kind=deliver account=${accountId} ` +
+            `peer=${inbound.peerId} chat=${inbound.chatId} isGroup=${inbound.isGroup}: ` +
+            `account ${accountId} no longer registered, dropping reply ` +
+            `(likely health-monitor restart race)`,
+          )
+          return
+        }
+        const liveTransport = {
+          outboundQueue: liveEntry.outboundQueue,
+          resolved: resolvedForTransport,
+          channelConfig,
+          logger,
+          dispatcher: liveEntry.dispatcher,
+          limits: liveEntry.limits,
+          sendQueue: liveEntry.sendQueue,
+        }
+
+        // Routes via the SDK's text/media split so a media-only payload reaches
+        // sendFile instead of being JSON-stringified into the chat as text.
         await deliverTextOrMediaReply({
           payload,
           text: reply.text,
           sendText: async (chunk) => {
             const result = inbound.isGroup
-              ? await sendTextToChat(outboundQueue, inbound.chatId, chunk, logger, sendQueue)
+              ? await sendTextToChat(liveEntry.outboundQueue, inbound.chatId, chunk, logger, liveEntry.sendQueue)
               : await sendText(inbound.peerId, chunk, logger, {
                   fallbackUserId: inbound.peerId,
                   directChatStore: store,
                   accountId,
-                  sendQueue,
-                  outboundQueue,
+                  sendQueue: liveEntry.sendQueue,
+                  outboundQueue: liveEntry.outboundQueue,
                 })
             if (!result.ok) {
               logger.warn(`[trueconf] deliver: text chunk send failed (peer=${inbound.peerId}, isGroup=${inbound.isGroup})`)
@@ -671,7 +704,7 @@ export const channelPlugin = {
             if (inbound.isGroup) {
               const result = await handleOutboundAttachmentToChat(
                 { chatId: inbound.chatId, text: caption ?? '', mediaUrl },
-                transport,
+                liveTransport,
               )
               if (result.ok && result.messageId) {
                 rememberBotMessage(store.recentBotMsgIdsByChat, result.chatId, result.messageId)
@@ -679,7 +712,7 @@ export const channelPlugin = {
             } else {
               const result = await handleOutboundAttachment(
                 { to: inbound.peerId, text: caption ?? '', mediaUrl, accountId },
-                { ...transport, store },
+                { ...liveTransport, store },
               )
               if (result.ok && result.messageId) {
                 rememberBotMessage(store.recentBotMsgIdsByChat, result.chatId, result.messageId)
@@ -717,16 +750,30 @@ export const channelPlugin = {
         let tempPath: string | null = null
 
         if (inboundMsg.attachmentContent) {
+          // Mirror of the deliver-side live-lookup; see deliver factory above
+          // for race-window analysis. Resolve at call time so
+          // prepareInboundAttachment talks to the live wsClient/queues.
+          const liveEntry = store.accounts.get(accountId)
+          if (!liveEntry) {
+            logger.warn(
+              `[trueconf] event=health_monitor_drop kind=dispatch account=${accountId} ` +
+              `peer=${inboundMsg.peerId} chat=${inboundMsg.chatId} ` +
+              `fileId=${inboundMsg.attachmentContent?.fileId}: ` +
+              `account ${accountId} no longer registered, dropping inbound ` +
+              `(likely health-monitor restart race)`,
+            )
+            return
+          }
           const prep = await prepareInboundAttachment({
             inboundMsg,
-            wsClient,
+            wsClient: liveEntry.wsClient,
             accountId,
             store,
             channelConfig: store.channelConfig!,
             logger,
-            sendQueue,
-            outboundQueue,
-            dispatcher,
+            sendQueue: liveEntry.sendQueue,
+            outboundQueue: liveEntry.outboundQueue,
+            dispatcher: liveEntry.dispatcher,
           })
           if (!prep.ok) return
           // Preserve the real caption when the inbound was coalesced from a

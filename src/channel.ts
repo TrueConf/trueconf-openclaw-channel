@@ -743,16 +743,28 @@ export const channelPlugin = {
         let tempPath: string | null = null
 
         if (inboundMsg.attachmentContent) {
+          // Same race surface as the deliver factory: store.accounts may have
+          // been swapped to a new entry while this dispatch was waiting on the
+          // attachment fetch. Resolve at call time so prepareInboundAttachment
+          // talks to the live wsClient/queues, not the dead ones.
+          const liveEntry = store.accounts.get(accountId)
+          if (!liveEntry) {
+            logger.warn(
+              `[trueconf] dispatch: account ${accountId} no longer registered, dropping inbound ` +
+              `(likely health-monitor restart race)`,
+            )
+            return
+          }
           const prep = await prepareInboundAttachment({
             inboundMsg,
-            wsClient,
+            wsClient: liveEntry.wsClient,
             accountId,
             store,
             channelConfig: store.channelConfig!,
             logger,
-            sendQueue,
-            outboundQueue,
-            dispatcher,
+            sendQueue: liveEntry.sendQueue,
+            outboundQueue: liveEntry.outboundQueue,
+            dispatcher: liveEntry.dispatcher,
           })
           if (!prep.ok) return
           // Preserve the real caption when the inbound was coalesced from a

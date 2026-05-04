@@ -17,7 +17,7 @@ vi.mock('../../src/load-media', () => ({
 }))
 
 import { dispatchInboundDirectDmWithRuntime } from 'openclaw/plugin-sdk/channel-inbound'
-import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
+import { __getAccountsForTesting, __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
 import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
 
 const dispatch = vi.mocked(dispatchInboundDirectDmWithRuntime)
@@ -25,6 +25,7 @@ const dispatch = vi.mocked(dispatchInboundDirectDmWithRuntime)
 interface Harness {
   abort: () => void
   startPromise: Promise<void>
+  logger: { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn>; debug: ReturnType<typeof vi.fn> }
 }
 
 async function bootPlugin(server: FakeServer): Promise<Harness> {
@@ -54,7 +55,7 @@ async function bootPlugin(server: FakeServer): Promise<Harness> {
     abortSignal: ac.signal,
   })
   await waitFor(() => server.authRequests.length >= 1 && server.connections.size > 0)
-  return { abort: () => ac.abort(), startPromise }
+  return { abort: () => ac.abort(), startPromise, logger }
 }
 
 type DeliverFn = (payload: Record<string, unknown>) => Promise<void>
@@ -194,5 +195,85 @@ describe('integration: deliver — OutboundReplyPayload routing', () => {
     // must never appear as the value.
     expect(sendFile.replyMessageId ?? null).toBeNull()
     expect(JSON.stringify(sendFile)).not.toContain('inbound-msg-id-42')
+  })
+})
+
+describe('integration: deliver — health-monitor restart race', () => {
+  let server: FakeServer
+  let harness1: Harness | null = null
+  let harness2: Harness | null = null
+
+  beforeEach(async () => {
+    __resetForTesting()
+    dispatch.mockClear()
+    server = await startFakeServer()
+  })
+
+  afterEach(async () => {
+    for (const h of [harness2, harness1]) {
+      if (!h) continue
+      h.abort()
+      await Promise.race([h.startPromise.catch(() => {}), new Promise((r) => setTimeout(r, 500))])
+    }
+    harness1 = null
+    harness2 = null
+    await server.close()
+  })
+
+  // Reproduces the documented coworker DX failure: an inbound message arrives,
+  // the LLM run takes 4+ minutes, and openclaw's health-monitor restarts the
+  // channel in between. The captured-in-closure outboundQueue from the original
+  // startAccount points to a dead AccountEntry. Live-lookup in deliver routes
+  // the reply through the new entry instead.
+  it('routes the reply through the new AccountEntry after a health-monitor restart', async () => {
+    harness1 = await bootPlugin(server)
+    const entry1 = __getAccountsForTesting().get('default')
+    if (!entry1) throw new Error('test setup: entry1 missing after first boot')
+    const submit1Spy = vi.spyOn(entry1.outboundQueue, 'submit')
+
+    const deliver1 = await captureDeliverFromInbound(server)
+
+    // Tear down the first lifecycle the same way openclaw's health-monitor
+    // would: AbortController fires, waitUntilAbort callback runs synchronously
+    // (shutdownAccountEntry + accounts.delete), then the original startAccount
+    // promise resolves.
+    harness1.abort()
+    await harness1.startPromise.catch(() => {})
+    expect(__getAccountsForTesting().has('default')).toBe(false)
+
+    // Boot a fresh harness on the SAME fake server. The new bootPlugin call
+    // reuses module-scoped `store` (same `accountId`). registerFull replaces
+    // store.logger; gateway.startAccount installs a fresh AccountEntry.
+    harness2 = await bootPlugin(server)
+    const entry2 = __getAccountsForTesting().get('default')
+    if (!entry2) throw new Error('test setup: entry2 missing after second boot')
+    expect(entry2).not.toBe(entry1)
+    const submit2Spy = vi.spyOn(entry2.outboundQueue, 'submit')
+
+    // Now the LLM "finishes" and calls the captured deliver. The fix routes
+    // it through whichever entry is currently in the store.
+    await deliver1({ text: 'reply after restart' })
+
+    await waitFor(() => submit2Spy.mock.calls.length >= 1, 5000)
+    expect(submit2Spy).toHaveBeenCalled()
+    expect(submit1Spy).not.toHaveBeenCalled()
+  })
+
+  // Edge case: deliver fires while no AccountEntry is registered (the brief
+  // window after abort cleanup runs and before the next startAccount installs
+  // the new entry). Acceptable behaviour: warn + drop. No crash.
+  it('drops the reply with a warn when no AccountEntry is registered', async () => {
+    harness1 = await bootPlugin(server)
+    const deliver1 = await captureDeliverFromInbound(server)
+
+    harness1.abort()
+    await harness1.startPromise.catch(() => {})
+    expect(__getAccountsForTesting().has('default')).toBe(false)
+
+    await deliver1({ text: 'reply with no entry' })
+
+    expect(harness1.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('account default no longer registered'),
+    )
   })
 })

@@ -627,37 +627,58 @@ export const channelPlugin = {
       )
       lifecycleRef = lifecycle
 
-      // Hoisted so the dep bag isn't rebuilt per turn. The DM branch layers
-      // `store` on top because handleOutboundAttachment needs the direct-chat
-      // cache; handleOutboundAttachmentToChat does not.
-      const transport = {
-        outboundQueue,
-        resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
-        channelConfig,
-        logger,
-        dispatcher,
-        limits,
-        sendQueue,
+      // Hoisted out of the deliver closure so TypeScript keeps the
+      // `resolved.serverUrl` narrowing from the early-return guard above
+      // (control-flow narrowing on property accesses is lost across closure
+      // boundaries).
+      const resolvedForTransport = {
+        serverUrl: resolved.serverUrl,
+        useTls: resolved.useTls ?? true,
+        port: resolved.port,
       }
 
-      // Routes via the SDK's text/media split so a media-only payload reaches
-      // sendFile instead of being JSON-stringified into the chat as text.
+      // The agent runtime can hold this callback across an openclaw
+      // health-monitor restart (LLM runs of 4m+ have been observed in the
+      // wild while a 1006 -> OAuth-timeout chain prompts a channel restart).
+      // The original startAccount closure's outboundQueue/sendQueue/dispatcher
+      // would by then point at a dead AccountEntry. Resolving via store.accounts
+      // at call time routes the reply through whichever lifecycle is currently
+      // registered — symmetric with the live-lookup that channel.outbound.sendText
+      // already performs.
       const deliver = (inbound: InboundMessage) => async (payload: OutboundReplyPayload): Promise<void> => {
         const reply = resolveSendableOutboundReplyParts(payload)
         if (!reply.hasContent) return
+
+        const entry = store.accounts.get(accountId)
+        if (!entry) {
+          logger.warn(
+            `[trueconf] deliver: account ${accountId} no longer registered, dropping reply ` +
+            `(likely health-monitor restart race)`,
+          )
+          return
+        }
+        const liveTransport = {
+          outboundQueue: entry.outboundQueue,
+          resolved: resolvedForTransport,
+          channelConfig,
+          logger,
+          dispatcher: entry.dispatcher,
+          limits: entry.limits,
+          sendQueue: entry.sendQueue,
+        }
 
         await deliverTextOrMediaReply({
           payload,
           text: reply.text,
           sendText: async (chunk) => {
             const result = inbound.isGroup
-              ? await sendTextToChat(outboundQueue, inbound.chatId, chunk, logger, sendQueue)
+              ? await sendTextToChat(entry.outboundQueue, inbound.chatId, chunk, logger, entry.sendQueue)
               : await sendText(inbound.peerId, chunk, logger, {
                   fallbackUserId: inbound.peerId,
                   directChatStore: store,
                   accountId,
-                  sendQueue,
-                  outboundQueue,
+                  sendQueue: entry.sendQueue,
+                  outboundQueue: entry.outboundQueue,
                 })
             if (!result.ok) {
               logger.warn(`[trueconf] deliver: text chunk send failed (peer=${inbound.peerId}, isGroup=${inbound.isGroup})`)
@@ -671,7 +692,7 @@ export const channelPlugin = {
             if (inbound.isGroup) {
               const result = await handleOutboundAttachmentToChat(
                 { chatId: inbound.chatId, text: caption ?? '', mediaUrl },
-                transport,
+                liveTransport,
               )
               if (result.ok && result.messageId) {
                 rememberBotMessage(store.recentBotMsgIdsByChat, result.chatId, result.messageId)
@@ -679,7 +700,7 @@ export const channelPlugin = {
             } else {
               const result = await handleOutboundAttachment(
                 { to: inbound.peerId, text: caption ?? '', mediaUrl, accountId },
-                { ...transport, store },
+                { ...liveTransport, store },
               )
               if (result.ok && result.messageId) {
                 rememberBotMessage(store.recentBotMsgIdsByChat, result.chatId, result.messageId)

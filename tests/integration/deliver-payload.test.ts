@@ -16,7 +16,17 @@ vi.mock('../../src/load-media', () => ({
   }),
 }))
 
+// Spy on prepareInboundAttachment so the dispatch missing-entry test can
+// assert the early-return aborts before any attachment fetch is attempted.
+// importOriginal preserves handleInboundMessage and the rest of the module
+// since they drive the inbound flow that lands in dispatch.
+vi.mock('../../src/inbound', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/inbound')>()
+  return { ...actual, prepareInboundAttachment: vi.fn() }
+})
+
 import { dispatchInboundDirectDmWithRuntime } from 'openclaw/plugin-sdk/channel-inbound'
+import { prepareInboundAttachment } from '../../src/inbound'
 import { __getAccountsForTesting, __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
 import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
 
@@ -282,5 +292,91 @@ describe('integration: deliver — health-monitor restart race', () => {
     expect(server.messageRequests).toHaveLength(0)
     expect(server.uploadFileRequests).toHaveLength(0)
     expect(server.sendFileRequests).toHaveLength(0)
+  })
+})
+
+describe('integration: dispatch — health-monitor restart race', () => {
+  let server: FakeServer
+  let harness1: Harness | null = null
+
+  beforeEach(async () => {
+    __resetForTesting()
+    dispatch.mockClear()
+    vi.mocked(prepareInboundAttachment).mockClear()
+    server = await startFakeServer()
+  })
+
+  afterEach(async () => {
+    if (harness1) {
+      harness1.abort()
+      await Promise.race([harness1.startPromise.catch(() => {}), new Promise((r) => setTimeout(r, 500))])
+      harness1 = null
+    }
+    await server.close()
+  })
+
+  // Mirrors the deliver-side missing-entry test for the inbound dispatch path.
+  // Reproduces the dispatch-side race window: an attachment-bearing inbound is
+  // routed via wsClient.onInboundMessage (the SDK's public assignable handler),
+  // and the attachment branch must early-return when store.accounts no longer
+  // has the account (post health-monitor teardown, pre next startAccount).
+  // Also pins that no attachment fetch (prepareInboundAttachment) was attempted.
+  it('drops the inbound with a warn when no AccountEntry is registered', async () => {
+    harness1 = await bootPlugin(server)
+    const entry1 = __getAccountsForTesting().get('default')
+    if (!entry1) throw new Error('test setup: entry1 missing after first boot')
+    const onInboundMessage = entry1.wsClient.onInboundMessage
+    if (!onInboundMessage) throw new Error('test setup: onInboundMessage not wired')
+
+    // Drive a PLAIN inbound first so resolveChatType caches chat_alice@srv as
+    // 'p2p'. After teardown the wsClient is dead and getChatByID would never
+    // resolve; the cache hit lets handleInboundMessage reach dispatch without
+    // touching the wire.
+    await captureDeliverFromInbound(server)
+    dispatch.mockClear()
+
+    // Tear down the lifecycle the same way openclaw's health-monitor would.
+    harness1.abort()
+    await harness1.startPromise.catch(() => {})
+    expect(__getAccountsForTesting().has('default')).toBe(false)
+
+    // Synthesize an attachment-bearing inbound. Routing IDs match the cached
+    // P2P chat from the warm-up above so resolveChatType hits the cache.
+    const synthesized = {
+      type: 1 as const,
+      id: 999,
+      method: 'sendMessage',
+      payload: {
+        type: 202,
+        chatId: 'chat_alice@srv',
+        author: { id: 'alice@srv', type: 1 },
+        content: {
+          fileId: 'file-stranded',
+          name: 'stranded.png',
+          size: 10,
+          mimeType: 'image/png',
+          readyState: 2,
+        },
+        messageId: 'm-stranded',
+        timestamp: Date.now(),
+      },
+    }
+    await onInboundMessage(synthesized)
+    // dispatchWithFence is fire-and-forget; await a microtask so the
+    // synchronous-up-to-warn dispatch coroutine settles before assertions.
+    await waitFor(() => harness1!.logger.warn.mock.calls.length >= 1, 1000)
+
+    expect(harness1.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('account default no longer registered'),
+    )
+    expect(harness1.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('event=health_monitor_drop kind=dispatch'),
+    )
+    expect(harness1.logger.warn).toHaveBeenCalledTimes(1)
+    expect(harness1.logger.error).not.toHaveBeenCalled()
+    // The early-return must happen BEFORE the attachment fetch — no temp file
+    // download attempt, no SDK dispatch downstream.
+    expect(prepareInboundAttachment).not.toHaveBeenCalled()
+    expect(dispatch).not.toHaveBeenCalled()
   })
 })

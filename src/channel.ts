@@ -643,13 +643,16 @@ export const channelPlugin = {
       // The original startAccount closure's outboundQueue/sendQueue/dispatcher
       // would by then point at a dead AccountEntry. Resolving via store.accounts
       // at call time routes the reply through whichever lifecycle is currently
-      // registered — symmetric with the live-lookup that channel.outbound.sendText
+      // registered — symmetric with the live-lookup that channelPlugin.outbound.sendText
       // already performs.
       // Only `liveEntry` needs the live lookup: logger, channelConfig, resolved/
       // resolvedForTransport, accountId, store, and inbound are stable for the
       // lifetime of this closure, so capturing them here is safe.
       // Transport shape differs per branch: the DM branch layers `store` onto
       // liveTransport for the direct-chat cache; the group branch does not.
+      // Note: a second health-monitor restart that lands inside this coroutine
+      // (between the lookup and the inner queue.submit) still hits the dead
+      // entry. The window shrinks from minutes to milliseconds; not eliminated.
       const deliver = (inbound: InboundMessage) => async (payload: OutboundReplyPayload): Promise<void> => {
         const reply = resolveSendableOutboundReplyParts(payload)
         if (!reply.hasContent) return
@@ -657,7 +660,9 @@ export const channelPlugin = {
         const liveEntry = store.accounts.get(accountId)
         if (!liveEntry) {
           logger.warn(
-            `[trueconf] deliver: account ${accountId} no longer registered, dropping reply ` +
+            `[trueconf] event=health_monitor_drop kind=deliver account=${accountId} ` +
+            `peer=${inbound.peerId} chat=${inbound.chatId} isGroup=${inbound.isGroup}: ` +
+            `account ${accountId} no longer registered, dropping reply ` +
             `(likely health-monitor restart race)`,
           )
           return
@@ -746,19 +751,20 @@ export const channelPlugin = {
 
         if (inboundMsg.attachmentContent) {
           // Same race surface as the deliver factory: store.accounts may have
-          // been swapped to a new entry while this dispatch was waiting on the
-          // attachment fetch. Resolve at call time so prepareInboundAttachment
-          // talks to the live wsClient/queues, not the dead ones.
+          // been swapped to a new entry between this inbound being queued and
+          // dispatch executing. Resolve at call time so prepareInboundAttachment
+          // talks to the live wsClient/queues, not the dead ones. (A swap that
+          // happens during the await below is NOT covered — liveEntry is
+          // captured by then; window is shrunk, not eliminated.)
+          // Mirror of the deliver-side live-lookup; see deliver factory above
+          // for race-window analysis.
           const liveEntry = store.accounts.get(accountId)
-          // No dedicated test for this branch: dispatch is not exposed as a
-          // callable like deliver is (it lives behind wsClient.onInboundMessage,
-          // which stops pumping once the account is torn down), so the
-          // missing-entry race window cannot be reached deterministically
-          // without a new test-only seam. Behavior mirrors the tested
-          // deliver-side branch above.
           if (!liveEntry) {
             logger.warn(
-              `[trueconf] dispatch: account ${accountId} no longer registered, dropping inbound ` +
+              `[trueconf] event=health_monitor_drop kind=dispatch account=${accountId} ` +
+              `peer=${inboundMsg.peerId} chat=${inboundMsg.chatId} ` +
+              `fileId=${inboundMsg.attachmentContent?.fileId}: ` +
+              `account ${accountId} no longer registered, dropping inbound ` +
               `(likely health-monitor restart race)`,
             )
             return

@@ -19,6 +19,7 @@ import {
   readWsHandshakeTimeoutMs,
   readOauthFailLimit,
   readDnsFailLimit,
+  readTcpKeepaliveMs,
 } from '../../src/env-config.js'
 
 const ALL_TRUECONF_VARS = [
@@ -51,7 +52,7 @@ describe('env-config public contract', () => {
     ])
   })
 
-  it('runtime contract lists exactly the 6 tunable env vars', () => {
+  it('runtime contract lists exactly the 7 tunable env vars', () => {
     expect(PUBLIC_ENV_CONTRACT.runtime).toEqual([
       'TRUECONF_HEARTBEAT_INTERVAL_MS',
       'TRUECONF_HEARTBEAT_PONG_TIMEOUT_MS',
@@ -59,10 +60,11 @@ describe('env-config public contract', () => {
       'TRUECONF_WS_HANDSHAKE_TIMEOUT_MS',
       'TRUECONF_OAUTH_FAIL_LIMIT',
       'TRUECONF_DNS_FAIL_LIMIT',
+      'TRUECONF_TCP_KEEPALIVE_MS',
     ])
   })
 
-  it('all 17 readers (10 setup + readPasswordRaw twin + 6 runtime) and hasSetupShortcut are exported as functions', () => {
+  it('all 18 readers (10 setup + readPasswordRaw twin + 7 runtime) and hasSetupShortcut are exported as functions', () => {
     for (const fn of [
       readSetupLocale, readServerUrl, readUsername, readPassword, readPasswordRaw,
       readUseTls, readPort, readCaPath, readTlsVerify,
@@ -70,6 +72,7 @@ describe('env-config public contract', () => {
       readHeartbeatIntervalMs, readHeartbeatPongTimeoutMs,
       readOauthTimeoutMs, readWsHandshakeTimeoutMs,
       readOauthFailLimit, readDnsFailLimit,
+      readTcpKeepaliveMs,
       hasSetupShortcut,
     ]) {
       expect(typeof fn).toBe('function')
@@ -256,6 +259,7 @@ describe.each([
   ['TRUECONF_WS_HANDSHAKE_TIMEOUT_MS', readWsHandshakeTimeoutMs, 20_000, '12000', 12000],
   ['TRUECONF_OAUTH_FAIL_LIMIT', readOauthFailLimit, 3, '5', 5],
   ['TRUECONF_DNS_FAIL_LIMIT', readDnsFailLimit, 5, '8', 8],
+  ['TRUECONF_TCP_KEEPALIVE_MS', readTcpKeepaliveMs, 15_000, '7000', 7000],
 ])('env-config runtime tunable %s', (envName, reader, defaultValue, raw, parsed) => {
   it('returns the documented default when unset', () => {
     expect(reader()).toBe(defaultValue)

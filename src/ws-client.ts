@@ -25,6 +25,7 @@ import {
   readWsHandshakeTimeoutMs,
   readDnsFailLimit,
   readOauthFailLimit,
+  readTcpKeepaliveMs,
 } from './env-config.js'
 
 // Each tunable is read once at module load. Defaults match TrueConf's
@@ -37,6 +38,14 @@ const OAUTH_TIMEOUT_MS = readOauthTimeoutMs()
 const WS_HANDSHAKE_TIMEOUT_MS = readWsHandshakeTimeoutMs()
 const DNS_FAIL_LIMIT = readDnsFailLimit()
 const OAUTH_FAIL_LIMIT = readOauthFailLimit()
+// SO_KEEPALIVE is sent by the OS kernel independently of the Node.js event
+// loop, so it survives long synchronous blocks (e.g. openclaw LLM preprocessing
+// that pegs the loop for 60-90s). Probe data on a corporate TrueConf-on-prem
+// network showed the server (or upstream proxy) graceful-FIN'd idle TCP
+// after ~41s — the WS-protocol heartbeat could not run during the loop block,
+// so the close went unnoticed. Default 15s sits well below the observed
+// 41s server idle window.
+const TCP_KEEPALIVE_MS = readTcpKeepaliveMs()
 
 export function hostPort(config: { serverUrl: string; useTls: boolean; port?: number }): string {
   if (typeof config.serverUrl !== 'string' || config.serverUrl.length === 0) {
@@ -350,6 +359,17 @@ export class WsClient {
         if (handshakeTimer) {
           clearTimeout(handshakeTimer)
           handshakeTimer = undefined
+        }
+        // Enable SO_KEEPALIVE on the underlying TCP socket so the kernel
+        // keeps the connection alive across long Node event-loop blocks
+        // (openclaw LLM preprocessing). The WS-protocol heartbeat would
+        // not run during such blocks, allowing an upstream idle-killer
+        // (server or proxy) to graceful-FIN the session unnoticed.
+        const underlying = (ws as unknown as { _socket?: { setKeepAlive?: (enable: boolean, initialDelay: number) => void } })._socket
+        try {
+          underlying?.setKeepAlive?.(true, TCP_KEEPALIVE_MS)
+        } catch (err) {
+          this.logger?.warn(`[trueconf] setKeepAlive failed: ${err instanceof Error ? err.message : String(err)}`)
         }
         const authId = this.idCounter.next()
         const authPromise = this.matcher.track(authId)

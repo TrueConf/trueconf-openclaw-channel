@@ -750,14 +750,9 @@ export const channelPlugin = {
         let tempPath: string | null = null
 
         if (inboundMsg.attachmentContent) {
-          // Same race surface as the deliver factory: store.accounts may have
-          // been swapped to a new entry between this inbound being queued and
-          // dispatch executing. Resolve at call time so prepareInboundAttachment
-          // talks to the live wsClient/queues, not the dead ones. (A swap that
-          // happens during the await below is NOT covered — liveEntry is
-          // captured by then; window is shrunk, not eliminated.)
           // Mirror of the deliver-side live-lookup; see deliver factory above
-          // for race-window analysis.
+          // for race-window analysis. Resolve at call time so
+          // prepareInboundAttachment talks to the live wsClient/queues.
           const liveEntry = store.accounts.get(accountId)
           if (!liveEntry) {
             logger.warn(

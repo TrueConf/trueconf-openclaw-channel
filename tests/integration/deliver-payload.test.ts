@@ -275,5 +275,12 @@ describe('integration: deliver — health-monitor restart race', () => {
     expect(harness1.logger.warn).toHaveBeenCalledWith(
       expect.stringContaining('account default no longer registered'),
     )
+    // Diagnostic: a future regression that double-warns, throws-then-swallows,
+    // or drops-but-still-writes should fail one of these.
+    expect(harness1.logger.warn).toHaveBeenCalledTimes(1)
+    expect(harness1.logger.error).not.toHaveBeenCalled()
+    expect(server.messageRequests).toHaveLength(0)
+    expect(server.uploadFileRequests).toHaveLength(0)
+    expect(server.sendFileRequests).toHaveLength(0)
   })
 })

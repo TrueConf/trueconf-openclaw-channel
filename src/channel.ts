@@ -645,6 +645,11 @@ export const channelPlugin = {
       // at call time routes the reply through whichever lifecycle is currently
       // registered — symmetric with the live-lookup that channel.outbound.sendText
       // already performs.
+      // Only `entry` needs the live lookup: logger, channelConfig, resolved/
+      // resolvedForTransport, accountId, store, and inbound are stable across
+      // registerFull/health-monitor cycles, so capturing them here is safe.
+      // Transport shape differs per branch: the DM branch layers `store` onto
+      // liveTransport for the direct-chat cache; the group branch does not.
       const deliver = (inbound: InboundMessage) => async (payload: OutboundReplyPayload): Promise<void> => {
         const reply = resolveSendableOutboundReplyParts(payload)
         if (!reply.hasContent) return

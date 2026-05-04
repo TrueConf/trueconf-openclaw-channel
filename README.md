@@ -27,6 +27,9 @@
   <a href="./README-ru.md">Русский</a>
 </p>
 
+> [!CAUTION]
+> This project is still in development and is not recommended for production use. That said, we’d greatly appreciate it if you gave it a try. If you run into any problems, please feel free to open an [issue](https://github.com/TrueConf/trueconf-openclaw-channel/issues) with a detailed description.
+
 A channel that connects OpenClaw to the TrueConf corporate messenger. After installation, the OpenClaw AI agent communicates with users via TrueConf — messages sent to the bot are forwarded to the AI agent, and responses are delivered back to the chat.
 
 ```

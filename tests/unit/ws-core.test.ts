@@ -1,4 +1,4 @@
-﻿import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fetch as undiciFetch } from 'undici'
 import { createServer, type Server } from 'node:http'
 import { AddressInfo, Socket } from 'node:net'

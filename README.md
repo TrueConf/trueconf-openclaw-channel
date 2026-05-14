@@ -497,8 +497,6 @@ protocol layer every 10 s with a 5 s pong timeout. Auto-ack of `type:1` frames
 is performed inside the worker within microseconds of receipt, regardless of
 main-thread load.
 
-See `docs/specs/2026-05-14-ws-worker-thread-design.md` for the full design.
-
 ## Testing
 
 ```bash

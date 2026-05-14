@@ -23,7 +23,6 @@
 - New files: `src/ws-worker.ts`, `src/ws-worker-protocol.ts`,
   `src/ws-worker-handle.ts`, `src/ws-worker-bootstrap.mjs`.
 - `ConnectionLifecycle` is now private to `ws-core.ts` (lives inside worker).
-- See `docs/specs/2026-05-14-ws-worker-thread-design.md` for full design.
 
 ## [1.2.4] - 2026-05-03
 

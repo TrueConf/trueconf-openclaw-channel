@@ -36,7 +36,7 @@ import {
 import { trueconfSetupWizard } from './channel-setup'
 import { trueconfSetupAdapter } from './setup-shared'
 import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './always-respond'
-import { WsCore, ConnectionLifecycle } from './ws-core'
+import { WsCore } from './ws-core'
 import { OutboundQueue } from './outbound-queue'
 import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage, InboundExtraContext, InboundMediaContext } from './types'
 import { widenExtraContext } from './types'
@@ -75,7 +75,6 @@ export function loadCaFromAccount(account: ResolvedAccount): Buffer | undefined 
 }
 
 export interface AccountEntry {
-  lifecycle: ConnectionLifecycle
   wsClient: WsCore
   dispatcher?: Dispatcher
   unsubscribers?: Array<() => void>
@@ -95,13 +94,12 @@ export interface AccountEntry {
 // and rolling restart would otherwise leak sockets per account on every
 // redeploy. close() rejections are swallowed — shutdown is best-effort.
 export function shutdownAccountEntry(entry: {
-  lifecycle: ConnectionLifecycle
   wsClient: WsCore
   dispatcher?: Dispatcher
   unsubscribers?: Array<() => void>
 }): void {
   for (const u of entry.unsubscribers ?? []) try { u() } catch { /* ignore */ }
-  entry.lifecycle.shutdown()
+  entry.wsClient.shutdown()
   entry.dispatcher?.close().catch(() => { /* best-effort */ })
 }
 
@@ -213,25 +211,6 @@ export function invalidateChatState(
   store.chatTypeByChatId.delete(chatId)
   store.inflightChatTypeLookups.delete(chatId)
   store.recentBotMsgIdsByChat.delete(chatId)
-}
-
-// Lazy-closure adapter for the WsCore `forceReconnect` option. WsCore is
-// constructed BEFORE `lifecycle` exists (chicken-and-egg: lifecycle holds
-// wsClient). The closure resolves `lifecycle` at call time via the supplied
-// getter, so the binding becomes valid before any 203 response can arrive.
-//
-// If the closure fires before `lifecycle` is set (truly impossible in practice
-// because requests gate on the auth barrier, but defensive), the call is
-// dropped — surfacing the original error is preferable to throwing in a code
-// path WsCore cannot recover from.
-export function makeForceReconnectAdapter(
-  getLifecycle: () => { forceReconnect: (reason: string) => Promise<void> } | null,
-): (reason: string) => Promise<void> {
-  return async (reason: string) => {
-    const lifecycle = getLifecycle()
-    if (!lifecycle) return
-    await lifecycle.forceReconnect(reason)
-  }
 }
 
 // Wires the SDK push handler onto WsCore.onPush. Returns the unsubscribe
@@ -551,22 +530,24 @@ export const channelPlugin = {
           ? new UndiciAgent({ connect: { ca } })
           : undefined
 
-      // Per-account state. Construct BEFORE wsClient/lifecycle so the
-      // forceReconnect closure and the SDK push handler can capture them.
       const limits = new FileUploadLimits(getMaxFileSize(channelConfig), logger)
       const sendQueue = new PerChatSendQueue()
 
-      // Lazy-bound lifecycle reference: the wsClient receives `forceReconnect`
-      // as a closure that resolves the lifecycle at call time. WsCore is
-      // constructed first because `lifecycle` needs it; the closure stays safe
-      // because requests gate on the auth barrier that lifecycle.start() flips.
-      let lifecycleRef: ConnectionLifecycle | null = null
       const wsClient = new WsCore({
+        account: {
+          serverUrl: resolved.serverUrl,
+          username: resolved.username,
+          password: resolved.password,
+          useTls: resolved.useTls ?? true,
+          port: resolved.port,
+          clientId: resolved.clientId,
+          clientSecret: resolved.clientSecret,
+        },
+        logger,
+        dispatcher,
         ca,
         tlsVerify,
-        forceReconnect: makeForceReconnectAdapter(() => lifecycleRef),
       })
-      wsClient.logger = logger
       const outboundQueue = new OutboundQueue(wsClient, logger)
 
       const wireAdapter: WireAdapter = {
@@ -605,27 +586,16 @@ export const channelPlugin = {
         logger,
       )
 
-      const lifecycle = new ConnectionLifecycle(
-        wsClient,
-        {
-          serverUrl: resolved.serverUrl,
-          username: resolved.username,
-          password: resolved.password,
-          useTls: resolved.useTls ?? true,
-          port: resolved.port,
-          clientId: resolved.clientId,
-          clientSecret: resolved.clientSecret,
-        },
-        logger,
-        {
-          onConnectionClosed: () => clearAccountChats(accountId),
-          onConnected: () => setStatus({ accountId, running: true, connected: true, lastStartAt: Date.now() }),
-          onDisconnected: () => setStatus({ accountId, connected: false }),
-          onTerminalFailure: (terminal) => outboundQueue.failAll(terminal.cause),
-          dispatcher,
-        },
-      )
-      lifecycleRef = lifecycle
+      wsClient.onState = (state) => {
+        if (state === 'reconnecting') {
+          setStatus({ accountId, connected: false })
+          clearAccountChats(accountId)
+        }
+      }
+      wsClient.onTerminal = (terminal) => outboundQueue.failAll(terminal.cause)
+      const unsubscribeConnectedStatus = wsClient.onAuth(() => {
+        setStatus({ accountId, running: true, connected: true, lastStartAt: Date.now() })
+      })
 
       // Hoisted out of the deliver closure so TypeScript keeps the
       // `resolved.serverUrl` narrowing from the early-return guard above
@@ -912,17 +882,16 @@ export const channelPlugin = {
       })
 
       store.accounts.set(accountId, {
-        lifecycle,
         wsClient,
         dispatcher,
-        unsubscribers: [unsubscribePush, unsubscribeAuth, unsubscribeSdkPush],
+        unsubscribers: [unsubscribePush, unsubscribeAuth, unsubscribeSdkPush, unsubscribeConnectedStatus],
         limits,
         sendQueue,
         outboundQueue,
       })
 
       try {
-        await lifecycle.start()
+        await wsClient.start()
       } catch (err) {
         logger.error(`[trueconf] Account ${accountId} startup failed: ${err instanceof Error ? err.message : String(err)}`)
         setStatus({

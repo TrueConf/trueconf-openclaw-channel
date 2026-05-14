@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+﻿import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fetch as undiciFetch } from 'undici'
 import { createServer, type Server } from 'node:http'
 import { AddressInfo, Socket } from 'node:net'
 import { WebSocketServer, WebSocket as WsServerSocket } from 'ws'
-import { acquireToken, WsCore, ConnectionLifecycle } from '../../src/ws-core'
+import { acquireToken, WsCore } from '../../src/ws-core'
 import { NetworkError, type Logger, type TrueConfAccountConfig } from '../../src/types'
 
 vi.mock('undici', async (importOriginal) => {
@@ -17,40 +17,57 @@ const silentLogger: Logger = {
   error: () => {},
 }
 
+const DEFAULT_TEST_ACCOUNT: TrueConfAccountConfig = {
+  serverUrl: '127.0.0.1',
+  username: 'bot',
+  password: 'secret',
+  useTls: false,
+  port: 4309,
+}
+
+function makeCore(overrides: Partial<{ tlsVerify: boolean; ca: Buffer; account: TrueConfAccountConfig; logger: Logger }> = {}): WsCore {
+  return new WsCore({
+    account: overrides.account ?? DEFAULT_TEST_ACCOUNT,
+    logger: overrides.logger ?? silentLogger,
+    ...(overrides.tlsVerify !== undefined && { tlsVerify: overrides.tlsVerify }),
+    ...(overrides.ca !== undefined && { ca: overrides.ca }),
+  })
+}
+
 describe('WsCore TLS options', () => {
   it('defaults tlsVerify to true (system trust)', () => {
-    const ws = new WsCore()
+    const ws = makeCore()
     expect(ws.tlsVerify).toBe(true)
   })
 
   it('accepts tlsVerify=false and exposes it on the instance', () => {
-    const ws = new WsCore({ tlsVerify: false })
+    const ws = makeCore({ tlsVerify: false })
     expect(ws.tlsVerify).toBe(false)
   })
 
   it('builds ws ClientOptions with rejectUnauthorized=false when tlsVerify=false', () => {
-    const ws = new WsCore({ tlsVerify: false })
+    const ws = makeCore({ tlsVerify: false })
     expect(ws.buildClientOptions()).toEqual({ rejectUnauthorized: false })
   })
 
   it('builds ws ClientOptions with ca buffer when ca is set and tlsVerify is true', () => {
     const ca = Buffer.from('-----BEGIN CERTIFICATE-----\nMIIBAA==\n-----END CERTIFICATE-----\n', 'utf8')
-    const ws = new WsCore({ ca })
+    const ws = makeCore({ ca })
     expect(ws.buildClientOptions()).toEqual({ ca })
   })
 
   it('returns undefined ClientOptions when neither ca nor tlsVerify=false is set', () => {
-    const ws = new WsCore()
+    const ws = makeCore()
     expect(ws.buildClientOptions()).toBeUndefined()
   })
 
   it('prefers rejectUnauthorized=false over ca when both set (insecure mode wins)', () => {
     // Defensive: caller shouldn't pass both, but if they do the spec wants the
-    // explicit insecure-mode flag to win — pinning a CA while skipping
+    // explicit insecure-mode flag to win вЂ” pinning a CA while skipping
     // verification is contradictory, and rejectUnauthorized:false makes the
     // outcome unambiguous (no verification at all).
     const ca = Buffer.from('-----BEGIN CERTIFICATE-----\nMIIBAA==\n-----END CERTIFICATE-----\n', 'utf8')
-    const ws = new WsCore({ ca, tlsVerify: false })
+    const ws = makeCore({ ca, tlsVerify: false })
     expect(ws.buildClientOptions()).toEqual({ rejectUnauthorized: false })
   })
 })
@@ -201,7 +218,7 @@ interface FakeWsServer {
   acksSeen: () => Array<number>
   // Most-recently connected socket reference (for assertions on which socket was acked).
   activeSocket: () => WsServerSocket | null
-  // How many WS connections have been accepted lifetime — for reconnect assertions.
+  // How many WS connections have been accepted lifetime вЂ” for reconnect assertions.
   connectionCount: () => number
 }
 
@@ -215,7 +232,7 @@ async function startFakeWsServer(): Promise<FakeWsServer> {
   let onRequest: (msg: { id: number; method: string; payload?: unknown }, ws: WsServerSocket) => void = () => {}
 
   const http = createServer()
-  // Minimal OAuth endpoint so ConnectionLifecycle.start() can complete its
+  // Minimal OAuth endpoint so WsCore.start() can complete its
   // acquireToken step without hitting the real TrueConf bridge.
   http.on('request', (req, res) => {
     if (req.url === '/bridge/api/client/v1/oauth/token' && req.method === 'POST') {
@@ -294,7 +311,7 @@ function makeConfig(port: number): TrueConfAccountConfig {
   }
 }
 
-describe('WsCore connect — typed errors', () => {
+describe('WsCore connect вЂ” typed errors', () => {
   let server: Server | undefined
 
   afterEach(async () => {
@@ -312,7 +329,7 @@ describe('WsCore connect — typed errors', () => {
     await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', () => resolve()))
     const port = (server.address() as AddressInfo).port
 
-    const client = new WsCore()
+    const client = makeCore()
     let caught: unknown = null
     try {
       await client.connect(makeConfig(port), 'fake-token')
@@ -322,7 +339,7 @@ describe('WsCore connect — typed errors', () => {
     expect(caught).toBeInstanceOf(NetworkError)
     const ne = caught as NetworkError
     expect(ne.phase).toBe('websocket')
-    // The exact code depends on platform/libuv timing — accept either an empty
+    // The exact code depends on platform/libuv timing вЂ” accept either an empty
     // code or a known transient marker, but the wrapper itself is what we test.
     expect(typeof (ne.code ?? '')).toBe('string')
   })
@@ -347,7 +364,7 @@ describe('WsCore connect — typed errors', () => {
     const terminateSpy = vi.spyOn(WsServerSocket.prototype, 'terminate')
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
-      const client = new WsCore()
+      const client = makeCore()
       const connectPromise = client.connect(makeConfig(port), 'fake-token')
       // Pre-attach catch so vitest's unhandled-rejection guard doesn't fire
       // while we drain the timer.
@@ -380,24 +397,24 @@ describe('WsCore connect — typed errors', () => {
 
 describe('WsCore.waitAuthenticated', () => {
   it('rejects on a 100ms timeout when auth never completes', async () => {
-    const client = new WsCore()
+    const client = makeCore()
     await expect(client.waitAuthenticated(100)).rejects.toThrow(/timed out after 100ms/)
   })
 
   it('resolves once markAuthenticated is called', async () => {
-    const client = new WsCore()
+    const client = makeCore()
     queueMicrotask(() => client.markAuthenticated())
     await expect(client.waitAuthenticated(1000)).resolves.toBeUndefined()
   })
 
   it('rejects when markAuthFailed is called before auth completes', async () => {
-    const client = new WsCore()
+    const client = makeCore()
     queueMicrotask(() => client.markAuthFailed(new Error('socket closed before auth')))
     await expect(client.waitAuthenticated(1000)).rejects.toThrow(/socket closed before auth/)
   })
 
   it('resetAuthBarrier rejects pending waiters then re-arms a fresh barrier', async () => {
-    const client = new WsCore()
+    const client = makeCore()
     const first = client.waitAuthenticated(1000)
     client.resetAuthBarrier('reconnect')
     await expect(first).rejects.toThrow(/auth barrier reset: reconnect/)
@@ -408,24 +425,19 @@ describe('WsCore.waitAuthenticated', () => {
   })
 })
 
-describe('WsCore.sendRequest — 203 recovery', () => {
+describe('WsCore.sendRequest вЂ” 203 recovery', () => {
   it('auto-recovers on errorCode=203: forces reconnect, retries once with fresh token', async () => {
-    const forceReconnect = vi.fn(async (_reason: string) => {})
-    const client = new WsCore({ forceReconnect })
+    const client = makeCore()
     client.markAuthenticated()
+    const forceReconnect = vi.spyOn(client, 'forceReconnect').mockImplementation(async (_reason: string) => {
+      client.resetAuthBarrier('forced reconnect')
+      client.markAuthenticated()
+    })
 
     // Stub sendRequestInternal to return a 203 the first time, success the second.
     const internal = vi.spyOn(client as unknown as { sendRequestInternal: (m: string, p: Record<string, unknown>) => Promise<{ type: 2; id: number; payload?: Record<string, unknown> }> }, 'sendRequestInternal')
       .mockResolvedValueOnce({ type: 2, id: 1, payload: { errorCode: 203 } })
       .mockResolvedValueOnce({ type: 2, id: 2, payload: { errorCode: 0 } })
-
-    // After forceReconnect we must re-arm the auth barrier so the second
-    // waitAuthenticated() resolves. Real ConnectionLifecycle.start() does this;
-    // here we simulate it inside the stubbed callback.
-    forceReconnect.mockImplementationOnce(async () => {
-      client.resetAuthBarrier('forced reconnect')
-      client.markAuthenticated()
-    })
 
     const resp = await client.sendRequest('sendMessage', { chatId: 'c', content: { text: 't', parseMode: 'markdown' } })
     expect(resp.payload?.errorCode).toBe(0)
@@ -435,11 +447,9 @@ describe('WsCore.sendRequest — 203 recovery', () => {
   })
 
   it('does NOT retry on second consecutive 203 — surfaces the error', async () => {
-    const forceReconnect = vi.fn(async (_reason: string) => {})
-    const client = new WsCore({ forceReconnect })
+    const client = makeCore()
     client.markAuthenticated()
-
-    forceReconnect.mockImplementation(async () => {
+    const forceReconnect = vi.spyOn(client, 'forceReconnect').mockImplementation(async (_reason: string) => {
       client.resetAuthBarrier('forced reconnect')
       client.markAuthenticated()
     })
@@ -452,19 +462,8 @@ describe('WsCore.sendRequest — 203 recovery', () => {
     expect(internal).toHaveBeenCalledTimes(2)
   })
 
-  it('fails soft if 203 received but no forceReconnect callback is wired', async () => {
-    const client = new WsCore()
-    client.markAuthenticated()
-    vi.spyOn(client as unknown as { sendRequestInternal: (m: string, p: Record<string, unknown>) => Promise<{ type: 2; id: number; payload?: Record<string, unknown> }> }, 'sendRequestInternal')
-      .mockResolvedValueOnce({ type: 2, id: 1, payload: { errorCode: 203 } })
-
-    const resp = await client.sendRequest('sendMessage', { chatId: 'c', content: { text: 't', parseMode: 'markdown' } })
-    // Surfaces the original 203 instead of hanging.
-    expect(resp.payload?.errorCode).toBe(203)
-  })
-
-  it('logs full lifecycle (wait_auth → wire_send → ack) on happy path when traceId provided', async () => {
-    const client = new WsCore()
+  it('logs full lifecycle (wait_auth в†’ wire_send в†’ ack) on happy path when traceId provided', async () => {
+    const client = makeCore()
     client.markAuthenticated()
     const logger: Logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     client.logger = logger
@@ -486,7 +485,7 @@ describe('WsCore.sendRequest — 203 recovery', () => {
   })
 
   it('logs no L1c lifecycle lines when traceId is undefined', async () => {
-    const client = new WsCore()
+    const client = makeCore()
     client.markAuthenticated()
     const logger: Logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     client.logger = logger
@@ -502,13 +501,12 @@ describe('WsCore.sendRequest — 203 recovery', () => {
   })
 
   it('203 retry logs two wait_auth + two wire_send + two ack with the same qid', async () => {
-    const forceReconnect = vi.fn(async (_reason: string) => {})
-    const client = new WsCore({ forceReconnect })
+    const client = makeCore()
     client.markAuthenticated()
     const logger: Logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     client.logger = logger
 
-    forceReconnect.mockImplementationOnce(async () => {
+    vi.spyOn(client, 'forceReconnect').mockImplementationOnce(async () => {
       client.resetAuthBarrier('forced reconnect')
       client.markAuthenticated()
     })
@@ -522,7 +520,7 @@ describe('WsCore.sendRequest — 203 recovery', () => {
       .map((c) => c[0] as string)
       .filter((s) => /\[trueconf\] outbound (wait_auth|ack):/.test(s))
     // wire_send is filtered out here because sendRequestInternal is stubbed via
-    // vi.spyOn — the real body (which logs wire_send) does not run. The 203
+    // vi.spyOn вЂ” the real body (which logs wire_send) does not run. The 203
     // path's behaviour we care about is wait_auth + ack repetition with stable qid.
     expect(lifecycleLines).toEqual([
       '[trueconf] outbound wait_auth: qid=42 method=sendMessage chatId=abc',
@@ -531,21 +529,21 @@ describe('WsCore.sendRequest — 203 recovery', () => {
       '[trueconf] outbound ack: qid=42 method=sendMessage chatId=abc errorCode=0',
     ])
 
-    // Lock traceId passthrough on BOTH internal calls — guards against a future
+    // Lock traceId passthrough on BOTH internal calls вЂ” guards against a future
     // refactor that drops the 3rd arg from the retry-branch sendRequestInternal call.
     expect(internalSpy).toHaveBeenCalledTimes(2)
     expect(internalSpy).toHaveBeenNthCalledWith(2, 'sendMessage', { chatId: 'abc' }, '42')
   })
 
   it('does NOT log wire_send when send() throws (WebSocket not connected)', async () => {
-    const client = new WsCore()
+    const client = makeCore()
     client.markAuthenticated()
     const logger: Logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     client.logger = logger
 
-    // No send() stub — the real send() throws because this.ws is null
+    // No send() stub вЂ” the real send() throws because this.ws is null
     // (no connect() called). The thrown error routes through
-    // matcher.reject → tracked promise rejects → sendRequest awaits and
+    // matcher.reject в†’ tracked promise rejects в†’ sendRequest awaits and
     // re-throws.
     await expect(client.sendRequest('sendMessage', { chatId: 'abc' }, '42')).rejects.toThrow()
 
@@ -556,7 +554,7 @@ describe('WsCore.sendRequest — 203 recovery', () => {
   })
 })
 
-describe('WsCore — message handling on captured ws', () => {
+describe('WsCore вЂ” message handling on captured ws', () => {
   let server: FakeWsServer | null = null
 
   beforeEach(async () => {
@@ -569,7 +567,7 @@ describe('WsCore — message handling on captured ws', () => {
   })
 
   it('auto-ack is sent on the same ws that delivered the type=1 frame, not this.ws', async () => {
-    const client = new WsCore()
+    const client = makeCore()
     client.logger = silentLogger
     await client.connect(makeConfig(server!.port), 'fake-token')
 
@@ -591,7 +589,7 @@ describe('WsCore — message handling on captured ws', () => {
     // Wait briefly for the ack to land.
     await new Promise<void>((r) => setTimeout(r, 50))
 
-    // Ack flowed over the ORIGINAL socket → server saw it.
+    // Ack flowed over the ORIGINAL socket в†’ server saw it.
     const after = server!.acksSeen()
     expect(after.length).toBe(before + 1)
     expect(after[after.length - 1]).toBe(4242)
@@ -605,7 +603,7 @@ describe('WsCore — message handling on captured ws', () => {
   })
 
   it('stale close from an old socket (after this.ws swap) does NOT reject pendings, clear progress, or fire onClose', async () => {
-    const client = new WsCore()
+    const client = makeCore()
     client.logger = silentLogger
     await client.connect(makeConfig(server!.port), 'fake-token')
 
@@ -634,7 +632,7 @@ describe('WsCore — message handling on captured ws', () => {
     wsRef.ws = decoy
 
     // Fire the old socket's 'close' event directly so the registered listener
-    // runs synchronously. ws's EventEmitter delivers to all listeners — the
+    // runs synchronously. ws's EventEmitter delivers to all listeners вЂ” the
     // one we care about is the connect()-scope handler with the captured ws.
     original.emit('close', 1006, Buffer.from('test stale'))
 
@@ -657,7 +655,7 @@ describe('WsCore — message handling on captured ws', () => {
   })
 
   it('close() forwards the close event to onClose so lifecycle can schedule reconnect', async () => {
-    const client = new WsCore()
+    const client = makeCore()
     client.logger = silentLogger
     await client.connect(makeConfig(server!.port), 'fake-token')
 
@@ -667,17 +665,17 @@ describe('WsCore — message handling on captured ws', () => {
     client.close()
 
     // ws emits 'close' on the next event-loop tick after the TCP FIN handshake;
-    // 50 ms is generous slack for CI. Do NOT shrink to 0 — close is async.
+    // 50 ms is generous slack for CI. Do NOT shrink to 0 вЂ” close is async.
     await new Promise<void>((r) => setTimeout(r, 50))
 
     // Contract under test: close() must NOT suppress its own close event.
     // Lifecycle.handleClose subscribes via onClose and is the only entity that
-    // schedules a reconnect — if onClose never fires, the bot goes silent.
+    // schedules a reconnect вЂ” if onClose never fires, the bot goes silent.
     expect(onCloseSpy).toHaveBeenCalledTimes(1)
   })
 
   it('terminate() forwards the close event to onClose so lifecycle can schedule reconnect', async () => {
-    const client = new WsCore()
+    const client = makeCore()
     client.logger = silentLogger
     await client.connect(makeConfig(server!.port), 'fake-token')
 
@@ -687,7 +685,7 @@ describe('WsCore — message handling on captured ws', () => {
     client.terminate()
 
     // ws emits 'close' on the next event-loop tick after the TCP FIN handshake;
-    // 50 ms is generous slack for CI. Do NOT shrink to 0 — close is async.
+    // 50 ms is generous slack for CI. Do NOT shrink to 0 вЂ” close is async.
     await new Promise<void>((r) => setTimeout(r, 50))
 
     // Contract under test: terminate() (used by escalateDeadConnection on
@@ -696,7 +694,7 @@ describe('WsCore — message handling on captured ws', () => {
   })
 
   it('sendMessage push (method="sendMessage") does NOT call onPush listeners; only onInboundMessage', async () => {
-    const client = new WsCore()
+    const client = makeCore()
     client.logger = silentLogger
     await client.connect(makeConfig(server!.port), 'fake-token')
 
@@ -737,7 +735,7 @@ describe('WsCore SO_KEEPALIVE on the underlying socket', () => {
   })
 
   it('enables SO_KEEPALIVE with the default 15s initial delay after WS handshake', async () => {
-    const client = new WsCore()
+    const client = makeCore()
     client.logger = silentLogger
     await client.connect(makeConfig(server!.port), 'fake-token')
 
@@ -753,24 +751,24 @@ describe('WsCore SO_KEEPALIVE on the underlying socket', () => {
   })
 })
 
-describe('ConnectionLifecycle DNS retry policy', () => {
-  it('DNS NetworkError increments retry counter; gives up after 5 attempts with onConnectionClosed(0,"dns_unreachable")', async () => {
+describe('WsCore DNS retry policy', () => {
+  it('DNS NetworkError increments retry counter; gives up after 5 attempts with onTerminal({kind:"dns_exhausted"})', async () => {
     vi.useFakeTimers()
     try {
-      const closedCb = vi.fn()
-      const client = new WsCore()
+      const terminalCb = vi.fn()
       const config = { serverUrl: 'missing.example.com', username: 'bot', password: 'secret', useTls: true } satisfies TrueConfAccountConfig
-      const lifecycle = new ConnectionLifecycle(client, config, silentLogger, { onConnectionClosed: closedCb })
+      const client = new WsCore({ account: config, logger: silentLogger })
+      client.onTerminal = terminalCb
 
       // Force every start() to throw a DNS NetworkError.
-      const startSpy = vi.spyOn(lifecycle, 'start').mockImplementation(async () => {
+      const startSpy = vi.spyOn(client, 'start').mockImplementation(async () => {
         throw new NetworkError('getaddrinfo ENOTFOUND missing.example.com', 'oauth', undefined, 'ENOTFOUND', 'getaddrinfo', 'missing.example.com')
       })
       // Stub close so we don't try to interact with a real socket.
       vi.spyOn(client, 'close').mockImplementation(() => {})
 
       // Trigger the first scheduleReconnect by simulating handleClose.
-      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+      ;(client as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
 
       // Drain timers up to a generous bound, allowing the chain of
       // setTimeout → start() (rejects) → setTimeout → ... to play out.
@@ -779,7 +777,8 @@ describe('ConnectionLifecycle DNS retry policy', () => {
       }
 
       expect(startSpy).toHaveBeenCalledTimes(5)
-      expect(closedCb).toHaveBeenCalledWith(0, 'dns_unreachable')
+      expect(terminalCb).toHaveBeenCalledTimes(1)
+      expect(terminalCb.mock.calls[0][0].kind).toBe('dns_exhausted')
     } finally {
       vi.useRealTimers()
     }
@@ -788,12 +787,12 @@ describe('ConnectionLifecycle DNS retry policy', () => {
   it('DNS-giveup also rejects the auth barrier so pending senders fail fast with dns_unreachable', async () => {
     vi.useFakeTimers()
     try {
-      const closedCb = vi.fn()
-      const client = new WsCore()
+      const terminalCb = vi.fn()
       const config = { serverUrl: 'missing.example.com', username: 'bot', password: 'secret', useTls: true } satisfies TrueConfAccountConfig
-      const lifecycle = new ConnectionLifecycle(client, config, silentLogger, { onConnectionClosed: closedCb })
+      const client = new WsCore({ account: config, logger: silentLogger })
+      client.onTerminal = terminalCb
 
-      const startSpy = vi.spyOn(lifecycle, 'start').mockImplementation(async () => {
+      const startSpy = vi.spyOn(client, 'start').mockImplementation(async () => {
         throw new NetworkError('getaddrinfo ENOTFOUND missing.example.com', 'oauth', undefined, 'ENOTFOUND', 'getaddrinfo', 'missing.example.com')
       })
       vi.spyOn(client, 'close').mockImplementation(() => {})
@@ -804,14 +803,15 @@ describe('ConnectionLifecycle DNS retry policy', () => {
       // flag the rejection while the timer chain is still draining.
       const waiterResult = waiter.then(() => ({ ok: true as const }), (err: Error) => ({ ok: false as const, err }))
 
-      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+      ;(client as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
 
       for (let i = 0; i < 10; i++) {
         await vi.advanceTimersByTimeAsync(120_000)
       }
 
       expect(startSpy).toHaveBeenCalledTimes(5)
-      expect(closedCb).toHaveBeenCalledWith(0, 'dns_unreachable')
+      expect(terminalCb).toHaveBeenCalledTimes(1)
+      expect(terminalCb.mock.calls[0][0].kind).toBe('dns_exhausted')
 
       const result = await waiterResult
       expect(result.ok).toBe(false)
@@ -824,17 +824,17 @@ describe('ConnectionLifecycle DNS retry policy', () => {
   it('non-DNS NetworkError (ECONNREFUSED) keeps retrying past 5 attempts', async () => {
     vi.useFakeTimers()
     try {
-      const closedCb = vi.fn()
-      const client = new WsCore()
+      const terminalCb = vi.fn()
       const config = { serverUrl: '127.0.0.1', username: 'bot', password: 'secret', useTls: false, port: 65111 } satisfies TrueConfAccountConfig
-      const lifecycle = new ConnectionLifecycle(client, config, silentLogger, { onConnectionClosed: closedCb })
+      const client = new WsCore({ account: config, logger: silentLogger })
+      client.onTerminal = terminalCb
 
-      const startSpy = vi.spyOn(lifecycle, 'start').mockImplementation(async () => {
+      const startSpy = vi.spyOn(client, 'start').mockImplementation(async () => {
         throw new NetworkError('connect ECONNREFUSED 127.0.0.1:65111', 'websocket', undefined, 'ECONNREFUSED', 'connect', '127.0.0.1')
       })
       vi.spyOn(client, 'close').mockImplementation(() => {})
 
-      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+      ;(client as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
 
       // Allow enough virtual time for >5 attempts; the cap is 60_000ms so 10
       // attempts fits inside ~10 minutes of timer time.
@@ -845,31 +845,30 @@ describe('ConnectionLifecycle DNS retry policy', () => {
       // Strictly more than 5 attempts proves the dns_unreachable bail-out did
       // not fire for ECONNREFUSED.
       expect(startSpy.mock.calls.length).toBeGreaterThan(5)
-      expect(closedCb).not.toHaveBeenCalledWith(0, 'dns_unreachable')
+      expect(terminalCb).not.toHaveBeenCalled()
 
       // Stop the chain so the test exits cleanly.
-      ;(lifecycle as unknown as { cancelReconnect: () => void }).cancelReconnect()
+      ;(client as unknown as { cancelReconnect: () => void }).cancelReconnect()
     } finally {
       vi.useRealTimers()
     }
   })
 })
 
-describe('ConnectionLifecycle OAuth retry policy', () => {
-  // Mirrors the DNS retry policy block above. The pattern is the same:
-  // useFakeTimers + spy on lifecycle.start() to throw a chosen NetworkError
+describe('WsCore OAuth retry policy', () => {
+  // useFakeTimers + spy on core.start() to throw a chosen NetworkError
   // shape + spy on client.close + invoke scheduleReconnect via the
   // `as unknown as { ... }` accessor + drain timers.
 
-  it('fires onTerminalFailure with kind=auth_exhausted after OAUTH_FAIL_LIMIT consecutive 401s', async () => {
+  it('fires onTerminal with kind=auth_exhausted after OAUTH_FAIL_LIMIT consecutive 401s', async () => {
     vi.useFakeTimers()
     try {
-      const onTerminalFailure = vi.fn()
-      const client = new WsCore()
+      const onTerminal = vi.fn()
       const config = { serverUrl: 'srv.example.com', useTls: true, port: 443, username: 'u', password: 'p', clientId: 'chat_bot', clientSecret: 's' } satisfies TrueConfAccountConfig
-      const lifecycle = new ConnectionLifecycle(client, config, silentLogger, { onTerminalFailure })
+      const client = new WsCore({ account: config, logger: silentLogger })
+      client.onTerminal = onTerminal
 
-      vi.spyOn(lifecycle, 'start').mockImplementation(async () => {
+      vi.spyOn(client, 'start').mockImplementation(async () => {
         throw new NetworkError(
           'OAuth token acquisition failed (401): bad creds',
           'oauth',
@@ -879,14 +878,14 @@ describe('ConnectionLifecycle OAuth retry policy', () => {
       })
       const closeSpy = vi.spyOn(client, 'close').mockImplementation(() => {})
 
-      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+      ;(client as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
 
       for (let i = 0; i < 10; i++) {
         await vi.advanceTimersByTimeAsync(120_000)
       }
 
-      expect(onTerminalFailure).toHaveBeenCalledTimes(1)
-      const arg = onTerminalFailure.mock.calls[0][0]
+      expect(onTerminal).toHaveBeenCalledTimes(1)
+      const arg = onTerminal.mock.calls[0][0]
       expect(arg.kind).toBe('auth_exhausted')
       expect(arg.retries).toBeGreaterThanOrEqual(3)
       expect(arg.cause).toBeInstanceOf(NetworkError)
@@ -901,20 +900,19 @@ describe('ConnectionLifecycle OAuth retry policy', () => {
   it('rejects the auth barrier so pending senders fail fast on auth_exhausted', async () => {
     vi.useFakeTimers()
     try {
-      const client = new WsCore()
       const config = { serverUrl: 'srv.example.com', useTls: true, port: 443, username: 'u', password: 'p', clientId: 'chat_bot', clientSecret: 's' } satisfies TrueConfAccountConfig
-      const lifecycle = new ConnectionLifecycle(client, config, silentLogger)
+      const client = new WsCore({ account: config, logger: silentLogger })
 
-      vi.spyOn(lifecycle, 'start').mockImplementation(async () => {
+      vi.spyOn(client, 'start').mockImplementation(async () => {
         throw new NetworkError('401', 'oauth', undefined, '401')
       })
       vi.spyOn(client, 'close').mockImplementation(() => {})
 
-      // Pre-attach swallow before driving timers (mirror DNS test line 643).
+      // Pre-attach swallow before driving timers.
       const authPromise = client.waitAuthenticated(60_000)
       authPromise.catch(() => {})
 
-      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+      ;(client as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
 
       for (let i = 0; i < 10; i++) {
         await vi.advanceTimersByTimeAsync(120_000)
@@ -932,23 +930,23 @@ describe('ConnectionLifecycle OAuth retry policy', () => {
   it('keeps retrying past the limit when OAuth returns transient 5xx', async () => {
     vi.useFakeTimers()
     try {
-      const onTerminalFailure = vi.fn()
-      const client = new WsCore()
+      const onTerminal = vi.fn()
       const config = { serverUrl: 'srv.example.com', useTls: true, port: 443, username: 'u', password: 'p', clientId: 'chat_bot', clientSecret: 's' } satisfies TrueConfAccountConfig
-      const lifecycle = new ConnectionLifecycle(client, config, silentLogger, { onTerminalFailure })
+      const client = new WsCore({ account: config, logger: silentLogger })
+      client.onTerminal = onTerminal
 
-      const startSpy = vi.spyOn(lifecycle, 'start').mockImplementation(async () => {
+      const startSpy = vi.spyOn(client, 'start').mockImplementation(async () => {
         throw new NetworkError('OAuth 500', 'oauth', undefined, '500')
       })
       vi.spyOn(client, 'close').mockImplementation(() => {})
 
-      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+      ;(client as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
 
       for (let i = 0; i < 10; i++) {
         await vi.advanceTimersByTimeAsync(120_000)
       }
 
-      expect(onTerminalFailure).not.toHaveBeenCalled()
+      expect(onTerminal).not.toHaveBeenCalled()
       // OAUTH_FAIL_LIMIT default is 3; expect more than that many start() attempts.
       expect(startSpy.mock.calls.length).toBeGreaterThan(3)
     } finally {
@@ -959,12 +957,12 @@ describe('ConnectionLifecycle OAuth retry policy', () => {
   it('resets the consecutive counter on a non-401/403 outcome between 401s (D-07)', async () => {
     vi.useFakeTimers()
     try {
-      const onTerminalFailure = vi.fn()
-      const client = new WsCore()
+      const onTerminal = vi.fn()
       const config = { serverUrl: 'srv.example.com', useTls: true, port: 443, username: 'u', password: 'p', clientId: 'chat_bot', clientSecret: 's' } satisfies TrueConfAccountConfig
-      const lifecycle = new ConnectionLifecycle(client, config, silentLogger, { onTerminalFailure })
+      const client = new WsCore({ account: config, logger: silentLogger })
+      client.onTerminal = onTerminal
 
-      vi.spyOn(lifecycle, 'start')
+      vi.spyOn(client, 'start')
         .mockImplementationOnce(async () => { throw new NetworkError('401', 'oauth', undefined, '401') })
         .mockImplementationOnce(async () => { throw new NetworkError('500', 'oauth', undefined, '500') })
         .mockImplementationOnce(async () => { throw new NetworkError('401', 'oauth', undefined, '401') })
@@ -973,14 +971,14 @@ describe('ConnectionLifecycle OAuth retry policy', () => {
         .mockImplementation(async () => { throw new NetworkError('500', 'oauth', undefined, '500') })
       vi.spyOn(client, 'close').mockImplementation(() => {})
 
-      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+      ;(client as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
 
       for (let i = 0; i < 10; i++) {
         await vi.advanceTimersByTimeAsync(120_000)
       }
 
       // Three 401s total but never 3 consecutive — counter resets each 500.
-      expect(onTerminalFailure).not.toHaveBeenCalled()
+      expect(onTerminal).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
     }
@@ -992,15 +990,15 @@ describe('ConnectionLifecycle OAuth retry policy', () => {
     // it with 401s so we drive 5 OAuth-phase failures total but never 3
     // consecutive 401s; the consecutive counter resets each timeout.
     // Without the parseInt guard a 'looser' code-classifier would mistake
-    // OAUTH_TIMEOUT for a terminal status and trip onTerminalFailure.
+    // OAUTH_TIMEOUT for a terminal status and trip onTerminal.
     vi.useFakeTimers()
     try {
-      const onTerminalFailure = vi.fn()
-      const client = new WsCore()
+      const onTerminal = vi.fn()
       const config = { serverUrl: 'srv.example.com', useTls: true, port: 443, username: 'u', password: 'p', clientId: 'chat_bot', clientSecret: 's' } satisfies TrueConfAccountConfig
-      const lifecycle = new ConnectionLifecycle(client, config, silentLogger, { onTerminalFailure })
+      const client = new WsCore({ account: config, logger: silentLogger })
+      client.onTerminal = onTerminal
 
-      const startSpy = vi.spyOn(lifecycle, 'start')
+      const startSpy = vi.spyOn(client, 'start')
         .mockImplementationOnce(async () => { throw new NetworkError('401', 'oauth', undefined, '401') })
         .mockImplementationOnce(async () => { throw new NetworkError('OAuth timeout', 'oauth', undefined, 'OAUTH_TIMEOUT') })
         .mockImplementationOnce(async () => { throw new NetworkError('401', 'oauth', undefined, '401') })
@@ -1009,28 +1007,27 @@ describe('ConnectionLifecycle OAuth retry policy', () => {
         .mockImplementation(async () => { throw new NetworkError('OAuth timeout', 'oauth', undefined, 'OAUTH_TIMEOUT') })
       vi.spyOn(client, 'close').mockImplementation(() => {})
 
-      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+      ;(client as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
 
       for (let i = 0; i < 10; i++) {
         await vi.advanceTimersByTimeAsync(120_000)
       }
 
       // Strictly more than OAUTH_FAIL_LIMIT (3) attempts proves the lifecycle
-      // kept retrying past the threshold, and onTerminalFailure was never
+      // kept retrying past the threshold, and onTerminal was never
       // tripped because no three 401s were consecutive.
       expect(startSpy.mock.calls.length).toBeGreaterThan(3)
-      expect(onTerminalFailure).not.toHaveBeenCalled()
+      expect(onTerminal).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
     }
   })
 })
 
-describe('ConnectionLifecycle.shutdown — auth barrier', () => {
+describe('WsCore.shutdown — auth barrier', () => {
   it('rejects pending waitAuthenticated() callers fast with a shutdown reason (no per-call timeout)', async () => {
-    const client = new WsCore()
     const config = { serverUrl: '127.0.0.1', username: 'bot', password: 'secret', useTls: false, port: 4309 } satisfies TrueConfAccountConfig
-    const lifecycle = new ConnectionLifecycle(client, config, silentLogger)
+    const client = new WsCore({ account: config, logger: silentLogger })
 
     // Pre-arm a long-timeout waiter — without the fix this would hang for 60s.
     const pending = client.waitAuthenticated(60_000)
@@ -1039,29 +1036,28 @@ describe('ConnectionLifecycle.shutdown — auth barrier', () => {
     vi.spyOn(client, 'close').mockImplementation(() => {})
 
     const t0 = Date.now()
-    lifecycle.shutdown()
+    client.shutdown()
     await expect(pending).rejects.toThrow(/lifecycle shutting down/)
     // The reject must propagate within a few ms, not the 60s timeout.
     expect(Date.now() - t0).toBeLessThan(500)
   })
 })
 
-describe('ConnectionLifecycle.forceReconnect — race-safe sequencing', () => {
+describe('WsCore.forceReconnect — race-safe sequencing', () => {
   it('rejects the old auth barrier, sets suppress flag, cancels timer, then closes', async () => {
-    const client = new WsCore()
     const config = { serverUrl: '127.0.0.1', username: 'bot', password: 'secret', useTls: false, port: 4309 } satisfies TrueConfAccountConfig
-    const lifecycle = new ConnectionLifecycle(client, config, silentLogger)
+    const client = new WsCore({ account: config, logger: silentLogger })
 
     // Pre-arm a pending waiter so we can confirm it rejects synchronously.
     const pending = client.waitAuthenticated(5000)
     // Replace start() so forceReconnect doesn't try to do real I/O.
     let startCalls = 0
-    vi.spyOn(lifecycle, 'start').mockImplementation(async () => {
+    vi.spyOn(client, 'start').mockImplementation(async () => {
       startCalls++
     })
     const closeSpy = vi.spyOn(client, 'close').mockImplementation(() => {})
 
-    const inflight = lifecycle.forceReconnect('203_credentials_expired')
+    const inflight = client.forceReconnect('203_credentials_expired')
 
     // The pending waiter must reject ~immediately because resetAuthBarrier
     // fires synchronously before any async work in forceReconnect.
@@ -1075,33 +1071,32 @@ describe('ConnectionLifecycle.forceReconnect — race-safe sequencing', () => {
     // (single-flight). start() is only invoked once for the whole window;
     // both callers wait on the same underlying reconnect attempt.
     let concurrentStartCalls = 0
-    vi.spyOn(lifecycle, 'start').mockImplementation(async () => {
+    vi.spyOn(client, 'start').mockImplementation(async () => {
       concurrentStartCalls++
       // Stall to verify single-flight: while we're in here, the second caller
       // arrives, sees reconnectInflight !== null, and short-circuits.
       await new Promise<void>((r) => setTimeout(r, 25))
     })
-    const a = lifecycle.forceReconnect('one')
-    const b = lifecycle.forceReconnect('two')
+    const a = client.forceReconnect('one')
+    const b = client.forceReconnect('two')
     await Promise.all([a, b])
     expect(concurrentStartCalls).toBe(1)
   })
 })
 
-describe('ConnectionLifecycle.handleClose — reconnect path on 1006', () => {
+describe('WsCore.handleClose — reconnect path on 1006', () => {
   it('handleClose(1006, "") schedules reconnect that invokes start()', async () => {
     vi.useFakeTimers()
     try {
-      const client = new WsCore()
       const config = { serverUrl: '127.0.0.1', username: 'bot', password: 'secret', useTls: false, port: 4309 } satisfies TrueConfAccountConfig
-      const lifecycle = new ConnectionLifecycle(client, config, silentLogger)
+      const client = new WsCore({ account: config, logger: silentLogger })
 
-      const startSpy = vi.spyOn(lifecycle, 'start').mockResolvedValue()
+      const startSpy = vi.spyOn(client, 'start').mockResolvedValue()
 
-      // ws.on('close') routes the close event into onClose → lifecycle.handleClose.
+      // ws.on('close') routes the close event into onClose → handleClose.
       // Drive the private method directly because that's where the reconnect
       // chain begins in production.
-      ;(lifecycle as unknown as { handleClose: (c: number, r: string) => void }).handleClose(1006, '')
+      ;(client as unknown as { handleClose: (c: number, r: string) => void }).handleClose(1006, '')
 
       expect(startSpy).not.toHaveBeenCalled()
 
@@ -1115,7 +1110,7 @@ describe('ConnectionLifecycle.handleClose — reconnect path on 1006', () => {
   })
 })
 
-describe('ConnectionLifecycle integration — server-side TCP-terminate triggers reconnect', () => {
+describe('WsCore integration — server-side TCP-terminate triggers reconnect', () => {
   let server: FakeWsServer | null = null
 
   beforeEach(async () => {
@@ -1123,9 +1118,9 @@ describe('ConnectionLifecycle integration — server-side TCP-terminate triggers
   })
 
   afterEach(async () => {
-    // Forcibly terminate any socket the lifecycle may have re-opened mid-
-    // shutdown — otherwise server.close() awaits a still-OPEN connection and
-    // the hook hits its 10s default timeout.
+    // Forcibly terminate any socket the core may have re-opened mid-shutdown —
+    // otherwise server.close() awaits a still-OPEN connection and the hook
+    // hits its 10s default timeout.
     if (server) {
       server.terminateActive()
       await server.close()
@@ -1135,24 +1130,21 @@ describe('ConnectionLifecycle integration — server-side TCP-terminate triggers
 
   it('1006 mid-life from server.terminateActive() → handleClose → reconnect → re-auth', async () => {
     let connectedCount = 0
-    let disconnectedCount = 0
-    const client = new WsCore()
-    client.logger = silentLogger
+    let reconnectingCount = 0
     const config = makeConfig(server!.port)
-    const lifecycle = new ConnectionLifecycle(client, config, silentLogger, {
-      onConnected: () => { connectedCount++ },
-      onDisconnected: () => { disconnectedCount++ },
-    })
+    const client = new WsCore({ account: config, logger: silentLogger })
+    client.onAuth(() => { connectedCount++ })
+    client.onState = (state) => { if (state === 'reconnecting') reconnectingCount++ }
 
     try {
       // First successful start() — runs real acquireToken (against fake OAuth)
       // and real client.connect() (against fake WS server).
-      await lifecycle.start()
+      await client.start()
       expect(connectedCount).toBe(1)
       expect(server!.connectionCount()).toBe(1)
 
-      // Simulate the colleague's symptom: server forcibly TCP-terminates the
-      // active socket. Client receives ws code=1006 with no close-frame.
+      // Server forcibly TCP-terminates the active socket. Client receives ws
+      // code=1006 with no close-frame.
       server!.terminateActive()
 
       // Wait long enough for the close event to propagate AND for the initial
@@ -1161,32 +1153,28 @@ describe('ConnectionLifecycle integration — server-side TCP-terminate triggers
       await new Promise<void>((resolve) => setTimeout(resolve, 4_000))
 
       // Reconnect must have happened: a second connection accepted by the fake
-      // server, and onConnected fired again.
+      // server, and onAuth fired again.
       expect(server!.connectionCount()).toBe(2)
       expect(connectedCount).toBe(2)
-      expect(disconnectedCount).toBeGreaterThanOrEqual(1)
+      expect(reconnectingCount).toBeGreaterThanOrEqual(1)
     } finally {
-      lifecycle.shutdown()
+      client.shutdown()
     }
   }, 10_000)
 
   it('inbound-then-terminate race: 1006 right after server-pushed message — reconnect still happens', async () => {
-    // Mirrors colleague's exact reported sequence: user writes → bot reads
-    // (server pushes type=1) → connection drops 1006. The race we worry about:
-    // an in-flight onInboundMessage callback running concurrently with the
-    // close event must not block or sabotage handleClose → scheduleReconnect.
+    // The race we worry about: an in-flight onInboundMessage callback running
+    // concurrently with the close event must not block or sabotage
+    // handleClose → scheduleReconnect.
     let connectedCount = 0
     let inboundReceived = 0
-    const client = new WsCore()
-    client.logger = silentLogger
-    client.onInboundMessage = () => { inboundReceived++ }
     const config = makeConfig(server!.port)
-    const lifecycle = new ConnectionLifecycle(client, config, silentLogger, {
-      onConnected: () => { connectedCount++ },
-    })
+    const client = new WsCore({ account: config, logger: silentLogger })
+    client.onInboundMessage = () => { inboundReceived++ }
+    client.onAuth(() => { connectedCount++ })
 
     try {
-      await lifecycle.start()
+      await client.start()
       expect(connectedCount).toBe(1)
 
       // Push inbound and terminate in the same tick — exercises the race.
@@ -1199,26 +1187,23 @@ describe('ConnectionLifecycle integration — server-side TCP-terminate triggers
       expect(server!.connectionCount()).toBe(2)
       expect(connectedCount).toBe(2)
     } finally {
-      lifecycle.shutdown()
+      client.shutdown()
     }
   }, 10_000)
 
-  it('onConnectionClosed callback throws synchronously — reconnect still proceeds', async () => {
+  it('onState callback throws synchronously — reconnect still proceeds', async () => {
     let connectedCount = 0
-    let closedCallCount = 0
-    const client = new WsCore()
-    client.logger = silentLogger
+    let stateCallCount = 0
     const config = makeConfig(server!.port)
-    const lifecycle = new ConnectionLifecycle(client, config, silentLogger, {
-      onConnected: () => { connectedCount++ },
-      onConnectionClosed: () => {
-        closedCallCount++
-        throw new Error('synthetic sync callback failure')
-      },
-    })
+    const client = new WsCore({ account: config, logger: silentLogger })
+    client.onAuth(() => { connectedCount++ })
+    client.onState = () => {
+      stateCallCount++
+      throw new Error('synthetic sync callback failure')
+    }
 
     try {
-      await lifecycle.start()
+      await client.start()
       expect(connectedCount).toBe(1)
 
       server!.terminateActive()
@@ -1226,63 +1211,22 @@ describe('ConnectionLifecycle integration — server-side TCP-terminate triggers
 
       // The throw was caught by handleClose's try/catch; scheduleReconnect ran;
       // re-auth completed. If the throw escaped, reconnect would never fire.
-      expect(closedCallCount).toBeGreaterThanOrEqual(1)
+      expect(stateCallCount).toBeGreaterThanOrEqual(1)
       expect(server!.connectionCount()).toBe(2)
       expect(connectedCount).toBe(2)
     } finally {
-      lifecycle.shutdown()
-    }
-  }, 10_000)
-
-  it('onConnectionClosed callback returns rejected Promise — reconnect still proceeds (no unhandledRejection break)', async () => {
-    // Top suspect for the colleague's bug: handleClose calls callback without
-    // await, so a returned rejected Promise becomes an unhandledRejection.
-    // In OpenClaw's runtime that may surface as a process-level fault; in
-    // isolation here we verify the lifecycle itself stays healthy.
-    let connectedCount = 0
-    let closedCallCount = 0
-    const unhandledHandler = (_reason: unknown) => { /* swallow for the test window */ }
-    process.on('unhandledRejection', unhandledHandler)
-
-    const client = new WsCore()
-    client.logger = silentLogger
-    const config = makeConfig(server!.port)
-    const lifecycle = new ConnectionLifecycle(client, config, silentLogger, {
-      onConnected: () => { connectedCount++ },
-      // eslint-disable-next-line @typescript-eslint/require-await
-      onConnectionClosed: (() => {
-        closedCallCount++
-        return Promise.reject(new Error('synthetic async callback failure'))
-      }) as unknown as (code: number, reason: string) => void,
-    })
-
-    try {
-      await lifecycle.start()
-      expect(connectedCount).toBe(1)
-
-      server!.terminateActive()
-      await new Promise<void>((resolve) => setTimeout(resolve, 4_000))
-
-      expect(closedCallCount).toBeGreaterThanOrEqual(1)
-      expect(server!.connectionCount()).toBe(2)
-      expect(connectedCount).toBe(2)
-    } finally {
-      process.off('unhandledRejection', unhandledHandler)
-      lifecycle.shutdown()
+      client.shutdown()
     }
   }, 10_000)
 
   it('three sequential server-terminates each trigger a clean reconnect (backoff resets after success)', async () => {
     let connectedCount = 0
-    const client = new WsCore()
-    client.logger = silentLogger
     const config = makeConfig(server!.port)
-    const lifecycle = new ConnectionLifecycle(client, config, silentLogger, {
-      onConnected: () => { connectedCount++ },
-    })
+    const client = new WsCore({ account: config, logger: silentLogger })
+    client.onAuth(() => { connectedCount++ })
 
     try {
-      await lifecycle.start()
+      await client.start()
       expect(connectedCount).toBe(1)
 
       for (let cycle = 2; cycle <= 4; cycle++) {
@@ -1294,13 +1238,13 @@ describe('ConnectionLifecycle integration — server-side TCP-terminate triggers
         expect(server!.connectionCount()).toBe(cycle)
       }
     } finally {
-      lifecycle.shutdown()
+      client.shutdown()
     }
   }, 20_000)
 
 })
 
-describe('LifecycleOptions.onTerminalFailure', () => {
+describe('WsCore.onTerminal', () => {
   const baseConfig = {
     serverUrl: 'srv.example',
     username: 'bot',
@@ -1309,48 +1253,46 @@ describe('LifecycleOptions.onTerminalFailure', () => {
     port: 4309,
   } satisfies TrueConfAccountConfig
 
-  it('fires onTerminalFailure with kind=shutdown when shutdown() is called', () => {
-    const ws = new WsCore()
-    const onTerminalFailure = vi.fn()
-    const lifecycle = new ConnectionLifecycle(ws, baseConfig, silentLogger, {
-      onTerminalFailure,
-    })
+  it('fires onTerminal with kind=shutdown when shutdown() is called', () => {
+    const onTerminal = vi.fn()
+    const ws = new WsCore({ account: baseConfig, logger: silentLogger })
+    ws.onTerminal = onTerminal
 
     // Stub close so we don't try to interact with a real socket.
     vi.spyOn(ws, 'close').mockImplementation(() => {})
 
-    lifecycle.shutdown()
+    ws.shutdown()
 
-    expect(onTerminalFailure).toHaveBeenCalledTimes(1)
-    const arg = onTerminalFailure.mock.calls[0][0]
+    expect(onTerminal).toHaveBeenCalledTimes(1)
+    const arg = onTerminal.mock.calls[0][0]
     expect(arg.kind).toBe('shutdown')
     expect(arg.cause).toBeInstanceOf(Error)
     expect(arg.cause.message).toBe('lifecycle shutting down')
   })
 
-  it('fires onTerminalFailure with kind=dns_exhausted after DNS_MAX_RETRIES exhausted', async () => {
+  it('fires onTerminal with kind=dns_exhausted after DNS_MAX_RETRIES exhausted', async () => {
     vi.useFakeTimers()
     try {
-      const onTerminalFailure = vi.fn()
-      const client = new WsCore()
+      const onTerminal = vi.fn()
       const config = { serverUrl: 'missing.example.com', username: 'bot', password: 'secret', useTls: true } satisfies TrueConfAccountConfig
-      const lifecycle = new ConnectionLifecycle(client, config, silentLogger, { onTerminalFailure })
+      const client = new WsCore({ account: config, logger: silentLogger })
+      client.onTerminal = onTerminal
 
       // Force every start() to throw a DNS NetworkError so the lifecycle
       // exhausts DNS_MAX_RETRIES and bails out via the terminal-failure path.
-      vi.spyOn(lifecycle, 'start').mockImplementation(async () => {
+      vi.spyOn(client, 'start').mockImplementation(async () => {
         throw new NetworkError('getaddrinfo ENOTFOUND missing.example.com', 'oauth', undefined, 'ENOTFOUND', 'getaddrinfo', 'missing.example.com')
       })
       vi.spyOn(client, 'close').mockImplementation(() => {})
 
-      ;(lifecycle as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
+      ;(client as unknown as { scheduleReconnect: () => void }).scheduleReconnect()
 
       for (let i = 0; i < 10; i++) {
         await vi.advanceTimersByTimeAsync(120_000)
       }
 
-      expect(onTerminalFailure).toHaveBeenCalledTimes(1)
-      const arg = onTerminalFailure.mock.calls[0][0]
+      expect(onTerminal).toHaveBeenCalledTimes(1)
+      const arg = onTerminal.mock.calls[0][0]
       expect(arg.kind).toBe('dns_exhausted')
       expect(arg.retries).toBeGreaterThanOrEqual(5)
       expect(arg.cause).toBeInstanceOf(NetworkError)
@@ -1360,18 +1302,16 @@ describe('LifecycleOptions.onTerminalFailure', () => {
     }
   })
 
-  it('does NOT fire onTerminalFailure on a single transient WS close', async () => {
-    const ws = new WsCore()
-    const onTerminalFailure = vi.fn()
-    const lifecycle = new ConnectionLifecycle(ws, baseConfig, silentLogger, {
-      onTerminalFailure,
-    })
+  it('does NOT fire onTerminal on a single transient WS close', async () => {
+    const onTerminal = vi.fn()
+    const ws = new WsCore({ account: baseConfig, logger: silentLogger })
+    ws.onTerminal = onTerminal
     // Simulate a transient close event going through handleClose: this would
-    // schedule a reconnect, but must NOT fire onTerminalFailure (that's
-    // reserved for shutdown / DNS exhaustion).
-    ;(lifecycle as unknown as { handleClose: (c: number, r: string) => void }).handleClose(1006, '')
-    expect(onTerminalFailure).not.toHaveBeenCalled()
+    // schedule a reconnect, but must NOT fire onTerminal (that's reserved for
+    // shutdown / DNS exhaustion).
+    ;(ws as unknown as { handleClose: (c: number, r: string) => void }).handleClose(1006, '')
+    expect(onTerminal).not.toHaveBeenCalled()
     // Stop the chain so the test exits cleanly.
-    ;(lifecycle as unknown as { cancelReconnect: () => void }).cancelReconnect()
+    ;(ws as unknown as { cancelReconnect: () => void }).cancelReconnect()
   })
 })

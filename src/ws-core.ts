@@ -183,14 +183,20 @@ interface Deferred {
   reject: (err: Error) => void
 }
 
+// Discriminated union over the bounded set of terminal lifecycle outcomes.
+// Receivers branch on `kind` instead of parsing message strings; the original
+// Error survives on `cause` for logging.
+export type TerminalCause =
+  | { kind: 'shutdown'; cause: Error }
+  | { kind: 'dns_exhausted'; retries: number; cause: NetworkError }
+  | { kind: 'auth_exhausted'; retries: number; cause: NetworkError }
+
 export interface WsCoreOptions {
+  account: TrueConfAccountConfig
+  logger: Logger
+  dispatcher?: Dispatcher
   ca?: Buffer
   tlsVerify?: boolean
-  // Optional reconnect adapter. When sendRequest sees errorCode=203
-  // CREDENTIALS_EXPIRED it calls back here to drive a full close → fresh-token
-  // reconnect, then retries the original request once. Without an adapter
-  // wired, the 203 response surfaces to the caller as-is.
-  forceReconnect?: (reason: string) => Promise<void>
 }
 
 export class WsCore {
@@ -205,7 +211,7 @@ export class WsCore {
   public onInboundMessage: ((msg: TrueConfRequest) => void | Promise<void>) | null = null
   public onClose: ((code: number, reason: string) => void) | null = null
   public onPong: (() => void) | null = null
-  public logger: Logger | null = null
+  public logger: Logger
   // Custom CA bundle for WebSocket TLS (downloaded by the setup wizard and
   // written to caPath). Passed straight through to ws's `ca` option.
   public ca: Buffer | undefined = undefined
@@ -217,17 +223,48 @@ export class WsCore {
 
   private pushListeners: Array<(method: string, payload: Record<string, unknown>) => void> = []
   private authListeners: Array<() => void> = []
-  private readonly forceReconnect?: (reason: string) => Promise<void>
+
+  // Lifecycle event surface. `onState` fans state-machine transitions; channel
+  // wires it for status reporting. `onTerminal` fires once on a give-up
+  // outcome (DNS exhausted, OAuth exhausted, shutdown).
+  public onState: ((state: 'connecting' | 'reconnecting' | 'closed', detail?: string) => void) | null = null
+  public onTerminal: ((cause: TerminalCause) => void) | null = null
+
+  private readonly config: TrueConfAccountConfig
+  private readonly dispatcher?: Dispatcher
+
+  // Lifecycle state, merged from the former ConnectionLifecycle class.
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  private tokenRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private lastPingAt = 0
+  private lastPongAt = 0
+  private backoffMs = 1000
+  private shuttingDown = false
+  private reconnecting = false
+  // Re-entry guard for start() itself, distinct from `reconnecting` (which
+  // handleClose sets to gate its own re-entry while a reconnect timer is
+  // armed). Prevents the boot-path race where the handshake-timeout-driven
+  // ws.terminate() emits a close event that handleClose would otherwise
+  // turn into a second scheduleReconnect() while start()'s catch is still
+  // re-throwing to the bootstrap caller.
+  private startInFlight = false
+  private dnsRetryCount = 0
+  private oauthFailCount = 0
+  private reconnectInflight: Promise<void> | null = null
+  private suppressNextCloseReconnect = false
 
   // Awaitable barrier between connect-start and auth-success. sendRequest
   // gates on this so callers can fire requests during a reconnect window
   // and have them automatically queue until the next auth completes.
   private authBarrier: Deferred = this.makeDeferred()
 
-  constructor(options?: WsCoreOptions) {
-    if (options?.ca) this.ca = options.ca
-    if (options?.tlsVerify === false) this.tlsVerify = false
-    this.forceReconnect = options?.forceReconnect
+  constructor(opts: WsCoreOptions) {
+    this.config = opts.account
+    this.logger = opts.logger
+    this.dispatcher = opts.dispatcher
+    if (opts.ca) this.ca = opts.ca
+    if (opts.tlsVerify === false) this.tlsVerify = false
   }
 
   // Returns the option bag passed to `new WebSocket(..., options)`. When
@@ -369,7 +406,7 @@ export class WsCore {
         try {
           underlying?.setKeepAlive?.(true, TCP_KEEPALIVE_MS)
         } catch (err) {
-          this.logger?.warn(`[trueconf] setKeepAlive failed: ${err instanceof Error ? err.message : String(err)}`)
+          this.logger.warn(`[trueconf] setKeepAlive failed: ${err instanceof Error ? err.message : String(err)}`)
         }
         const authId = this.idCounter.next()
         const authPromise = this.matcher.track(authId)
@@ -385,7 +422,7 @@ export class WsCore {
               for (const l of this.authListeners) {
                 try { l() }
                 catch (err) {
-                  this.logger?.error(
+                  this.logger.error(
                     `[trueconf] auth listener error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
                   )
                 }
@@ -405,7 +442,7 @@ export class WsCore {
         try {
           msg = JSON.parse(data.toString()) as typeof msg
         } catch (err) {
-          this.logger?.warn(
+          this.logger.warn(
             `[trueconf] Malformed JSON in message handler: ${err instanceof Error ? err.message : String(err)}`,
           )
           return
@@ -419,7 +456,7 @@ export class WsCore {
             try {
               ws.send(JSON.stringify({ type: 2, id: msg.id }))
             } catch (err) {
-              this.logger?.warn(
+              this.logger.warn(
                 `[trueconf] auto-ack failed: ${err instanceof Error ? err.message : String(err)}`,
               )
             }
@@ -451,7 +488,7 @@ export class WsCore {
             for (const l of this.pushListeners) {
               try { l(msg.method!, (msg.payload ?? {}) as Record<string, unknown>) }
               catch (err) {
-                this.logger?.error(
+                this.logger.error(
                   `[trueconf] push listener error for method=${msg.method}: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
                 )
               }
@@ -488,16 +525,17 @@ export class WsCore {
         // after a forced reconnect already swapped this.ws to a new socket).
         // Ignoring is correct: rejecting matcher pendings or clearing progress
         // handlers would clobber the new socket's in-flight state, and bubbling
-        // up to lifecycle.handleClose would schedule a redundant reconnect.
+        // up to handleClose would schedule a redundant reconnect.
         if (this.ws !== ws) {
-          this.logger?.info(`[trueconf] stale close from old socket (code=${code}); ignoring`)
+          this.logger.info(`[trueconf] stale close from old socket (code=${code}); ignoring`)
           return
         }
         this.matcher.rejectAll(NetworkError.parkable(
           'WebSocket closed: ' + code + ' ' + (reason?.toString() ?? ''),
         ))
         this.progressHandlers.clear()
-        this.onClose?.(code, reason?.toString() ?? '')
+        const reasonStr = reason?.toString() ?? ''
+        this.onClose?.(code, reasonStr)
       })
       ws.on('pong', () => this.onPong?.())
     })
@@ -515,7 +553,7 @@ export class WsCore {
     const chatIdSeg = typeof c === 'string' ? ` chatId=${c}` : ''
     const log = (event: 'wait_auth' | 'ack', extra = ''): void => {
       if (traceId === undefined) return
-      this.logger?.info(`[trueconf] outbound ${event}: qid=${traceId} method=${method}${chatIdSeg}${extra}`)
+      this.logger.info(`[trueconf] outbound ${event}: qid=${traceId} method=${method}${chatIdSeg}${extra}`)
     }
 
     await this.waitAuthenticated()
@@ -524,18 +562,9 @@ export class WsCore {
     log('ack', ` errorCode=${response.payload?.errorCode}`)
 
     if (response.payload?.errorCode === ErrorCode.CREDENTIALS_EXPIRED) {
-      this.logger?.warn(
+      this.logger.warn(
         `[trueconf] ${method} returned 203 CREDENTIALS_EXPIRED; forcing reconnect with fresh token`,
       )
-      if (!this.forceReconnect) {
-        // Fail-soft: surface the 203 instead of hanging forever. ConnectionLifecycle
-        // is the only entity allowed to drive reconnects; if it never wired the
-        // callback there is nothing safe we can do here.
-        this.logger?.error(
-          '[trueconf] 203 received but no forceReconnect callback wired; surfacing original response',
-        )
-        return response
-      }
       await this.forceReconnect('203_credentials_expired')
       await this.waitAuthenticated()
       log('wait_auth')
@@ -560,7 +589,7 @@ export class WsCore {
       if (traceId !== undefined) {
         const c = payload.chatId
         const chatIdSeg = typeof c === 'string' ? ` chatId=${c}` : ''
-        this.logger?.info(`[trueconf] outbound wire_send: qid=${traceId} method=${method}${chatIdSeg}`)
+        this.logger.info(`[trueconf] outbound wire_send: qid=${traceId} method=${method}${chatIdSeg}`)
       }
     } catch (err) {
       this.matcher.reject(id, err instanceof Error ? err : new Error(String(err)))
@@ -575,10 +604,6 @@ export class WsCore {
     this.ws.send(JSON.stringify(msg))
   }
 
-  close(): void {
-    this.ws?.close(1000, 'Client closing')
-  }
-
   ping(): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.ping()
   }
@@ -586,56 +611,12 @@ export class WsCore {
   terminate(): void {
     this.ws?.terminate()
   }
-}
 
-// Discriminated union over the bounded set of terminal lifecycle outcomes.
-// Receivers branch on `kind` instead of parsing message strings; the original
-// Error survives on `cause` for logging.
-export type TerminalCause =
-  | { kind: 'shutdown'; cause: Error }
-  | { kind: 'dns_exhausted'; retries: number; cause: NetworkError }
-  | { kind: 'auth_exhausted'; retries: number; cause: NetworkError }
-
-interface LifecycleOptions {
-  onConnectionClosed?: (code: number, reason: string) => void
-  onConnected?: () => void
-  onDisconnected?: () => void
-  // Fires once on terminal lifecycle outcome (not on transient close events,
-  // which go through onConnectionClosed and reconnect).
-  onTerminalFailure?: (terminal: TerminalCause) => void
-}
-
-// Liveness is governed by WebSocket protocol ping/pong (opcode 0x9/0xA) on a
-// 30s/10s schedule, mirroring python-trueconf-bot's websockets.connect
-// configuration. Pong timeout escalates via terminate() so the normal
-// close → scheduleReconnect path runs.
-export class ConnectionLifecycle {
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
-  private tokenRefreshTimer: ReturnType<typeof setTimeout> | null = null
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
-  private lastPingAt = 0
-  private lastPongAt = 0
-  private backoffMs = 1000
-  private shuttingDown = false
-  private reconnecting = false
-  // Re-entry guard for start() itself, distinct from `reconnecting` (which
-  // handleClose sets to gate its own re-entry while a reconnect timer is
-  // armed). Prevents the boot-path race where the handshake-timeout-driven
-  // ws.terminate() emits a close event that handleClose would otherwise
-  // turn into a second scheduleReconnect() while start()'s catch is still
-  // re-throwing to the bootstrap caller.
-  private startInFlight = false
-  private dnsRetryCount = 0
-  private oauthFailCount = 0
-  private reconnectInflight: Promise<void> | null = null
-  private suppressNextCloseReconnect = false
-
-  constructor(
-    private wsClient: WsCore,
-    private config: TrueConfAccountConfig,
-    private logger: Logger,
-    private options?: LifecycleOptions & { dispatcher?: Dispatcher },
-  ) {}
+  // ===== Lifecycle methods (merged from former ConnectionLifecycle) =====
+  //
+  // Liveness is governed by WebSocket protocol ping/pong (opcode 0x9/0xA);
+  // pong timeout escalates via terminate() so the normal close →
+  // scheduleReconnect path runs.
 
   async start(): Promise<void> {
     // Synchronous re-entry guard: a second start() while the first is still
@@ -649,27 +630,32 @@ export class ConnectionLifecycle {
       // Re-arm the auth barrier at the top of every start() so requests issued
       // during the reconnect window queue on the new attempt rather than seeing
       // the stale resolved promise from the previous session.
-      this.wsClient.resetAuthBarrier('lifecycle.start')
+      this.resetAuthBarrier('lifecycle.start')
+      try {
+        this.onState?.('connecting')
+      } catch (err) {
+        this.logger.warn(`[trueconf] onState(connecting) callback failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
       let tokenResponse: OAuthTokenResponse
       try {
-        tokenResponse = await acquireToken(this.config, { dispatcher: this.options?.dispatcher })
+        tokenResponse = await acquireToken(this.config, { dispatcher: this.dispatcher })
       } catch (err) {
         // Mark parkable so OutboundQueue items waiting on the auth barrier
         // park instead of rejecting; scheduleReconnect's catch decides
-        // terminal-vs-retry and fires onTerminalFailure -> failAll for the
+        // terminal-vs-retry and fires onTerminal -> failAll for the
         // give-up cases.
-        this.wsClient.markAuthFailed(NetworkError.asParkable(err))
+        this.markAuthFailed(NetworkError.asParkable(err))
         throw err
       }
       // Register lifecycle handlers BEFORE connect so a close event that fires
       // between auth completion and the first post-connect line still routes
       // through handleClose → scheduleReconnect.
-      this.wsClient.onClose = (code, reason) => this.handleClose(code, reason)
-      this.wsClient.onPong = () => { this.lastPongAt = Date.now() }
+      this.onClose = (code, reason) => this.handleClose(code, reason)
+      this.onPong = () => { this.lastPongAt = Date.now() }
       try {
-        await this.wsClient.connect(this.config, tokenResponse.access_token)
+        await this.connect(this.config, tokenResponse.access_token)
       } catch (err) {
-        this.wsClient.markAuthFailed(NetworkError.asParkable(err))
+        this.markAuthFailed(NetworkError.asParkable(err))
         throw err
       }
 
@@ -677,13 +663,8 @@ export class ConnectionLifecycle {
       this.reconnecting = false
       this.dnsRetryCount = 0
       this.oauthFailCount = 0
-      this.wsClient.markAuthenticated()
+      this.markAuthenticated()
       this.logger.info('[trueconf] Connected and authenticated')
-      try {
-        this.options?.onConnected?.()
-      } catch (err) {
-        this.logger.warn(`[trueconf] onConnected callback failed: ${err instanceof Error ? err.message : String(err)}`)
-      }
 
       this.startTimers(tokenResponse.expires_at)
     } finally {
@@ -698,15 +679,15 @@ export class ConnectionLifecycle {
     // waitAuthenticated() callers fail fast on shutdown instead of waiting
     // out their per-call timeout.
     const cause = new Error('lifecycle shutting down')
-    this.wsClient.markAuthFailed(cause)
+    this.markAuthFailed(cause)
     try {
-      this.options?.onTerminalFailure?.({ kind: 'shutdown', cause })
+      this.onTerminal?.({ kind: 'shutdown', cause })
     } catch (err) {
-      this.logger.warn(`[trueconf] onTerminalFailure callback failed: ${err instanceof Error ? err.message : String(err)}`)
+      this.logger.warn(`[trueconf] onTerminal callback failed: ${err instanceof Error ? err.message : String(err)}`)
     }
     this.stopTimers()
     this.cancelReconnect()
-    this.wsClient.close()
+    this.close()
   }
 
   // forceReconnect tears down the current connection and brings up a fresh
@@ -718,13 +699,13 @@ export class ConnectionLifecycle {
     if (this.reconnectInflight) return this.reconnectInflight
     this.logger.info(`[trueconf] Forced reconnect: ${reason}`)
 
-    this.wsClient.resetAuthBarrier(`forced reconnect: ${reason}`)
+    this.resetAuthBarrier(`forced reconnect: ${reason}`)
     this.suppressNextCloseReconnect = true
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
-    this.wsClient.close()
+    this.close()
 
     this.reconnectInflight = (async () => {
       try {
@@ -735,6 +716,10 @@ export class ConnectionLifecycle {
       }
     })()
     return this.reconnectInflight
+  }
+
+  close(): void {
+    this.ws?.close(1000, 'Client closing')
   }
 
   private startTimers(expiresAt: number): void {
@@ -760,9 +745,9 @@ export class ConnectionLifecycle {
   private handleClose(code: number, reason: string): void {
     this.stopTimers()
     try {
-      this.options?.onDisconnected?.()
+      this.onState?.('reconnecting', `close ${code}: ${reason}`)
     } catch (err) {
-      this.logger.warn(`[trueconf] onDisconnected callback failed: ${err instanceof Error ? err.message : String(err)}`)
+      this.logger.warn(`[trueconf] onState(reconnecting) callback failed: ${err instanceof Error ? err.message : String(err)}`)
     }
     if (this.shuttingDown || this.reconnecting || this.startInFlight) return
     if (this.suppressNextCloseReconnect) {
@@ -772,11 +757,6 @@ export class ConnectionLifecycle {
       return
     }
     this.logger.info(`[trueconf] Connection closed (code: ${code}, reason: "${reason}"), scheduling reconnect`)
-    try {
-      this.options?.onConnectionClosed?.(code, reason)
-    } catch (err) {
-      this.logger.warn(`[trueconf] onConnectionClosed callback failed: ${err instanceof Error ? err.message : String(err)}`)
-    }
     this.reconnecting = true
     this.scheduleReconnect()
   }
@@ -788,7 +768,7 @@ export class ConnectionLifecycle {
       return
     }
     try {
-      this.wsClient.ping()
+      this.ping()
       this.lastPingAt = Date.now()
     } catch (err) {
       this.logger.warn(`[trueconf] Heartbeat ping threw: ${err instanceof Error ? err.message : String(err)}`)
@@ -798,7 +778,7 @@ export class ConnectionLifecycle {
 
   private escalateDeadConnection(cause: string): void {
     this.logger.warn(`[trueconf] Terminating dead connection (${cause})`)
-    this.wsClient.terminate()
+    this.terminate()
   }
 
   private isDnsError(err: unknown): boolean {
@@ -828,7 +808,6 @@ export class ConnectionLifecycle {
             this.logger.error(
               `[trueconf] DNS resolve failed ${this.dnsRetryCount} times; check serverUrl. Giving up.`,
             )
-            try { this.options?.onConnectionClosed?.(0, 'dns_unreachable') } catch { /* swallow */ }
             // Reject the auth barrier so pending senders see the actionable
             // dns_unreachable reason immediately instead of timing out silently.
             // Use DNS_TERMINAL_CODE (paired with the transient DNS_ERROR_CODES
@@ -841,13 +820,13 @@ export class ConnectionLifecycle {
               undefined,
               DNS_TERMINAL_CODE,
             )
-            this.wsClient.markAuthFailed(cause)
+            this.markAuthFailed(cause)
             try {
-              this.options?.onTerminalFailure?.({ kind: 'dns_exhausted', retries: this.dnsRetryCount, cause })
+              this.onTerminal?.({ kind: 'dns_exhausted', retries: this.dnsRetryCount, cause })
             } catch (cbErr) {
-              this.logger.warn(`[trueconf] onTerminalFailure callback failed: ${cbErr instanceof Error ? cbErr.message : String(cbErr)}`)
+              this.logger.warn(`[trueconf] onTerminal callback failed: ${cbErr instanceof Error ? cbErr.message : String(cbErr)}`)
             }
-            this.wsClient.close()
+            this.close()
             return
           }
         } else if (this.isAuthTerminalError(err)) {
@@ -856,20 +835,19 @@ export class ConnectionLifecycle {
             this.logger.error(
               `[trueconf] OAuth authentication failed ${this.oauthFailCount} times; check bot credentials (username/password) on TrueConf Server. Giving up.`,
             )
-            try { this.options?.onConnectionClosed?.(0, 'oauth_unauthorized') } catch { /* swallow */ }
             const cause = new NetworkError(
               `oauth_unauthorized: gave up after ${this.oauthFailCount} consecutive 401/403`,
               'oauth',
               err instanceof Error ? err : undefined,
               OAUTH_TERMINAL_CODE,
             )
-            this.wsClient.markAuthFailed(cause)
+            this.markAuthFailed(cause)
             try {
-              this.options?.onTerminalFailure?.({ kind: 'auth_exhausted', retries: this.oauthFailCount, cause })
+              this.onTerminal?.({ kind: 'auth_exhausted', retries: this.oauthFailCount, cause })
             } catch (cbErr) {
-              this.logger.warn(`[trueconf] onTerminalFailure callback failed: ${cbErr instanceof Error ? cbErr.message : String(cbErr)}`)
+              this.logger.warn(`[trueconf] onTerminal callback failed: ${cbErr instanceof Error ? cbErr.message : String(cbErr)}`)
             }
-            this.wsClient.close()
+            this.close()
             return
           }
         } else {
@@ -893,6 +871,6 @@ export class ConnectionLifecycle {
   // ws library dispatches close events async; handleClose() sees
   // shuttingDown=false and fires scheduleReconnect → start() with a fresh token.
   private refreshAndReconnect(): void {
-    this.wsClient.close()
+    this.close()
   }
 }

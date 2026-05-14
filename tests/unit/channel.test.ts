@@ -68,13 +68,12 @@ describe('channel.ts caPath plumbing', () => {
 })
 
 describe('shutdownAccountEntry', () => {
-  it('calls lifecycle.shutdown() and dispatcher.close()', async () => {
+  it('calls wsClient.shutdown() and dispatcher.close()', async () => {
     const { shutdownAccountEntry } = await import('../../src/channel')
     const shutdown = vi.fn()
     const close = vi.fn().mockResolvedValue(undefined)
     const entry = {
-      lifecycle: { shutdown } as never,
-      wsClient: {} as never,
+      wsClient: { shutdown } as never,
       dispatcher: { close } as never,
     }
     shutdownAccountEntry(entry)
@@ -82,12 +81,11 @@ describe('shutdownAccountEntry', () => {
     expect(close).toHaveBeenCalledOnce()
   })
 
-  it('calls lifecycle.shutdown() only when dispatcher is absent', async () => {
+  it('calls wsClient.shutdown() only when dispatcher is absent', async () => {
     const { shutdownAccountEntry } = await import('../../src/channel')
     const shutdown = vi.fn()
     const entry = {
-      lifecycle: { shutdown } as never,
-      wsClient: {} as never,
+      wsClient: { shutdown } as never,
     }
     shutdownAccountEntry(entry)
     expect(shutdown).toHaveBeenCalledOnce()
@@ -98,8 +96,7 @@ describe('shutdownAccountEntry', () => {
     const shutdown = vi.fn()
     const close = vi.fn().mockRejectedValue(new Error('boom'))
     const entry = {
-      lifecycle: { shutdown } as never,
-      wsClient: {} as never,
+      wsClient: { shutdown } as never,
       dispatcher: { close } as never,
     }
     // Must not throw, even with the rejected promise pending.
@@ -226,51 +223,35 @@ describe('SDK push handler wire-up', () => {
   })
 })
 
-describe('forceReconnect injection', () => {
-  it('wsClient closure forwards forceReconnect to the lifecycle bound after construction', async () => {
-    const { makeForceReconnectAdapter } = await import('../../src/channel')
-    const ref: { lifecycle: { forceReconnect: ReturnType<typeof vi.fn> } | null } = { lifecycle: null }
-    const closure = makeForceReconnectAdapter(() => ref.lifecycle)
-
-    // Closure used before lifecycle is attached: must not throw, but the call
-    // is dropped (lifecycle hasn't been built yet — there is no reconnect path
-    // to invoke). Logger-side branch is verified separately by call count.
-    await closure('203_credentials_expired_pre_lifecycle')
-
-    const fr = vi.fn(async (_reason: string) => {})
-    ref.lifecycle = { forceReconnect: fr }
-    await closure('203_credentials_expired')
-    expect(fr).toHaveBeenCalledTimes(1)
-    expect(fr).toHaveBeenCalledWith('203_credentials_expired')
-  })
-})
-
-describe('startAccount onTerminalFailure → outboundQueue.failAll wiring', () => {
-  it('forwards terminal.cause to outboundQueue.failAll when ConnectionLifecycle fires onTerminalFailure', async () => {
+describe('startAccount onTerminal → outboundQueue.failAll wiring', () => {
+  it('forwards terminal.cause to outboundQueue.failAll when WsCore fires onTerminal', async () => {
     vi.resetModules()
 
-    type LifecycleOptionsCapture = {
-      onTerminalFailure?: (terminal: { kind: string; cause: Error; retries?: number }) => void
-    }
-    const lifecycleOptions: { value: LifecycleOptionsCapture | null } = { value: null }
+    type OnTerminalCb = (terminal: { kind: string; cause: Error; retries?: number }) => void
+    const captured: { onTerminal: OnTerminalCb | null } = { onTerminal: null }
     const failAllSpy = vi.fn()
     const outboundQueueSpy = { submit: vi.fn(), failAll: failAllSpy }
 
     vi.doMock('../../src/ws-core', async () => {
       const actual = await vi.importActual<typeof import('../../src/ws-core')>('../../src/ws-core')
-      class FakeLifecycle {
-        constructor(_ws: unknown, _cfg: unknown, _logger: unknown, opts: LifecycleOptionsCapture) {
-          lifecycleOptions.value = opts
-        }
-        async start(): Promise<void> { /* never resolve so startAccount stays parked */ }
-        shutdown(): void {}
-        async forceReconnect(): Promise<void> {}
-      }
       class FakeWsCore {
         botUserId: string | null = null
         logger: unknown = null
         ca: Buffer | undefined = undefined
         tlsVerify = true
+        onInboundMessage: unknown = null
+        // The contract under test: channel.ts assigns core.onTerminal.
+        // Capture every assignment so the test can fire it later.
+        _onTerminal: OnTerminalCb | null = null
+        get onTerminal(): OnTerminalCb | null { return this._onTerminal }
+        set onTerminal(v: OnTerminalCb | null) {
+          this._onTerminal = v
+          captured.onTerminal = v
+        }
+        onState: unknown = null
+        onClose: unknown = null
+        onPong: unknown = null
+        constructor(_opts: unknown) {}
         onAuth(_l: () => void): () => void { return () => {} }
         onPush(_l: unknown): () => void { return () => {} }
         async sendRequest(): Promise<never> { throw new Error('not used in this test') }
@@ -281,11 +262,13 @@ describe('startAccount onTerminalFailure → outboundQueue.failAll wiring', () =
         close(): void {}
         ping(): void {}
         terminate(): void {}
+        async start(): Promise<void> { /* never resolve so startAccount stays parked */ }
+        shutdown(): void {}
+        async forceReconnect(): Promise<void> {}
       }
       return {
         ...actual,
         WsCore: FakeWsCore,
-        ConnectionLifecycle: FakeLifecycle,
       }
     })
 
@@ -330,15 +313,13 @@ describe('startAccount onTerminalFailure → outboundQueue.failAll wiring', () =
       abortSignal: ac.signal,
     })
     // startAccount registers handlers synchronously in its prelude before
-    // awaiting lifecycle.start. One microtask flush is enough to land options.
+    // awaiting wsClient.start. One microtask flush is enough to land them.
     await new Promise((r) => setTimeout(r, 0))
 
-    expect(lifecycleOptions.value).not.toBeNull()
-    const cb = lifecycleOptions.value?.onTerminalFailure
-    expect(cb).toBeTypeOf('function')
+    expect(captured.onTerminal).not.toBeNull()
 
     const sentinelCause = new Error('sentinel-terminal-cause')
-    cb!({ kind: 'shutdown', cause: sentinelCause })
+    captured.onTerminal!({ kind: 'shutdown', cause: sentinelCause })
 
     expect(failAllSpy).toHaveBeenCalledTimes(1)
     expect(failAllSpy).toHaveBeenCalledWith(sentinelCause)

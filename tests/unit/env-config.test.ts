@@ -226,8 +226,8 @@ describe('env-config hasSetupShortcut', () => {
 })
 
 describe('env-config readPositiveIntWithDefault (via readHeartbeatIntervalMs)', () => {
-  it('returns default 30_000 when unset', () => {
-    expect(readHeartbeatIntervalMs()).toBe(30_000)
+  it('returns default 10_000 when unset', () => {
+    expect(readHeartbeatIntervalMs()).toBe(10_000)
   })
   it('returns parsed value on valid positive int', () => {
     process.env.TRUECONF_HEARTBEAT_INTERVAL_MS = '5000'
@@ -239,22 +239,22 @@ describe('env-config readPositiveIntWithDefault (via readHeartbeatIntervalMs)', 
   })
   it('falls back to default on non-numeric', () => {
     process.env.TRUECONF_HEARTBEAT_INTERVAL_MS = 'abc'
-    expect(readHeartbeatIntervalMs()).toBe(30_000)
+    expect(readHeartbeatIntervalMs()).toBe(10_000)
   })
   it('falls back to default on empty string', () => {
     process.env.TRUECONF_HEARTBEAT_INTERVAL_MS = ''
-    expect(readHeartbeatIntervalMs()).toBe(30_000)
+    expect(readHeartbeatIntervalMs()).toBe(10_000)
   })
   it('falls back to default on zero or negative', () => {
     process.env.TRUECONF_HEARTBEAT_INTERVAL_MS = '0'
-    expect(readHeartbeatIntervalMs()).toBe(30_000)
+    expect(readHeartbeatIntervalMs()).toBe(10_000)
     process.env.TRUECONF_HEARTBEAT_INTERVAL_MS = '-5'
-    expect(readHeartbeatIntervalMs()).toBe(30_000)
+    expect(readHeartbeatIntervalMs()).toBe(10_000)
   })
 })
 
 describe.each([
-  ['TRUECONF_HEARTBEAT_PONG_TIMEOUT_MS', readHeartbeatPongTimeoutMs, 10_000, '5000', 5000],
+  ['TRUECONF_HEARTBEAT_PONG_TIMEOUT_MS', readHeartbeatPongTimeoutMs, 5_000, '8000', 8000],
   ['TRUECONF_OAUTH_TIMEOUT_MS', readOauthTimeoutMs, 15_000, '8000', 8000],
   ['TRUECONF_WS_HANDSHAKE_TIMEOUT_MS', readWsHandshakeTimeoutMs, 20_000, '12000', 12000],
   ['TRUECONF_OAUTH_FAIL_LIMIT', readOauthFailLimit, 3, '5', 5],

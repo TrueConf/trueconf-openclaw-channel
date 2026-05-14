@@ -72,8 +72,8 @@ function readPositiveIntWithDefault(name: string, defaultValue: number): number 
   return parsed
 }
 
-export function readHeartbeatIntervalMs(): number { return readPositiveIntWithDefault('TRUECONF_HEARTBEAT_INTERVAL_MS', 30_000) }
-export function readHeartbeatPongTimeoutMs(): number { return readPositiveIntWithDefault('TRUECONF_HEARTBEAT_PONG_TIMEOUT_MS', 10_000) }
+export function readHeartbeatIntervalMs(): number { return readPositiveIntWithDefault('TRUECONF_HEARTBEAT_INTERVAL_MS', 10_000) }
+export function readHeartbeatPongTimeoutMs(): number { return readPositiveIntWithDefault('TRUECONF_HEARTBEAT_PONG_TIMEOUT_MS', 5_000) }
 export function readOauthTimeoutMs(): number { return readPositiveIntWithDefault('TRUECONF_OAUTH_TIMEOUT_MS', 15_000) }
 export function readWsHandshakeTimeoutMs(): number { return readPositiveIntWithDefault('TRUECONF_WS_HANDSHAKE_TIMEOUT_MS', 20_000) }
 export function readOauthFailLimit(): number { return readPositiveIntWithDefault('TRUECONF_OAUTH_FAIL_LIMIT', 3) }

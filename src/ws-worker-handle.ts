@@ -58,7 +58,23 @@ export class WsWorkerHandle {
   get botUserId(): string | null { return this._botUserId }
 
   async start(): Promise<void> {
-    this.spawnWorker()
+    // Mirror the old `await lifecycle.start()` contract: return only after
+    // the first auth round-trip has landed in main (via the wire-protocol
+    // 'auth' message). Callers downstream (channel.ts, tests) rely on
+    // `handle.botUserId` being non-null after start() resolves.
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        offAuth()
+        reject(new Error('handle.start: auth did not land within 30s'))
+      }, 30_000)
+      timer.unref?.()
+      const offAuth = this.onAuth(() => {
+        clearTimeout(timer)
+        offAuth()
+        resolve()
+      })
+      this.spawnWorker()
+    })
   }
 
   private spawnWorker(): void {

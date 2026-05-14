@@ -36,7 +36,10 @@ function mkHandle(): { handle: WsWorkerHandle; fake: FakeWorker } {
     config: mkConfig(),
     workerFactory: () => fake,
   })
-  void handle.start()
+  // Most tests don't simulate auth, so swallow the auth-timeout rejection
+  // from start()'s internal wait — these tests exercise the wire protocol,
+  // not the auth-completion contract.
+  void handle.start().catch(() => undefined)
   return { handle, fake }
 }
 

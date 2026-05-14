@@ -149,7 +149,7 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
   let getChatByIDOmitErrorCode = 0
   // Defaults to errorCode=1 (forced) to keep prior tests' semantics intact.
   // python-sdk-alignment scenario 1 sets it to 203 (CREDENTIALS_EXPIRED) so
-  // WsClient triggers a forceReconnect on the next getChatByID.
+  // WsCore triggers a forceReconnect on the next getChatByID.
   let getChatByIDErrorCode = 1
   function configureFailures(opts: { getChats?: number; getChatByID?: number; getChatByIDOmitErrorCode?: number; getChatByIDErrorCode?: number }): void {
     if (opts.getChats !== undefined) getChatsFailures = opts.getChats

@@ -206,7 +206,7 @@ describe('integration: OutboundQueue end-to-end', () => {
   }, 20_000)
 
   // DNS-terminal end-to-end coverage is provided by:
-  // - tests/unit/ws-client.test.ts: 'fires onTerminalFailure after DNS_MAX_RETRIES exhausted'
+  // - tests/unit/ws-core.test.ts: 'fires onTerminalFailure after DNS_MAX_RETRIES exhausted'
   // - tests/unit/outbound-queue.test.ts: 'failAll(err) rejects all pending items and unsubscribes onAuth'
   // - tests/unit/outbound-queue.test.ts: 'submit after failAll throws terminal error immediately'
   // Wiring (channel.ts: onTerminalFailure → outboundQueue.failAll) is type-checked at

@@ -183,7 +183,7 @@ interface Deferred {
   reject: (err: Error) => void
 }
 
-export interface WsClientOptions {
+export interface WsCoreOptions {
   ca?: Buffer
   tlsVerify?: boolean
   // Optional reconnect adapter. When sendRequest sees errorCode=203
@@ -193,7 +193,7 @@ export interface WsClientOptions {
   forceReconnect?: (reason: string) => Promise<void>
 }
 
-export class WsClient {
+export class WsCore {
   private ws: WebSocket | null = null
   private idCounter = new IdCounter()
   private matcher = new RequestMatcher()
@@ -224,7 +224,7 @@ export class WsClient {
   // and have them automatically queue until the next auth completes.
   private authBarrier: Deferred = this.makeDeferred()
 
-  constructor(options?: WsClientOptions) {
+  constructor(options?: WsCoreOptions) {
     if (options?.ca) this.ca = options.ca
     if (options?.tlsVerify === false) this.tlsVerify = false
     this.forceReconnect = options?.forceReconnect
@@ -631,7 +631,7 @@ export class ConnectionLifecycle {
   private suppressNextCloseReconnect = false
 
   constructor(
-    private wsClient: WsClient,
+    private wsClient: WsCore,
     private config: TrueConfAccountConfig,
     private logger: Logger,
     private options?: LifecycleOptions & { dispatcher?: Dispatcher },

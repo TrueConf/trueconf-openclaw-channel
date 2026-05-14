@@ -256,8 +256,8 @@ describe('startAccount onTerminalFailure → outboundQueue.failAll wiring', () =
     const failAllSpy = vi.fn()
     const outboundQueueSpy = { submit: vi.fn(), failAll: failAllSpy }
 
-    vi.doMock('../../src/ws-client', async () => {
-      const actual = await vi.importActual<typeof import('../../src/ws-client')>('../../src/ws-client')
+    vi.doMock('../../src/ws-core', async () => {
+      const actual = await vi.importActual<typeof import('../../src/ws-core')>('../../src/ws-core')
       class FakeLifecycle {
         constructor(_ws: unknown, _cfg: unknown, _logger: unknown, opts: LifecycleOptionsCapture) {
           lifecycleOptions.value = opts
@@ -266,7 +266,7 @@ describe('startAccount onTerminalFailure → outboundQueue.failAll wiring', () =
         shutdown(): void {}
         async forceReconnect(): Promise<void> {}
       }
-      class FakeWsClient {
+      class FakeWsCore {
         botUserId: string | null = null
         logger: unknown = null
         ca: Buffer | undefined = undefined
@@ -284,7 +284,7 @@ describe('startAccount onTerminalFailure → outboundQueue.failAll wiring', () =
       }
       return {
         ...actual,
-        WsClient: FakeWsClient,
+        WsCore: FakeWsCore,
         ConnectionLifecycle: FakeLifecycle,
       }
     })
@@ -344,7 +344,7 @@ describe('startAccount onTerminalFailure → outboundQueue.failAll wiring', () =
     expect(failAllSpy).toHaveBeenCalledWith(sentinelCause)
 
     ac.abort()
-    vi.doUnmock('../../src/ws-client')
+    vi.doUnmock('../../src/ws-core')
     vi.doUnmock('../../src/outbound-queue')
     vi.doUnmock('openclaw/plugin-sdk/channel-inbound')
     vi.resetModules()

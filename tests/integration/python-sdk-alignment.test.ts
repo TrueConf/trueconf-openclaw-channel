@@ -83,7 +83,7 @@ describe('integration: python-sdk-alignment smoke', () => {
   // ---------- Scenario 1 ----------
   // Full reconnect via transport-level 203:
   //   - First getChatByID → server returns errorCode=203 (CREDENTIALS_EXPIRED).
-  //   - WsClient calls forceReconnect → ConnectionLifecycle re-auths with a
+  //   - WsCore calls forceReconnect → ConnectionLifecycle re-auths with a
   //     fresh OAuth token.
   //   - Retried getChatByID returns errorCode=0 → original caller sees success.
   //   - Auth count grew to 2; OAuth was fetched twice.

@@ -63,7 +63,7 @@ export function hasSetupShortcut(): boolean {
 }
 
 // Returns defaultValue on unset/empty/non-numeric/<=0 — matches the prior
-// ws-client readEnvMs helper.
+// ws-core readEnvMs helper.
 function readPositiveIntWithDefault(name: string, defaultValue: number): number {
   const raw = process.env[name]?.trim()
   if (!raw) return defaultValue

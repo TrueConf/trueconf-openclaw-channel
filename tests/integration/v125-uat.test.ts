@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// ENV vars MUST be set before any import that pulls in src/ws-client.ts —
+// ENV vars MUST be set before any import that pulls in src/ws-core.ts —
 // HEARTBEAT_INTERVAL_MS / OAUTH_TIMEOUT_MS / OAUTH_FAIL_LIMIT etc. are
 // frozen at module load (see plans 02-01..02-03 D-05). ES static imports are
 // hoisted above plain top-level statements, so vi.hoisted is the only way to

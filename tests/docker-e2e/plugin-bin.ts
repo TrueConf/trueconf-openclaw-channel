@@ -17,7 +17,7 @@
 // docker bridge network, with two separate processes and a real OS-level
 // socket between them.
 
-import { WsClient, ConnectionLifecycle } from '../../src/ws-client'
+import { WsCore, ConnectionLifecycle } from '../../src/ws-core'
 import { OutboundQueue } from '../../src/outbound-queue'
 import type { TrueConfAccountConfig, Logger, TrueConfResponse } from '../../src/types'
 
@@ -53,7 +53,7 @@ async function main() {
     port: FAKE_PORT,
   }
 
-  const wsClient = new WsClient({})
+  const wsClient = new WsCore({})
   wsClient.logger = logger
   const outboundQueue = new OutboundQueue(wsClient, logger)
 

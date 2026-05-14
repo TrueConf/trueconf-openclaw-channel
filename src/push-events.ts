@@ -63,7 +63,7 @@ export class BoundedSeen {
  * `false` if the method is unknown to this SDK.
  *
  * NOTE: `sendMessage` and `uploadFileProgress` are NOT handled here —
- * `inbound.ts` and `ws-client.ts` (progress handlers) own those respectively.
+ * `inbound.ts` and `ws-core.ts` (progress handlers) own those respectively.
  */
 export function handleSdkPushEvent(method: string, payload: unknown, ctx: PushEventContext): boolean {
   switch (method) {

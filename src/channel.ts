@@ -36,7 +36,7 @@ import {
 import { trueconfSetupWizard } from './channel-setup'
 import { trueconfSetupAdapter } from './setup-shared'
 import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './always-respond'
-import { WsClient, ConnectionLifecycle } from './ws-client'
+import { WsCore, ConnectionLifecycle } from './ws-core'
 import { OutboundQueue } from './outbound-queue'
 import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage, InboundExtraContext, InboundMediaContext } from './types'
 import { widenExtraContext } from './types'
@@ -76,7 +76,7 @@ export function loadCaFromAccount(account: ResolvedAccount): Buffer | undefined 
 
 export interface AccountEntry {
   lifecycle: ConnectionLifecycle
-  wsClient: WsClient
+  wsClient: WsCore
   dispatcher?: Dispatcher
   unsubscribers?: Array<() => void>
   // Per-account state. limits/sendQueue must NOT be channel-wide:
@@ -96,7 +96,7 @@ export interface AccountEntry {
 // redeploy. close() rejections are swallowed — shutdown is best-effort.
 export function shutdownAccountEntry(entry: {
   lifecycle: ConnectionLifecycle
-  wsClient: WsClient
+  wsClient: WsCore
   dispatcher?: Dispatcher
   unsubscribers?: Array<() => void>
 }): void {
@@ -215,7 +215,7 @@ export function invalidateChatState(
   store.recentBotMsgIdsByChat.delete(chatId)
 }
 
-// Lazy-closure adapter for the WsClient `forceReconnect` option. WsClient is
+// Lazy-closure adapter for the WsCore `forceReconnect` option. WsCore is
 // constructed BEFORE `lifecycle` exists (chicken-and-egg: lifecycle holds
 // wsClient). The closure resolves `lifecycle` at call time via the supplied
 // getter, so the binding becomes valid before any 203 response can arrive.
@@ -223,7 +223,7 @@ export function invalidateChatState(
 // If the closure fires before `lifecycle` is set (truly impossible in practice
 // because requests gate on the auth barrier, but defensive), the call is
 // dropped — surfacing the original error is preferable to throwing in a code
-// path WsClient cannot recover from.
+// path WsCore cannot recover from.
 export function makeForceReconnectAdapter(
   getLifecycle: () => { forceReconnect: (reason: string) => Promise<void> } | null,
 ): (reason: string) => Promise<void> {
@@ -234,14 +234,14 @@ export function makeForceReconnectAdapter(
   }
 }
 
-// Wires the SDK push handler onto WsClient.onPush. Returns the unsubscribe
+// Wires the SDK push handler onto WsCore.onPush. Returns the unsubscribe
 // returned by onPush so the account-shutdown path can drop the listener.
 //
 // This handler runs alongside (NOT instead of) the always-respond resolver
-// listener — both subscribe via `wsClient.onPush(...)` and WsClient fans out
+// listener — both subscribe via `wsClient.onPush(...)` and WsCore fans out
 // to every registered listener for each push event.
 export function registerSdkPushHandler(args: {
-  wsClient: WsClient
+  wsClient: WsCore
   store: RuntimeStore
   accountId: string
   limits: FileUploadLimits
@@ -557,11 +557,11 @@ export const channelPlugin = {
       const sendQueue = new PerChatSendQueue()
 
       // Lazy-bound lifecycle reference: the wsClient receives `forceReconnect`
-      // as a closure that resolves the lifecycle at call time. WsClient is
+      // as a closure that resolves the lifecycle at call time. WsCore is
       // constructed first because `lifecycle` needs it; the closure stays safe
       // because requests gate on the auth barrier that lifecycle.start() flips.
       let lifecycleRef: ConnectionLifecycle | null = null
-      const wsClient = new WsClient({
+      const wsClient = new WsCore({
         ca,
         tlsVerify,
         forceReconnect: makeForceReconnectAdapter(() => lifecycleRef),
@@ -900,7 +900,7 @@ export const channelPlugin = {
         })
       })
       // SDK-push handler runs ALONGSIDE the always-respond push listener:
-      // both subscribe via onPush and WsClient fans out to every listener.
+      // both subscribe via onPush and WsCore fans out to every listener.
       // Routes server-side getFileUploadLimits / removeChat / editMessage /
       // removeMessage / clearHistory pushes to the right handlers.
       const unsubscribeSdkPush = registerSdkPushHandler({

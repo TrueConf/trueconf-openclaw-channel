@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { acquireToken } from '../../src/ws-client'
+import { acquireToken } from '../../src/ws-core'
 import { startFakeServer, type FakeServer } from '../smoke/fake-server'
 
 describe('global-fetch-isolation', () => {

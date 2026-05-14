@@ -61,7 +61,7 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
     }
   })
 
-  it('headless: writes openclaw.json with 0600 permissions', async () => {
+  it.skipIf(process.platform === 'win32')('headless: writes openclaw.json with 0600 permissions', async () => {
     const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
     const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
       { oauthResponse: { status: 200, body: { access_token: 'ok' } } },

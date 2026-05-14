@@ -6,7 +6,7 @@ vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
 
 import { dispatchInboundDirectDmWithRuntime } from 'openclaw/plugin-sdk/channel-inbound'
 import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
-import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
+import { startFakeServer, waitFor, waitForAccountReady, type FakeServer } from '../smoke/fake-server'
 import type { TrueConfFlatConfig } from '../../src/types'
 
 const dispatch = vi.mocked(dispatchInboundDirectDmWithRuntime)
@@ -44,6 +44,7 @@ async function bootPlugin(server: FakeServer, extraConfig: Partial<TrueConfFlatC
     abortSignal: ac.signal,
   })
   await waitFor(() => server.authRequests.length >= 1 && server.connections.size > 0)
+  await waitForAccountReady('default')
   return { abort: () => ac.abort(), startPromise, logger }
 }
 

@@ -8,7 +8,7 @@ import {
 } from '../../src/inbound'
 import { EnvelopeType, TrueConfChatType, type InboundMessage, type TrueConfRequest } from '../../src/types'
 
-interface FakeWsClient {
+interface FakeWsCore {
   botUserId: string | null
   sendRequest: ReturnType<typeof vi.fn>
   send: ReturnType<typeof vi.fn>
@@ -18,7 +18,7 @@ interface Harness {
   ctx: InboundContext
   dispatch: ReturnType<typeof vi.fn>
   logger: { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> }
-  wsClient: FakeWsClient
+  wsClient: FakeWsCore
   chatTypes: Map<string, 'p2p' | 'group' | 'channel' | 'unknown'>
   recentBotMsgIds: Map<string, Set<string>>
   alwaysRespondChats: Set<string>
@@ -34,7 +34,7 @@ const GROUP_CHAT = 'group_42'
 function makeHarness(opts?: { chatType?: 'p2p' | 'group' }): Harness {
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
   const dispatch = vi.fn()
-  const wsClient: FakeWsClient = {
+  const wsClient: FakeWsCore = {
     botUserId: BOT_ID,
     sendRequest: vi.fn(async (method: string) => {
       if (method === 'getChatByID') {
@@ -304,7 +304,7 @@ describe('handleInboundMessage — envelope routing 201/203/204', () => {
     )
     await flushCoalesce()
 
-    // No ws-level send was triggered from inbound (auto-ack is now in WsClient).
+    // No ws-level send was triggered from inbound (auto-ack is now in WsCore).
     expect(h.wsClient.send).not.toHaveBeenCalled()
   })
 })

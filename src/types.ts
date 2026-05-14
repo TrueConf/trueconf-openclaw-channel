@@ -282,7 +282,7 @@ export type NetworkErrorPhase = 'oauth' | 'websocket' | 'ws-handshake' | 'ws-mes
 
 export class NetworkError extends Error {
   // Marks errors the OutboundQueue should park-and-retry rather than
-  // surface to callers. Set true on the WsClient throw sites whose recovery
+  // surface to callers. Set true on the WsCore throw sites whose recovery
   // is "wait for next auth event"; default false everywhere else so a hard
   // network/oauth failure stays observable.
   readonly parkable: boolean

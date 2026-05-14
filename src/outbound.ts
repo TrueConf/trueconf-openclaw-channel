@@ -4,7 +4,7 @@ import sharp from 'sharp'
 import type { Dispatcher } from 'undici'
 import { ErrorCode } from './types'
 import type { Logger, TrueConfChannelConfig, TrueConfResponse } from './types'
-import { hostPort } from './ws-client'
+import { hostPort } from './ws-core'
 import {
   CAPTION_LIMIT,
   bytesToMB,

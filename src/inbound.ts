@@ -20,7 +20,8 @@ import type {
   ResolvedChatKind,
   AttachmentContent,
 } from './types'
-import { WsClient, hostPort } from './ws-client'
+import { hostPort } from './ws-core'
+import type { WsWorkerHandle } from './ws-worker-handle'
 import { sendText, sendTextToChat, isReconnectableSendError } from './outbound'
 import { resolveAccount } from './config'
 import { PerChatSendQueue } from './send-queue'
@@ -83,7 +84,7 @@ export function rememberBotMessage(
 // group mention/reply gate during transient failures and cause unsolicited
 // replies in groups/channels.
 export async function resolveChatType(params: {
-  wsClient: WsClient
+  wsClient: WsWorkerHandle
   chatId: string
   cache: Map<string, ResolvedChatKind>
   inflight: Map<string, Promise<ResolvedChatKind>>
@@ -179,7 +180,7 @@ function requireNonEmpty(kind: string, value: string): string {
 }
 
 export interface InboundContext {
-  wsClient: WsClient
+  wsClient: WsWorkerHandle
   botIdentityCandidates: string[]
   accountId: string
   dispatch: InboundDispatchFn
@@ -195,8 +196,8 @@ export async function handleInboundMessage(
   msg: TrueConfRequest,
   ctx: InboundContext,
 ): Promise<void> {
-  // Auto-ack happens in WsClient.connect's ws.on('message') handler — see
-  // ws-client.ts. handleInboundMessage only routes sendMessage envelopes.
+  // Auto-ack happens in WsCore.connect's ws.on('message') handler — see
+  // ws-core.ts. handleInboundMessage only routes sendMessage envelopes.
   if (msg.method !== 'sendMessage') return
 
   const envelope = msg.payload as unknown as Envelope | undefined
@@ -548,7 +549,7 @@ export function getMaxFileSize(cfg: TrueConfChannelConfig): number {
 // senders the progress event fires once the inter-server BitTorrent transfer
 // completes.
 async function waitUploadComplete(
-  wsClient: WsClient,
+  wsClient: WsWorkerHandle,
   fileId: string,
   expectedSize: number,
   timeoutMs: number,
@@ -599,14 +600,14 @@ async function waitUploadComplete(
 // The server can lag the readyState flip by a few hundred ms, so we retry
 // for a short window to get a fresh downloadUrl with READY state.
 async function pollForReady(
-  wsClient: WsClient,
+  wsClient: WsWorkerHandle,
   fileId: string,
   timeoutMs: number,
   logger: Logger,
 ): Promise<FileInfo | null> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    let resp: Awaited<ReturnType<WsClient['sendRequest']>>
+    let resp: Awaited<ReturnType<WsWorkerHandle['sendRequest']>>
     try {
       resp = await wsClient.sendRequest('getFileInfo', { fileId })
     } catch (err) {
@@ -638,7 +639,7 @@ export interface InboundAttachmentReady {
 // onRecordError, or onDispatchError.
 export async function prepareInboundAttachment(params: {
   inboundMsg: InboundMessage
-  wsClient: WsClient
+  wsClient: WsWorkerHandle
   accountId: string
   store: { directChatsByStableUserId: Map<string, string> }
   channelConfig: TrueConfChannelConfig
@@ -702,7 +703,7 @@ export async function prepareInboundAttachment(params: {
   }
 
   try {
-    let infoResp: Awaited<ReturnType<WsClient['sendRequest']>>
+    let infoResp: Awaited<ReturnType<WsWorkerHandle['sendRequest']>>
     try {
       infoResp = await wsClient.sendRequest('getFileInfo', { fileId: attachment.fileId })
     } catch (err) {

@@ -5,7 +5,7 @@ vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
 }))
 
 import { __getAccountsForTesting, __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
-import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
+import { startFakeServer, waitFor, waitForAccountReady, type FakeServer } from '../smoke/fake-server'
 
 interface Harness {
   abort: () => void
@@ -40,6 +40,7 @@ async function bootPlugin(server: FakeServer): Promise<Harness> {
     abortSignal: ac.signal,
   })
   await waitFor(() => server.authRequests.length >= 1 && server.connections.size > 0)
+  await waitForAccountReady('default')
   return { abort: () => ac.abort(), startPromise, logger }
 }
 
@@ -206,7 +207,7 @@ describe('integration: OutboundQueue end-to-end', () => {
   }, 20_000)
 
   // DNS-terminal end-to-end coverage is provided by:
-  // - tests/unit/ws-client.test.ts: 'fires onTerminalFailure after DNS_MAX_RETRIES exhausted'
+  // - tests/unit/ws-core.test.ts: 'fires onTerminalFailure after DNS_MAX_RETRIES exhausted'
   // - tests/unit/outbound-queue.test.ts: 'failAll(err) rejects all pending items and unsubscribes onAuth'
   // - tests/unit/outbound-queue.test.ts: 'submit after failAll throws terminal error immediately'
   // Wiring (channel.ts: onTerminalFailure → outboundQueue.failAll) is type-checked at

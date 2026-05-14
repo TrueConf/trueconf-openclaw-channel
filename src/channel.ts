@@ -36,7 +36,7 @@ import {
 import { trueconfSetupWizard } from './channel-setup'
 import { trueconfSetupAdapter } from './setup-shared'
 import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './always-respond'
-import { WsClient, ConnectionLifecycle } from './ws-client'
+import { WsWorkerHandle } from './ws-worker-handle'
 import { OutboundQueue } from './outbound-queue'
 import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage, InboundExtraContext, InboundMediaContext } from './types'
 import { widenExtraContext } from './types'
@@ -75,8 +75,7 @@ export function loadCaFromAccount(account: ResolvedAccount): Buffer | undefined 
 }
 
 export interface AccountEntry {
-  lifecycle: ConnectionLifecycle
-  wsClient: WsClient
+  wsClient: WsWorkerHandle
   dispatcher?: Dispatcher
   unsubscribers?: Array<() => void>
   // Per-account state. limits/sendQueue must NOT be channel-wide:
@@ -95,13 +94,12 @@ export interface AccountEntry {
 // and rolling restart would otherwise leak sockets per account on every
 // redeploy. close() rejections are swallowed — shutdown is best-effort.
 export function shutdownAccountEntry(entry: {
-  lifecycle: ConnectionLifecycle
-  wsClient: WsClient
+  wsClient: WsWorkerHandle
   dispatcher?: Dispatcher
   unsubscribers?: Array<() => void>
 }): void {
   for (const u of entry.unsubscribers ?? []) try { u() } catch { /* ignore */ }
-  entry.lifecycle.shutdown()
+  void entry.wsClient.close()
   entry.dispatcher?.close().catch(() => { /* best-effort */ })
 }
 
@@ -215,33 +213,15 @@ export function invalidateChatState(
   store.recentBotMsgIdsByChat.delete(chatId)
 }
 
-// Lazy-closure adapter for the WsClient `forceReconnect` option. WsClient is
-// constructed BEFORE `lifecycle` exists (chicken-and-egg: lifecycle holds
-// wsClient). The closure resolves `lifecycle` at call time via the supplied
-// getter, so the binding becomes valid before any 203 response can arrive.
-//
-// If the closure fires before `lifecycle` is set (truly impossible in practice
-// because requests gate on the auth barrier, but defensive), the call is
-// dropped — surfacing the original error is preferable to throwing in a code
-// path WsClient cannot recover from.
-export function makeForceReconnectAdapter(
-  getLifecycle: () => { forceReconnect: (reason: string) => Promise<void> } | null,
-): (reason: string) => Promise<void> {
-  return async (reason: string) => {
-    const lifecycle = getLifecycle()
-    if (!lifecycle) return
-    await lifecycle.forceReconnect(reason)
-  }
-}
-
-// Wires the SDK push handler onto WsClient.onPush. Returns the unsubscribe
-// returned by onPush so the account-shutdown path can drop the listener.
+// Wires the SDK push handler onto WsWorkerHandle.onPush. Returns the
+// unsubscribe returned by onPush so the account-shutdown path can drop the
+// listener.
 //
 // This handler runs alongside (NOT instead of) the always-respond resolver
-// listener — both subscribe via `wsClient.onPush(...)` and WsClient fans out
-// to every registered listener for each push event.
+// listener — both subscribe via `wsClient.onPush(...)` and the handle fans
+// out to every registered listener for each push event.
 export function registerSdkPushHandler(args: {
-  wsClient: WsClient
+  wsClient: WsWorkerHandle
   store: RuntimeStore
   accountId: string
   limits: FileUploadLimits
@@ -551,22 +531,26 @@ export const channelPlugin = {
           ? new UndiciAgent({ connect: { ca } })
           : undefined
 
-      // Per-account state. Construct BEFORE wsClient/lifecycle so the
-      // forceReconnect closure and the SDK push handler can capture them.
       const limits = new FileUploadLimits(getMaxFileSize(channelConfig), logger)
       const sendQueue = new PerChatSendQueue()
 
-      // Lazy-bound lifecycle reference: the wsClient receives `forceReconnect`
-      // as a closure that resolves the lifecycle at call time. WsClient is
-      // constructed first because `lifecycle` needs it; the closure stays safe
-      // because requests gate on the auth barrier that lifecycle.start() flips.
-      let lifecycleRef: ConnectionLifecycle | null = null
-      const wsClient = new WsClient({
-        ca,
-        tlsVerify,
-        forceReconnect: makeForceReconnectAdapter(() => lifecycleRef),
+      const wsClient = new WsWorkerHandle({
+        accountId,
+        config: {
+          account: {
+            serverUrl: resolved.serverUrl,
+            username: resolved.username,
+            password: resolved.password,
+            useTls: resolved.useTls ?? true,
+            port: resolved.port,
+            clientId: resolved.clientId,
+            clientSecret: resolved.clientSecret,
+          },
+          ca,
+          tlsVerify,
+        },
+        logger,
       })
-      wsClient.logger = logger
       const outboundQueue = new OutboundQueue(wsClient, logger)
 
       const wireAdapter: WireAdapter = {
@@ -605,27 +589,19 @@ export const channelPlugin = {
         logger,
       )
 
-      const lifecycle = new ConnectionLifecycle(
-        wsClient,
-        {
-          serverUrl: resolved.serverUrl,
-          username: resolved.username,
-          password: resolved.password,
-          useTls: resolved.useTls ?? true,
-          port: resolved.port,
-          clientId: resolved.clientId,
-          clientSecret: resolved.clientSecret,
-        },
-        logger,
-        {
-          onConnectionClosed: () => clearAccountChats(accountId),
-          onConnected: () => setStatus({ accountId, running: true, connected: true, lastStartAt: Date.now() }),
-          onDisconnected: () => setStatus({ accountId, connected: false }),
-          onTerminalFailure: (terminal) => outboundQueue.failAll(terminal.cause),
-          dispatcher,
-        },
-      )
-      lifecycleRef = lifecycle
+      wsClient.onState = (state) => {
+        if (state === 'reconnecting') {
+          setStatus({ accountId, connected: false })
+          clearAccountChats(accountId)
+        }
+      }
+      wsClient.onTerminal = (terminal) => {
+        const detail = 'message' in terminal ? terminal.message : terminal.kind
+        outboundQueue.failAll(new Error(`worker terminal: ${detail}`))
+      }
+      const unsubscribeConnectedStatus = wsClient.onAuth(() => {
+        setStatus({ accountId, running: true, connected: true, lastStartAt: Date.now() })
+      })
 
       // Hoisted out of the deliver closure so TypeScript keeps the
       // `resolved.serverUrl` narrowing from the early-return guard above
@@ -900,7 +876,7 @@ export const channelPlugin = {
         })
       })
       // SDK-push handler runs ALONGSIDE the always-respond push listener:
-      // both subscribe via onPush and WsClient fans out to every listener.
+      // both subscribe via onPush and WsCore fans out to every listener.
       // Routes server-side getFileUploadLimits / removeChat / editMessage /
       // removeMessage / clearHistory pushes to the right handlers.
       const unsubscribeSdkPush = registerSdkPushHandler({
@@ -912,17 +888,16 @@ export const channelPlugin = {
       })
 
       store.accounts.set(accountId, {
-        lifecycle,
         wsClient,
         dispatcher,
-        unsubscribers: [unsubscribePush, unsubscribeAuth, unsubscribeSdkPush],
+        unsubscribers: [unsubscribePush, unsubscribeAuth, unsubscribeSdkPush, unsubscribeConnectedStatus],
         limits,
         sendQueue,
         outboundQueue,
       })
 
       try {
-        await lifecycle.start()
+        await wsClient.start()
       } catch (err) {
         logger.error(`[trueconf] Account ${accountId} startup failed: ${err instanceof Error ? err.message : String(err)}`)
         setStatus({

@@ -5,7 +5,12 @@ import { join } from 'node:path'
 
 const { registerLoadPathIfMissing } = await import('../../bin/trueconf-setup.mjs')
 
-describe('registerLoadPathIfMissing', () => {
+// symlinkSync requires admin / Developer Mode on Windows; this whole suite
+// validates realpath dedup over a symlinked dir, so without symlinks there's
+// nothing to test. Skip on Windows where ordinary users can't create them.
+const SKIP_NO_SYMLINK = process.platform === 'win32'
+
+describe.skipIf(SKIP_NO_SYMLINK)('registerLoadPathIfMissing', () => {
   let tmpRoot
   let realDir
   let symlinkDir

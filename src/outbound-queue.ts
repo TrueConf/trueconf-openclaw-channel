@@ -1,4 +1,3 @@
-import { NetworkError } from './types'
 import type { Logger, TrueConfResponse } from './types'
 
 export interface WsClientLike {
@@ -7,7 +6,7 @@ export interface WsClientLike {
     payload: Record<string, unknown>,
     traceId?: string,
   ): Promise<TrueConfResponse>
-  onAuth(listener: () => void): () => void
+  onAuth(listener: (botUserId: string) => void): () => void
 }
 
 interface PendingItem {
@@ -100,7 +99,11 @@ export class OutboundQueue {
   }
 
   private isReconnectable(err: unknown): boolean {
-    return err instanceof NetworkError && err.parkable === true
+    // Duck-type on the parkable flag rather than instanceof NetworkError —
+    // errors that cross the worker_thread boundary are deserialized as plain
+    // Error (NetworkError's class identity does not survive structured
+    // clone), but ws-worker-protocol preserves the parkable flag explicitly.
+    return err instanceof Error && (err as { parkable?: unknown }).parkable === true
   }
 
   failAll(err: Error): void {

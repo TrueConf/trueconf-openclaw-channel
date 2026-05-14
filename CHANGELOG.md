@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.3.0
+
+### Added
+- WebSocket connection moved to a dedicated `worker_thread` (per account).
+  Eliminates 1006 disconnects caused by main-thread CPU saturation during
+  long LLM processing (e.g. openclaw 60-120s LLM windows).
+- Two-way app-level watchdog (5s ping / 15s detect) between main and worker.
+- Wire protocol uses structured-clone; `sendRequest` accepts an optional
+  `transfer` array for `Transferable[]` zero-copy of `ArrayBuffer`-typed
+  payloads. Not wired into `outbound.ts`/`load-media.ts` in 1.3.0 — adoption
+  is a follow-up; the surface is in place.
+- `WsCore` now emits `onAuth(botUserId)` and `onAuthLost(reason)` events.
+
+### Changed
+- Default `TRUECONF_HEARTBEAT_INTERVAL_MS` lowered to `10000` (was `30000`).
+- Default `TRUECONF_HEARTBEAT_PONG_TIMEOUT_MS` lowered to `5000` (was `10000`).
+  Worker is dedicated to TCCBC frame layer, faster cadence is cheap.
+
+### Internal
+- Renamed `src/ws-client.ts` → `src/ws-core.ts` (`WsClient` → `WsCore`).
+- New files: `src/ws-worker.ts`, `src/ws-worker-protocol.ts`,
+  `src/ws-worker-handle.ts`, `src/ws-worker-bootstrap.mjs`.
+- `ConnectionLifecycle` is now private to `ws-core.ts` (lives inside worker).
+
 ## [1.2.4] - 2026-05-03
 
 ### Added

@@ -149,7 +149,7 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
   let getChatByIDOmitErrorCode = 0
   // Defaults to errorCode=1 (forced) to keep prior tests' semantics intact.
   // python-sdk-alignment scenario 1 sets it to 203 (CREDENTIALS_EXPIRED) so
-  // WsClient triggers a forceReconnect on the next getChatByID.
+  // WsCore triggers a forceReconnect on the next getChatByID.
   let getChatByIDErrorCode = 1
   function configureFailures(opts: { getChats?: number; getChatByID?: number; getChatByIDOmitErrorCode?: number; getChatByIDErrorCode?: number }): void {
     if (opts.getChats !== undefined) getChatsFailures = opts.getChats
@@ -434,11 +434,29 @@ function drainBody(req: IncomingMessage): Promise<Buffer> {
   })
 }
 
-export async function waitFor(predicate: () => boolean, timeoutMs = 3000, stepMs = 20): Promise<void> {
+export async function waitFor(predicate: () => boolean, timeoutMs = 5000, stepMs = 20): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (predicate()) return
     await new Promise<void>((r) => setTimeout(r, stepMs))
   }
   throw new Error(`waitFor: predicate did not hold within ${timeoutMs}ms`)
+}
+
+/**
+ * Waits until the account's main-side handle has its `botUserId` populated.
+ * Server-side `authRequests` fires the moment the server records the auth
+ * request, but the auth response then has to round-trip back to the worker,
+ * the worker's auth-success listeners fire, and the wire-protocol `auth`
+ * message has to land on the main handle. Tests that submit outbounds or
+ * read `wsClient.botUserId` from the AccountEntry need to wait for the
+ * full chain to complete — server-only waits are necessary but not
+ * sufficient with the worker_thread boundary in place.
+ */
+export async function waitForAccountReady(accountId: string, timeoutMs = 3000): Promise<void> {
+  const { __getAccountsForTesting } = await import('../../src/channel')
+  await waitFor(() => {
+    const entry = __getAccountsForTesting().get(accountId)
+    return entry !== undefined && entry.wsClient.botUserId !== null && entry.wsClient.botUserId !== undefined
+  }, timeoutMs)
 }

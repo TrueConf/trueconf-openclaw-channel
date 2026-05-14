@@ -10,7 +10,7 @@ vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
 
 import { dispatchInboundDirectDmWithRuntime } from 'openclaw/plugin-sdk/channel-inbound'
 import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
-import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
+import { startFakeServer, waitFor, waitForAccountReady, type FakeServer } from '../smoke/fake-server'
 
 const dispatch = vi.mocked(dispatchInboundDirectDmWithRuntime)
 
@@ -50,6 +50,7 @@ async function bootPlugin(server: FakeServer): Promise<Harness> {
     abortSignal: ac.signal,
   })
   await waitFor(() => server.authRequests.length >= 1 && server.connections.size > 0)
+  await waitForAccountReady('default')
   return { abort: () => ac.abort(), startPromise }
 }
 
@@ -83,7 +84,7 @@ describe('integration: python-sdk-alignment smoke', () => {
   // ---------- Scenario 1 ----------
   // Full reconnect via transport-level 203:
   //   - First getChatByID → server returns errorCode=203 (CREDENTIALS_EXPIRED).
-  //   - WsClient calls forceReconnect → ConnectionLifecycle re-auths with a
+  //   - WsCore calls forceReconnect → ConnectionLifecycle re-auths with a
   //     fresh OAuth token.
   //   - Retried getChatByID returns errorCode=0 → original caller sees success.
   //   - Auth count grew to 2; OAuth was fetched twice.

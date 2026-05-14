@@ -413,6 +413,23 @@ describe('WsCore.waitAuthenticated', () => {
     await expect(client.waitAuthenticated(1000)).rejects.toThrow(/socket closed before auth/)
   })
 
+  it('emits onAuthLost when markAuthFailed is called after a successful auth', () => {
+    const client = makeCore()
+    ;(client as unknown as { botUserId: string }).botUserId = 'bot-42@server'
+    const losses: string[] = []
+    client.onAuthLost((reason) => losses.push(reason ?? ''))
+    client.markAuthFailed(new Error('203_credentials_expired'))
+    expect(losses).toEqual(['203_credentials_expired'])
+  })
+
+  it('does NOT emit onAuthLost if no prior successful auth', () => {
+    const client = makeCore()
+    const losses: string[] = []
+    client.onAuthLost((reason) => losses.push(reason ?? ''))
+    client.markAuthFailed(new Error('never authenticated'))
+    expect(losses).toEqual([])
+  })
+
   it('resetAuthBarrier rejects pending waiters then re-arms a fresh barrier', async () => {
     const client = makeCore()
     const first = client.waitAuthenticated(1000)

@@ -7,7 +7,7 @@ export interface WsClientLike {
     payload: Record<string, unknown>,
     traceId?: string,
   ): Promise<TrueConfResponse>
-  onAuth(listener: () => void): () => void
+  onAuth(listener: (botUserId: string) => void): () => void
 }
 
 interface PendingItem {

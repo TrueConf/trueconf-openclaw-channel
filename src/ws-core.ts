@@ -222,7 +222,8 @@ export class WsCore {
   public tlsVerify = true
 
   private pushListeners: Array<(method: string, payload: Record<string, unknown>) => void> = []
-  private authListeners: Array<() => void> = []
+  private authListeners: Array<(botUserId: string) => void> = []
+  private authLostListeners: Set<(reason?: string) => void> = new Set()
 
   // Lifecycle event surface. `onState` fans state-machine transitions; channel
   // wires it for status reporting. `onTerminal` fires once on a give-up
@@ -292,11 +293,16 @@ export class WsCore {
     }
   }
 
-  onAuth(listener: () => void): () => void {
+  onAuth(listener: (botUserId: string) => void): () => void {
     this.authListeners.push(listener)
     return () => {
       this.authListeners = this.authListeners.filter((l) => l !== listener)
     }
+  }
+
+  onAuthLost(listener: (reason?: string) => void): () => void {
+    this.authLostListeners.add(listener)
+    return () => { this.authLostListeners.delete(listener) }
   }
 
   private makeDeferred(): Deferred {
@@ -327,6 +333,15 @@ export class WsCore {
   }
 
   markAuthFailed(err: Error): void {
+    if (this.botUserId !== null) {
+      this.botUserId = null
+      const reason = err.message
+      for (const l of this.authLostListeners) {
+        try { l(reason) } catch (e) {
+          this.logger.warn(`[trueconf] onAuthLost listener threw: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+    }
     this.authBarrier.reject(err)
   }
 
@@ -419,8 +434,9 @@ export class WsCore {
               settle(() => reject(new Error(`Auth failed: errorCode ${errorCode}${desc ? ' - ' + desc : ''}`)))
             } else {
               this.botUserId = (response.payload?.userId as string) ?? null
+              const id = this.botUserId ?? ''
               for (const l of this.authListeners) {
-                try { l() }
+                try { l(id) }
                 catch (err) {
                   this.logger.error(
                     `[trueconf] auth listener error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
@@ -744,6 +760,14 @@ export class WsCore {
 
   private handleClose(code: number, reason: string): void {
     this.stopTimers()
+    if (this.botUserId !== null) {
+      this.botUserId = null
+      for (const l of this.authLostListeners) {
+        try { l('connection_closed') } catch (e) {
+          this.logger.warn(`[trueconf] onAuthLost listener threw: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+    }
     try {
       this.onState?.('reconnecting', `close ${code}: ${reason}`)
     } catch (err) {

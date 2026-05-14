@@ -40,6 +40,8 @@ const core = new WsCore({
     warn: (m) => log('warn', m),
     error: (m) => log('error', m),
   },
+  ca: config.ca,
+  tlsVerify: config.tlsVerify,
 })
 
 core.onState = (state, detail) => post({ kind: 'state', state, detail })

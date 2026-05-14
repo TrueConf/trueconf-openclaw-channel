@@ -68,42 +68,42 @@ describe('channel.ts caPath plumbing', () => {
 })
 
 describe('shutdownAccountEntry', () => {
-  it('calls wsClient.shutdown() and dispatcher.close()', async () => {
+  it('calls wsClient.close() and dispatcher.close()', async () => {
     const { shutdownAccountEntry } = await import('../../src/channel')
-    const shutdown = vi.fn()
-    const close = vi.fn().mockResolvedValue(undefined)
+    const wsClose = vi.fn().mockResolvedValue(undefined)
+    const dispClose = vi.fn().mockResolvedValue(undefined)
     const entry = {
-      wsClient: { shutdown } as never,
-      dispatcher: { close } as never,
+      wsClient: { close: wsClose } as never,
+      dispatcher: { close: dispClose } as never,
     }
     shutdownAccountEntry(entry)
-    expect(shutdown).toHaveBeenCalledOnce()
-    expect(close).toHaveBeenCalledOnce()
+    expect(wsClose).toHaveBeenCalledOnce()
+    expect(dispClose).toHaveBeenCalledOnce()
   })
 
-  it('calls wsClient.shutdown() only when dispatcher is absent', async () => {
+  it('calls wsClient.close() only when dispatcher is absent', async () => {
     const { shutdownAccountEntry } = await import('../../src/channel')
-    const shutdown = vi.fn()
+    const wsClose = vi.fn().mockResolvedValue(undefined)
     const entry = {
-      wsClient: { shutdown } as never,
+      wsClient: { close: wsClose } as never,
     }
     shutdownAccountEntry(entry)
-    expect(shutdown).toHaveBeenCalledOnce()
+    expect(wsClose).toHaveBeenCalledOnce()
   })
 
   it('swallows dispatcher.close() rejections (best-effort)', async () => {
     const { shutdownAccountEntry } = await import('../../src/channel')
-    const shutdown = vi.fn()
-    const close = vi.fn().mockRejectedValue(new Error('boom'))
+    const wsClose = vi.fn().mockResolvedValue(undefined)
+    const dispClose = vi.fn().mockRejectedValue(new Error('boom'))
     const entry = {
-      wsClient: { shutdown } as never,
-      dispatcher: { close } as never,
+      wsClient: { close: wsClose } as never,
+      dispatcher: { close: dispClose } as never,
     }
     // Must not throw, even with the rejected promise pending.
     expect(() => shutdownAccountEntry(entry)).not.toThrow()
     // Let the microtask queue drain so the .catch() is reached.
     await new Promise<void>((r) => setImmediate(r))
-    expect(close).toHaveBeenCalledOnce()
+    expect(dispClose).toHaveBeenCalledOnce()
   })
 })
 
@@ -224,23 +224,20 @@ describe('SDK push handler wire-up', () => {
 })
 
 describe('startAccount onTerminal → outboundQueue.failAll wiring', () => {
-  it('forwards terminal.cause to outboundQueue.failAll when WsCore fires onTerminal', async () => {
+  it('forwards terminal kind to outboundQueue.failAll when handle fires onTerminal', async () => {
     vi.resetModules()
 
-    type OnTerminalCb = (terminal: { kind: string; cause: Error; retries?: number }) => void
+    type OnTerminalCb = (terminal: { kind: string }) => void
     const captured: { onTerminal: OnTerminalCb | null } = { onTerminal: null }
     const failAllSpy = vi.fn()
     const outboundQueueSpy = { submit: vi.fn(), failAll: failAllSpy }
 
-    vi.doMock('../../src/ws-core', async () => {
-      const actual = await vi.importActual<typeof import('../../src/ws-core')>('../../src/ws-core')
-      class FakeWsCore {
+    vi.doMock('../../src/ws-worker-handle', async () => {
+      const actual = await vi.importActual<typeof import('../../src/ws-worker-handle')>('../../src/ws-worker-handle')
+      class FakeHandle {
         botUserId: string | null = null
-        logger: unknown = null
-        ca: Buffer | undefined = undefined
-        tlsVerify = true
         onInboundMessage: unknown = null
-        // The contract under test: channel.ts assigns core.onTerminal.
+        // The contract under test: channel.ts assigns handle.onTerminal.
         // Capture every assignment so the test can fire it later.
         _onTerminal: OnTerminalCb | null = null
         get onTerminal(): OnTerminalCb | null { return this._onTerminal }
@@ -249,26 +246,20 @@ describe('startAccount onTerminal → outboundQueue.failAll wiring', () => {
           captured.onTerminal = v
         }
         onState: unknown = null
-        onClose: unknown = null
-        onPong: unknown = null
         constructor(_opts: unknown) {}
-        onAuth(_l: () => void): () => void { return () => {} }
+        onAuth(_l: (id: string) => void): () => void { return () => {} }
+        onAuthLost(_l: (r?: string) => void): () => void { return () => {} }
         onPush(_l: unknown): () => void { return () => {} }
         async sendRequest(): Promise<never> { throw new Error('not used in this test') }
-        markAuthenticated(): void {}
-        markAuthFailed(_e: Error): void {}
-        async waitAuthenticated(): Promise<void> {}
-        resetAuthBarrier(): void {}
-        close(): void {}
-        ping(): void {}
-        terminate(): void {}
+        onFileProgress(_id: string, _h: (p: number) => void): void {}
+        offFileProgress(_id: string): void {}
         async start(): Promise<void> { /* never resolve so startAccount stays parked */ }
-        shutdown(): void {}
+        async close(): Promise<void> {}
         async forceReconnect(): Promise<void> {}
       }
       return {
         ...actual,
-        WsCore: FakeWsCore,
+        WsWorkerHandle: FakeHandle,
       }
     })
 
@@ -318,14 +309,15 @@ describe('startAccount onTerminal → outboundQueue.failAll wiring', () => {
 
     expect(captured.onTerminal).not.toBeNull()
 
-    const sentinelCause = new Error('sentinel-terminal-cause')
-    captured.onTerminal!({ kind: 'shutdown', cause: sentinelCause })
+    captured.onTerminal!({ kind: 'dns_exhausted' })
 
     expect(failAllSpy).toHaveBeenCalledTimes(1)
-    expect(failAllSpy).toHaveBeenCalledWith(sentinelCause)
+    const err = failAllSpy.mock.calls[0][0] as Error
+    expect(err).toBeInstanceOf(Error)
+    expect(err.message).toMatch(/dns_exhausted/)
 
     ac.abort()
-    vi.doUnmock('../../src/ws-core')
+    vi.doUnmock('../../src/ws-worker-handle')
     vi.doUnmock('../../src/outbound-queue')
     vi.doUnmock('openclaw/plugin-sdk/channel-inbound')
     vi.resetModules()

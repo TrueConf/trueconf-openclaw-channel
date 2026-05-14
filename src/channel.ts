@@ -36,7 +36,7 @@ import {
 import { trueconfSetupWizard } from './channel-setup'
 import { trueconfSetupAdapter } from './setup-shared'
 import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './always-respond'
-import { WsCore } from './ws-core'
+import { WsWorkerHandle } from './ws-worker-handle'
 import { OutboundQueue } from './outbound-queue'
 import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage, InboundExtraContext, InboundMediaContext } from './types'
 import { widenExtraContext } from './types'
@@ -75,7 +75,7 @@ export function loadCaFromAccount(account: ResolvedAccount): Buffer | undefined 
 }
 
 export interface AccountEntry {
-  wsClient: WsCore
+  wsClient: WsWorkerHandle
   dispatcher?: Dispatcher
   unsubscribers?: Array<() => void>
   // Per-account state. limits/sendQueue must NOT be channel-wide:
@@ -94,12 +94,12 @@ export interface AccountEntry {
 // and rolling restart would otherwise leak sockets per account on every
 // redeploy. close() rejections are swallowed — shutdown is best-effort.
 export function shutdownAccountEntry(entry: {
-  wsClient: WsCore
+  wsClient: WsWorkerHandle
   dispatcher?: Dispatcher
   unsubscribers?: Array<() => void>
 }): void {
   for (const u of entry.unsubscribers ?? []) try { u() } catch { /* ignore */ }
-  entry.wsClient.shutdown()
+  void entry.wsClient.close()
   entry.dispatcher?.close().catch(() => { /* best-effort */ })
 }
 
@@ -213,14 +213,15 @@ export function invalidateChatState(
   store.recentBotMsgIdsByChat.delete(chatId)
 }
 
-// Wires the SDK push handler onto WsCore.onPush. Returns the unsubscribe
-// returned by onPush so the account-shutdown path can drop the listener.
+// Wires the SDK push handler onto WsWorkerHandle.onPush. Returns the
+// unsubscribe returned by onPush so the account-shutdown path can drop the
+// listener.
 //
 // This handler runs alongside (NOT instead of) the always-respond resolver
-// listener — both subscribe via `wsClient.onPush(...)` and WsCore fans out
-// to every registered listener for each push event.
+// listener — both subscribe via `wsClient.onPush(...)` and the handle fans
+// out to every registered listener for each push event.
 export function registerSdkPushHandler(args: {
-  wsClient: WsCore
+  wsClient: WsWorkerHandle
   store: RuntimeStore
   accountId: string
   limits: FileUploadLimits
@@ -533,20 +534,22 @@ export const channelPlugin = {
       const limits = new FileUploadLimits(getMaxFileSize(channelConfig), logger)
       const sendQueue = new PerChatSendQueue()
 
-      const wsClient = new WsCore({
-        account: {
-          serverUrl: resolved.serverUrl,
-          username: resolved.username,
-          password: resolved.password,
-          useTls: resolved.useTls ?? true,
-          port: resolved.port,
-          clientId: resolved.clientId,
-          clientSecret: resolved.clientSecret,
+      const wsClient = new WsWorkerHandle({
+        accountId,
+        config: {
+          account: {
+            serverUrl: resolved.serverUrl,
+            username: resolved.username,
+            password: resolved.password,
+            useTls: resolved.useTls ?? true,
+            port: resolved.port,
+            clientId: resolved.clientId,
+            clientSecret: resolved.clientSecret,
+          },
+          ca,
+          tlsVerify,
         },
         logger,
-        dispatcher,
-        ca,
-        tlsVerify,
       })
       const outboundQueue = new OutboundQueue(wsClient, logger)
 
@@ -592,7 +595,10 @@ export const channelPlugin = {
           clearAccountChats(accountId)
         }
       }
-      wsClient.onTerminal = (terminal) => outboundQueue.failAll(terminal.cause)
+      wsClient.onTerminal = (terminal) => {
+        const detail = 'message' in terminal ? terminal.message : terminal.kind
+        outboundQueue.failAll(new Error(`worker terminal: ${detail}`))
+      }
       const unsubscribeConnectedStatus = wsClient.onAuth(() => {
         setStatus({ accountId, running: true, connected: true, lastStartAt: Date.now() })
       })

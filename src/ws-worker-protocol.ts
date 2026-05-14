@@ -21,6 +21,8 @@ export type TerminalCause =
 
 export interface WsCoreConfig {
   account: TrueConfAccountConfig
+  ca?: Buffer
+  tlsVerify?: boolean
   heartbeatIntervalMs?: number
   heartbeatPongTimeoutMs?: number
   tcpKeepAliveMs?: number

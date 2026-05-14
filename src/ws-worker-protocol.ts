@@ -34,11 +34,12 @@ export interface WsCoreConfig {
 
 export type MainToWorker =
   | { kind: 'init'; protocolVersion: 1 }
-  | { kind: 'sendRequest'; reqId: number; method: string; payload: unknown; timeoutMs?: number }
+  | { kind: 'sendRequest'; reqId: number; method: string; payload: unknown; traceId?: string; timeoutMs?: number }
   | { kind: 'forceReconnect'; reason: string }
   | { kind: 'fileProgressSubscribe'; fileId: string }
   | { kind: 'fileProgressUnsubscribe'; fileId: string }
   | { kind: 'appPing'; nonce: number }
+  | { kind: 'terminate' }
   | { kind: 'shutdown'; reason?: string }
 
 export type WorkerToMain =

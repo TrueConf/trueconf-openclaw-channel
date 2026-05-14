@@ -65,7 +65,7 @@ port.on('message', async (m: MainToWorker) => {
         break
       case 'sendRequest': {
         try {
-          const response = await core.sendRequest(m.method, m.payload as Record<string, unknown>)
+          const response = await core.sendRequest(m.method, m.payload as Record<string, unknown>, m.traceId)
           post({ kind: 'response', reqId: m.reqId, ok: true, data: response })
         } catch (err) {
           post({ kind: 'response', reqId: m.reqId, ok: false, error: serializeError(err) })
@@ -89,6 +89,9 @@ port.on('message', async (m: MainToWorker) => {
       case 'appPing':
         lastAppPingAt = Date.now()
         post({ kind: 'appPong', nonce: m.nonce })
+        break
+      case 'terminate':
+        core.terminate()
         break
       case 'shutdown':
         core.shutdown()

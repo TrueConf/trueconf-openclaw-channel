@@ -156,7 +156,6 @@ export class WsWorkerHandle {
     traceId?: string,
     opts?: { timeoutMs?: number; transfer?: ReadonlyArray<ArrayBuffer> },
   ): Promise<TrueConfResponse> {
-    void traceId
     if (!this.worker || this.shuttingDown) return Promise.reject(new Error('worker not running'))
     const reqId = this.nextReqId++
     return new Promise<TrueConfResponse>((resolve, reject) => {
@@ -166,7 +165,7 @@ export class WsWorkerHandle {
           }, opts.timeoutMs)
         : undefined
       this.pending.set(reqId, { resolve, reject, timer })
-      const msg: MainToWorker = { kind: 'sendRequest', reqId, method, payload, timeoutMs: opts?.timeoutMs }
+      const msg: MainToWorker = { kind: 'sendRequest', reqId, method, payload, traceId, timeoutMs: opts?.timeoutMs }
       if (opts?.transfer && opts.transfer.length > 0) this.worker!.postMessage(msg, opts.transfer)
       else this.worker!.postMessage(msg)
     })
@@ -174,6 +173,11 @@ export class WsWorkerHandle {
 
   async forceReconnect(reason: string): Promise<void> {
     this.worker?.postMessage({ kind: 'forceReconnect', reason } satisfies MainToWorker)
+  }
+
+  /** Test seam: terminates the WS socket inside the worker. */
+  terminate(): void {
+    this.worker?.postMessage({ kind: 'terminate' } satisfies MainToWorker)
   }
 
   onPush(listener: (method: string, payload: Record<string, unknown>) => void): () => void {

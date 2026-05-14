@@ -481,6 +481,24 @@ openclaw gateway | Select-String '\[trueconf\]'
 
 Log file: the path is shown in the gateway output (`[gateway] log file: ...`).
 
+## Architecture
+
+### Thread model
+
+The WebSocket connection to TrueConf Server runs in a dedicated `worker_thread`
+(per account). The main thread handles OpenClaw runtime, LLM dispatching, image
+processing, and the outbound send-queue. This separation guarantees that
+long-running LLM operations on the main thread cannot stall the WebSocket
+heartbeat (a previous source of 1006 abnormal closures).
+
+Two-way watchdog: main pings worker every 5 s; if no `appPong` returns within
+15 s, main respawns the worker. Worker pings the TrueConf server at the WS
+protocol layer every 10 s with a 5 s pong timeout. Auto-ack of `type:1` frames
+is performed inside the worker within microseconds of receipt, regardless of
+main-thread load.
+
+See `docs/specs/2026-05-14-ws-worker-thread-design.md` for the full design.
+
 ## Testing
 
 ```bash

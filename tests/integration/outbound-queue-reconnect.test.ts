@@ -5,7 +5,7 @@ vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
 }))
 
 import { __getAccountsForTesting, __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
-import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
+import { startFakeServer, waitFor, waitForAccountReady, type FakeServer } from '../smoke/fake-server'
 
 interface Harness {
   abort: () => void
@@ -40,6 +40,7 @@ async function bootPlugin(server: FakeServer): Promise<Harness> {
     abortSignal: ac.signal,
   })
   await waitFor(() => server.authRequests.length >= 1 && server.connections.size > 0)
+  await waitForAccountReady('default')
   return { abort: () => ac.abort(), startPromise, logger }
 }
 

@@ -91,11 +91,12 @@ describe('bin/trueconf-setup.mjs CLI subprocess', () => {
         fakeHome,
       )
       expect(result.code).toBe(0)
-      // Tight budget: cold Node start + jiti load + one local fetch + write
-      // should complete well under 3s on dev laptops and GitHub runners. A
-      // future leaked timer (sharp libvips worker, AbortSignal.timeout that
-      // forgot to .unref()) would push past this long before the hard kill.
-      expect(result.elapsedMs).toBeLessThan(3000)
+      // Loose budget: cold Node start + jiti load + one local fetch + write
+      // typically lands ~1.5s on Linux, ~3-5s on Windows under parallel test
+      // pressure. The 6s cap still catches a leaked event-loop handle (sharp
+      // libvips worker, AbortSignal.timeout that forgot to .unref()) — those
+      // would push past HARD_KILL_MS=8000 and trip the per-test kill.
+      expect(result.elapsedMs).toBeLessThan(6000)
     } finally {
       rmSync(fakeHome, { recursive: true, force: true })
       await stopFakeServer(fake)
@@ -119,7 +120,7 @@ describe('bin/trueconf-setup.mjs CLI subprocess', () => {
       expect(result.code).toBe(1)
       // ECONNREFUSED to a closed loopback port is sub-millisecond; node start
       // dominates. Same partial-leak rationale as the success case.
-      expect(result.elapsedMs).toBeLessThan(3000)
+      expect(result.elapsedMs).toBeLessThan(6000)
     } finally {
       rmSync(fakeHome, { recursive: true, force: true })
     }

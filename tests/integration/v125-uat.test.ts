@@ -22,7 +22,7 @@ vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
 
 import type { WebSocket } from 'ws'
 import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
-import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
+import { startFakeServer, waitFor, waitForAccountReady, type FakeServer } from '../smoke/fake-server'
 
 interface Logger {
   info: ReturnType<typeof vi.fn>
@@ -72,6 +72,7 @@ async function bootPlugin(server: FakeServer, opts: { waitForConnection?: boolea
   startPromise.catch(() => {})
   if (opts.waitForConnection !== false) {
     await waitFor(() => server.authRequests.length >= 1 && server.connections.size > 0, 5000)
+    await waitForAccountReady('default')
   }
   return { abort: () => ac.abort(), startPromise, logger }
 }

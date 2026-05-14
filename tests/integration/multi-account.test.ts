@@ -6,7 +6,7 @@ vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
 
 import { dispatchInboundDirectDmWithRuntime } from 'openclaw/plugin-sdk/channel-inbound'
 import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
-import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
+import { startFakeServer, waitFor, waitForAccountReady, type FakeServer } from '../smoke/fake-server'
 
 const dispatch = vi.mocked(dispatchInboundDirectDmWithRuntime)
 
@@ -42,6 +42,8 @@ async function bootMultiAccount(a: FakeServer, b: FakeServer): Promise<Harness> 
   const pA = start({ accountId: 'A', setStatus: () => {}, abortSignal: acA.signal })
   const pB = start({ accountId: 'B', setStatus: () => {}, abortSignal: acB.signal })
   await waitFor(() => a.authRequests.length >= 1 && b.authRequests.length >= 1 && a.connections.size >= 1 && b.connections.size >= 1, 4000)
+  await waitForAccountReady('A')
+  await waitForAccountReady('B')
   return { abortA: () => acA.abort(), abortB: () => acB.abort(), pA, pB }
 }
 

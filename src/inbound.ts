@@ -136,7 +136,12 @@ export async function resolveChatType(params: {
 // arrives within the window, the timer flushes the text alone.
 interface PendingTextInbound {
   base: Omit<InboundMessage, 'text' | 'attachmentContent'>
-  text: string
+  baseText: string
+  // F2: resolves to the quoted-context prefix (or null). The fetch is started
+  // before buffering but awaited only at flush/dispatch, so the gate→buffer
+  // transition stays synchronous and a fast-following attachment for the same
+  // key always observes this entry instead of racing the network round-trip.
+  replyPrefix: Promise<string | null> | null
   timer: ReturnType<typeof setTimeout>
   dispatch: InboundDispatchFn
   logger: Logger
@@ -147,12 +152,38 @@ function coalesceKey(accountId: string, chatId: string, peerId: string): string 
   return `${accountId}\u0000${chatId}\u0000${peerId}`
 }
 
+// Prepend the resolved F2 quoted-context prefix to the buffered text, if any.
+async function resolvePendingText(pending: PendingTextInbound): Promise<string> {
+  if (!pending.replyPrefix) return pending.baseText
+  const prefix = await pending.replyPrefix
+  return prefix ? `${prefix}\n\n${pending.baseText}` : pending.baseText
+}
+
+// Buffer a text-bearing envelope (PLAIN/FORWARDED/LOCATION/SURVEY) for the
+// coalesce window. The map entry is set SYNCHRONOUSLY (no await before this) so
+// a trailing attachment for the same key always finds it; the quoted prefix is
+// folded in later at flush/dispatch via resolvePendingText.
+function bufferPendingText(
+  key: string,
+  base: Omit<InboundMessage, 'text' | 'attachmentContent'>,
+  baseText: string,
+  replyPrefix: Promise<string | null> | null,
+  ctx: InboundContext,
+): void {
+  if (pendingTextInbounds.has(key)) flushPendingText(key)
+  const timer = setTimeout(() => flushPendingText(key), COALESCE_WINDOW_MS)
+  timer.unref?.()
+  pendingTextInbounds.set(key, { base, baseText, replyPrefix, timer, dispatch: ctx.dispatch, logger: ctx.logger })
+}
+
 function flushPendingText(key: string): void {
   const pending = pendingTextInbounds.get(key)
   if (!pending) return
   clearTimeout(pending.timer)
   pendingTextInbounds.delete(key)
-  dispatchWithFence(pending.dispatch, { ...pending.base, text: pending.text }, pending.logger)
+  void resolvePendingText(pending).then((text) => {
+    dispatchWithFence(pending.dispatch, { ...pending.base, text }, pending.logger)
+  })
 }
 
 export function __resetCoalesceBufferForTesting(): void {
@@ -367,24 +398,23 @@ export async function handleInboundMessage(
     ...(extraContext ? { extraContext } : {}),
   }
 
-  // F2: when this message replies to ANOTHER user's message (not the bot's
-  // own), fetch the quoted text+author and prepend it so the agent sees the
-  // context. Awaited before buffering, so the prefix lands in the same
-  // coalesced turn (see plan NEW-4 trade-off: this can exceed the 300ms
-  // coalesce window for the rare reply+caption+attachment combo).
-  let replyPrefix: string | null = null
-  if (envelope.replyMessageId && !isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))) {
-    replyPrefix = await fetchQuotedContext(ctx.wsClient, envelope.replyMessageId, (id) => id || 'участника', ctx.logger)
-  }
-  const textForAgent = replyPrefix
-    ? `${replyPrefix}\n\n${plainText ?? syntheticText ?? ''}`
-    : (plainText ?? syntheticText ?? '')
+  // F2: if this message replies to ANOTHER user's message (not the bot's own),
+  // fetch that quoted text+author and prepend it so the agent sees the context.
+  // The fetch is started here but NOT awaited — its promise rides on the pending
+  // entry (or the attachment dispatch below) and is awaited at flush/dispatch.
+  // This keeps the gate→buffer transition synchronous so a fast-following
+  // attachment for the same (account,chat,peer) coalesces into one turn instead
+  // of racing the round-trip (up to its 5s timeout). The author resolver is a
+  // deliberate placeholder returning the raw id; a display-name lookup is a
+  // follow-up.
+  const replyPrefix: Promise<string | null> | null =
+    envelope.replyMessageId && !isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))
+      ? fetchQuotedContext(ctx.wsClient, envelope.replyMessageId, (id) => id || 'участника', ctx.logger)
+      : null
+  const baseText = plainText ?? syntheticText ?? ''
 
   if (envelope.type === EnvelopeType.PLAIN_MESSAGE) {
-    if (pendingTextInbounds.has(key)) flushPendingText(key)
-    const timer = setTimeout(() => flushPendingText(key), COALESCE_WINDOW_MS)
-    timer.unref?.()
-    pendingTextInbounds.set(key, { base, text: textForAgent, timer, dispatch: ctx.dispatch, logger: ctx.logger })
+    bufferPendingText(key, base, baseText, replyPrefix, ctx)
     return
   }
 
@@ -392,23 +422,26 @@ export async function handleInboundMessage(
     const pending = pendingTextInbounds.get(key)
     let text: string
     if (pending) {
+      // A buffered caption (carrying its own quoted prefix) coalesces with this
+      // file. Claim the entry synchronously, then fold in the caption's prefix.
       clearTimeout(pending.timer)
       pendingTextInbounds.delete(key)
-      text = pending.text
+      text = await resolvePendingText(pending)
     } else {
-      text = `[File: ${sanitizeAttachmentName(attachment!.name)}]`
+      // Bare file reply: carry this envelope's own quoted prefix onto the
+      // placeholder so an image-only reply still gives the agent the context.
+      const fileLine = `[File: ${sanitizeAttachmentName(attachment!.name)}]`
+      const prefix = replyPrefix ? await replyPrefix : null
+      text = prefix ? `${prefix}\n\n${fileLine}` : fileLine
     }
     dispatchWithFence(ctx.dispatch, { ...base, text, attachmentContent: attachment! }, ctx.logger)
     return
   }
 
-  // FORWARDED, LOCATION, SURVEY all go through the same coalescer-buffered
-  // path as PLAIN. A trailing attachment in the coalesce window will replace
-  // the synthetic placeholder with the real caption from this envelope.
-  if (pendingTextInbounds.has(key)) flushPendingText(key)
-  const timer = setTimeout(() => flushPendingText(key), COALESCE_WINDOW_MS)
-  timer.unref?.()
-  pendingTextInbounds.set(key, { base, text: textForAgent, timer, dispatch: ctx.dispatch, logger: ctx.logger })
+  // FORWARDED, LOCATION, SURVEY all go through the same coalescer-buffered path
+  // as PLAIN. A trailing attachment in the coalesce window coalesces with the
+  // synthetic text built here.
+  bufferPendingText(key, base, baseText, replyPrefix, ctx)
 }
 
 function dispatchWithFence(dispatch: InboundDispatchFn, inbound: InboundMessage, logger: Logger): void {

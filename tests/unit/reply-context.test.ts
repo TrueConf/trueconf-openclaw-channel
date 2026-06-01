@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { fetchQuotedContext, formatQuotedPrefix } from '../../src/reply-context'
 
 describe('formatQuotedPrefix', () => {
@@ -60,5 +60,19 @@ describe('fetchQuotedContext', () => {
   it('timeout → null', async () => {
     const ws = wsOf({ payload: { type: 200, author: { id: 'a' }, content: { text: 'x', parseMode: 'text' } } }, { delayMs: 50 })
     expect(await fetchQuotedContext(ws, 'm', () => 'A', null, 10)).toBeNull()
+  })
+
+  it('PLAIN_MESSAGE without text → null, warns (schema-drift canary)', async () => {
+    const warn = vi.fn()
+    const ws = wsOf({ payload: { type: 200, author: { id: 'a' }, content: {} } })
+    expect(await fetchQuotedContext(ws, 'm', () => 'A', { warn })).toBeNull()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('content.text'))
+  })
+
+  it('timeout logs a warning', async () => {
+    const warn = vi.fn()
+    const ws = wsOf({ payload: { type: 200, author: { id: 'a' }, content: { text: 'x', parseMode: 'text' } } }, { delayMs: 50 })
+    expect(await fetchQuotedContext(ws, 'm', () => 'A', { warn }, 10)).toBeNull()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('timed out'))
   })
 })

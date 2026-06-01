@@ -18,10 +18,14 @@ function stripTags(s: string): string {
 }
 
 // Fetches the quoted (reply-to) message over the wire and renders it into the
-// formatQuotedPrefix block. Returns null on any failure path — wire error,
-// errorCode, non-text envelope, or timeout — so the caller delivers the inbound
-// without quoted context (silent degradation). A hard timeout (default 5s)
-// caps the wait since this sits on the inbound coalescer path.
+// formatQuotedPrefix block. Returns null on any non-usable response — wire/auth
+// error, non-zero errorCode (e.g. deleted quote), non-text envelope, missing
+// text, or timeout — so the caller delivers the inbound without quoted context
+// (silent degradation). A hard timeout (default 5s) caps the wait since this
+// sits on the inbound coalescer path. The timeout and any unrecognized response
+// shape (a possible server schema change) are logged at warn as canaries; a
+// legitimately non-text quote (sticker/file/poll) and a deleted quote stay
+// silent, since those are expected and would otherwise spam the log.
 export async function fetchQuotedContext(
   wsClient: Pick<WsClient, 'sendRequest'>,
   replyMessageId: string,
@@ -32,16 +36,26 @@ export async function fetchQuotedContext(
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     const timeout = new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), timeoutMs)
+      timer = setTimeout(() => {
+        logger?.warn(`[trueconf] fetchQuotedContext: timed out after ${timeoutMs}ms (messageId=${replyMessageId})`)
+        resolve(null)
+      }, timeoutMs)
     })
     const call = (async (): Promise<string | null> => {
       const resp = await wsClient.sendRequest('getMessageById', { messageId: replyMessageId })
       const payload = resp.payload ?? {}
       const errorCode = payload.errorCode
       if (typeof errorCode === 'number' && errorCode !== 0) return null
+      if (payload.type === undefined) {
+        logger?.warn(`[trueconf] fetchQuotedContext: response missing 'type' (messageId=${replyMessageId}) — possible schema change`)
+        return null
+      }
       if (payload.type !== EnvelopeType.PLAIN_MESSAGE) return null
       const content = payload.content as { text?: unknown; parseMode?: unknown } | undefined
-      if (!content || typeof content.text !== 'string') return null
+      if (!content || typeof content.text !== 'string') {
+        logger?.warn(`[trueconf] fetchQuotedContext: PLAIN_MESSAGE without string content.text (messageId=${replyMessageId}) — possible schema change`)
+        return null
+      }
       const text = content.parseMode === 'html' ? stripTags(content.text) : content.text
       const author = payload.author as { id?: unknown } | undefined
       const authorId = typeof author?.id === 'string' ? author.id : ''

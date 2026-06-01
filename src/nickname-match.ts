@@ -12,7 +12,10 @@ function escapeRegExp(s: string): string {
 // Whole-word match anywhere in the text. JS `\b` is ASCII-only, so Cyrillic
 // nicknames need Unicode-aware boundaries: lookbehind/lookahead asserting the
 // adjacent char is not a letter or number (\p{L}\p{N}, requires the `u` flag).
-// Multiword nicknames tolerate variable inner whitespace via `\s+`.
+// Multiword nicknames tolerate variable inner whitespace via `\s+`. The `i` flag
+// is load-bearing: only the stored nicknames are lowercased (normalizeNickname),
+// the haystack is the raw message text — so case-insensitivity must come from
+// the regex, not from pre-lowercasing both sides.
 function buildNicknameRegExp(normNick: string): RegExp {
   const body = normNick.split(' ').map(escapeRegExp).join('\\s+')
   return new RegExp(`(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])`, 'iu')

@@ -1,12 +1,16 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createNicknameTools } from '../../src/nickname-tools'
 
-const store = () => ({
-  add: vi.fn(() => ({ ok: true })),
+const store = (over: Record<string, unknown> = {}) => ({
+  add: vi.fn(() => ({ status: 'added' })),
   remove: vi.fn(() => true),
   list: vi.fn(() => ['клешня']),
   matches: vi.fn(() => false),
+  ...over,
 })
+
+const find = (s: ReturnType<typeof store>, name: string) =>
+  createNicknameTools(s as never).find((t) => t.name === name)!
 
 describe('nickname tools', () => {
   it('exposes three tools with label+parameters', () => {
@@ -18,17 +22,31 @@ describe('nickname tools', () => {
     }
   })
 
-  it('remember writes to store and returns content+details', async () => {
+  it('remember writes raw input but confirms with the normalized name', async () => {
     const s = store()
-    const t = createNicknameTools(s as never).find((x) => x.name === 'remember_bot_nickname')!
-    const res = await t.execute('id', { name: 'Клешня' })
-    expect(s.add).toHaveBeenCalledWith('Клешня')
-    expect(res.content[0].text).toContain('Запомнил')
+    const res = await find(s, 'remember_bot_nickname').execute('id', { name: '  Клешня  ' })
+    expect(s.add).toHaveBeenCalledWith('  Клешня  ')
+    expect(res.content[0].text).toBe('Запомнил псевдоним «клешня».')
     expect('details' in res).toBe(true)
   })
 
-  it('list returns current names', async () => {
-    const t = createNicknameTools(store() as never).find((x) => x.name === 'list_bot_nicknames')!
-    expect((await t.execute('id', {})).content[0].text).toContain('клешня')
+  it('remember surfaces too_short / cap / persist_failed / exists', async () => {
+    const text = async (status: string) =>
+      (await find(store({ add: () => ({ status }) }), 'remember_bot_nickname').execute('id', { name: 'клешня' })).content[0].text
+    expect(await text('too_short')).toContain('короткий')
+    expect(await text('reserved')).toContain('общее слово')
+    expect(await text('cap')).toContain('лимит')
+    expect(await text('persist_failed')).toContain('пропадёт после перезапуска')
+    expect(await text('exists')).toContain('уже задан')
+  })
+
+  it('forget reports removed vs not-found', async () => {
+    expect((await find(store({ remove: () => true }), 'forget_bot_nickname').execute('id', { name: 'клешня' })).content[0].text).toContain('Убрал')
+    expect((await find(store({ remove: () => false }), 'forget_bot_nickname').execute('id', { name: 'нет' })).content[0].text).toContain('не найден')
+  })
+
+  it('list returns current names, or a placeholder when empty', async () => {
+    expect((await find(store(), 'list_bot_nicknames').execute('id', {})).content[0].text).toContain('клешня')
+    expect((await find(store({ list: () => [] }), 'list_bot_nicknames').execute('id', {})).content[0].text).toContain('пока нет')
   })
 })

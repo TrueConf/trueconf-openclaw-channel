@@ -102,4 +102,26 @@ describe('F1 — global nickname activation in the group gate', () => {
 
     expect(h.dispatch).not.toHaveBeenCalled()
   })
+
+  it('html message → nickname matched against tag-stripped text, dispatched stripped', async () => {
+    const seen: string[] = []
+    const h = makeCtx({ matchesNickname: (t) => { seen.push(t); return t.includes('Клешня') } })
+
+    await handleInboundMessage(
+      makeRequest({
+        type: EnvelopeType.PLAIN_MESSAGE,
+        chatId: GROUP_CHAT,
+        author: { id: ALICE, type: 1 },
+        content: { text: '<b>Клешня</b>, глянь', parseMode: 'html' },
+        messageId: 'm-html',
+        timestamp: 9,
+      }),
+      h.ctx,
+    )
+    await flush()
+
+    expect(seen).toContain('Клешня, глянь')
+    expect(h.dispatch).toHaveBeenCalledTimes(1)
+    expect((h.dispatch.mock.calls[0][0] as InboundMessage).text).toBe('Клешня, глянь')
+  })
 })

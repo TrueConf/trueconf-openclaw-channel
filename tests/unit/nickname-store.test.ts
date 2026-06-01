@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createNicknameStore } from '../../src/nickname-store'
@@ -12,14 +12,22 @@ beforeEach(() => {
 describe('global nickname store', () => {
   it('add/list normalized + deduped', () => {
     const s = createNicknameStore(file)
-    expect(s.add('Клешня').ok).toBe(true)
-    s.add('клешня ')
+    expect(s.add('Клешня').status).toBe('added')
+    expect(s.add('клешня ').status).toBe('exists')
     expect(s.list()).toEqual(['клешня'])
   })
 
-  it('rejects too-short', () => {
+  it('rejects too-short (min 3)', () => {
     const s = createNicknameStore(file)
-    expect(s.add('я').ok).toBe(false)
+    expect(s.add('я').status).toBe('too_short')
+    expect(s.add('ав').status).toBe('too_short')
+    expect(s.list()).toEqual([])
+  })
+
+  it('rejects reserved generic words', () => {
+    const s = createNicknameStore(file)
+    expect(s.add('бот').status).toBe('reserved')
+    expect(s.add('Ага').status).toBe('reserved')
     expect(s.list()).toEqual([])
   })
 
@@ -27,11 +35,13 @@ describe('global nickname store', () => {
     const s = createNicknameStore(file)
     for (let i = 0; i < 60; i++) s.add(`имя${i}`)
     expect(s.list().length).toBe(50)
+    expect(s.add('ещёодно').status).toBe('cap')
   })
 
-  it('remove', () => {
+  it('remove existing → true, missing → false', () => {
     const s = createNicknameStore(file)
     s.add('Клешня')
+    expect(s.remove('нет такого')).toBe(false)
     expect(s.remove('КЛЕШНЯ')).toBe(true)
     expect(s.list()).toEqual([])
   })
@@ -46,5 +56,26 @@ describe('global nickname store', () => {
   it('persists across reopen', () => {
     createNicknameStore(file).add('Клешня')
     expect(createNicknameStore(file).list()).toEqual(['клешня'])
+  })
+
+  it('re-normalizes, dedupes, floors and drops reserved words on load', () => {
+    writeFileSync(file, JSON.stringify({ nicknames: ['  КЛЕШНЯ  ', 'я', 'бот', 'клешня', 'БД  Бот'] }))
+    expect(createNicknameStore(file).list()).toEqual(['клешня', 'бд бот'])
+  })
+
+  it('corrupt JSON → empty, logs error', () => {
+    writeFileSync(file, '{ this is not json')
+    const errors: string[] = []
+    const s = createNicknameStore(file, { info() {}, warn() {}, error: (m) => errors.push(m) })
+    expect(s.list()).toEqual([])
+    expect(errors.some((m) => m.includes('not valid JSON'))).toBe(true)
+  })
+
+  it('unexpected shape → empty, logs warn', () => {
+    writeFileSync(file, JSON.stringify({ nicknames: 'oops' }))
+    const warns: string[] = []
+    const s = createNicknameStore(file, { info() {}, warn: (m) => warns.push(m), error() {} })
+    expect(s.list()).toEqual([])
+    expect(warns.some((m) => m.includes('unexpected shape'))).toBe(true)
   })
 })

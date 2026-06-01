@@ -924,7 +924,7 @@ export function registerFull(api: OpenClawPluginApi): void {
     process.env.OPENCLAW_CONFIG_DIR || process.env.OPENCLAW_STATE_DIR || join(homedir(), '.openclaw'),
     'trueconf-nicknames.json',
   )
-  store.nicknameStore = createNicknameStore(nicknameFile)
+  store.nicknameStore = createNicknameStore(nicknameFile, logger)
   for (const tool of createNicknameTools(store.nicknameStore)) api.registerTool(tool)
 
   api.on('gateway_stop', async () => {

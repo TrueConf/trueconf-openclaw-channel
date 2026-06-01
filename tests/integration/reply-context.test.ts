@@ -135,4 +135,83 @@ describe('F2 — quoted-message context injection', () => {
     const arg = h.dispatch.mock.calls[0][0] as InboundMessage
     expect(arg.text).toBe('добавь это')
   })
+
+  it('bare attachment replying to another user → quoted prefix on the [File] line', async () => {
+    const h = makeCtx({
+      chatType: 'p2p',
+      getMessageById: async () => ({
+        type: 2,
+        id: 1,
+        payload: { type: 200, author: { id: ALICE }, content: { text: 'Гляди сюда', parseMode: 'text' } },
+      }),
+    })
+
+    await handleInboundMessage(
+      makeRequest({
+        type: EnvelopeType.ATTACHMENT,
+        chatId: DM_CHAT,
+        author: { id: BOB, type: 1 },
+        content: { fileId: 'f1', name: 'pic.png' },
+        messageId: 'm-att',
+        timestamp: 5,
+        replyMessageId: 'q-1',
+      }),
+      h.ctx,
+    )
+    await flush()
+
+    expect(h.dispatch).toHaveBeenCalledTimes(1)
+    const arg = h.dispatch.mock.calls[0][0] as InboundMessage
+    expect(arg.text).toBe('[В ответ на сообщение от alice@srv: «Гляди сюда»]\n\n[File: pic.png]')
+    expect(arg.attachmentContent).toEqual({ fileId: 'f1', name: 'pic.png' })
+  })
+
+  it('attachment arriving during a slow quote-fetch still coalesces into one turn', async () => {
+    let releaseQuote!: (v: unknown) => void
+    const h = makeCtx({
+      chatType: 'p2p',
+      getMessageById: () => new Promise((r) => { releaseQuote = r }),
+    })
+    h.ctx.chatTypes.set(DM_CHAT, 'p2p')
+
+    const pCaption = handleInboundMessage(
+      makeRequest({
+        type: EnvelopeType.PLAIN_MESSAGE,
+        chatId: DM_CHAT,
+        author: { id: BOB, type: 1 },
+        content: { text: 'смотри', parseMode: 'text' },
+        messageId: 'm-cap',
+        timestamp: 6,
+        replyMessageId: 'q-1',
+      }),
+      h.ctx,
+    )
+    const pFile = handleInboundMessage(
+      makeRequest({
+        type: EnvelopeType.ATTACHMENT,
+        chatId: DM_CHAT,
+        author: { id: BOB, type: 1 },
+        content: { fileId: 'f1', name: 'pic.png' },
+        messageId: 'm-file',
+        timestamp: 7,
+      }),
+      h.ctx,
+    )
+
+    // Let both handlers reach their awaits (caption buffered, file awaiting the
+    // caption's still-pending quote fetch) before releasing the quote.
+    await new Promise((r) => setTimeout(r, 20))
+    releaseQuote({
+      type: 2,
+      id: 1,
+      payload: { type: 200, author: { id: ALICE }, content: { text: 'Гляди', parseMode: 'text' } },
+    })
+    await Promise.all([pCaption, pFile])
+    await flush()
+
+    expect(h.dispatch).toHaveBeenCalledTimes(1)
+    const arg = h.dispatch.mock.calls[0][0] as InboundMessage
+    expect(arg.attachmentContent).toEqual({ fileId: 'f1', name: 'pic.png' })
+    expect(arg.text).toBe('[В ответ на сообщение от alice@srv: «Гляди»]\n\nсмотри')
+  })
 })

@@ -26,4 +26,13 @@ describe('matchesAnyNickname', () => {
     expect(matchesAnyNickname('клешня', [])).toBe(false)
     expect(matchesAnyNickname('', set)).toBe(false)
   })
+
+  it('treats an adjacent digit as a boundary', () => {
+    expect(matchesAnyNickname('бот3000', ['бот'])).toBe(false)
+  })
+
+  it('escapes regex metacharacters in the nickname', () => {
+    expect(matchesAnyNickname('позвать чат.бот сюда', ['чат.бот'])).toBe(true)
+    expect(matchesAnyNickname('чатXбот', ['чат.бот'])).toBe(false)
+  })
 })

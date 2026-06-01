@@ -38,6 +38,7 @@ async function bootPlugin(server: FakeServer, extraConfig: Partial<TrueConfFlatC
       },
     },
     on: () => {},
+    registerTool: () => {},
   }
   registerFull(api as never)
   const ac = new AbortController()
@@ -176,7 +177,7 @@ describe('integration: always-respond — multi-account isolation', () => {
       },
       groupAlwaysRespondIn: ['HR'],
     }
-    registerFull({ logger, runtime: {}, config: { channels: { trueconf: cfg } }, on: () => {} } as never)
+    registerFull({ logger, runtime: {}, config: { channels: { trueconf: cfg } }, on: () => {}, registerTool: () => {} } as never)
 
     const acA = new AbortController()
     const acB = new AbortController()

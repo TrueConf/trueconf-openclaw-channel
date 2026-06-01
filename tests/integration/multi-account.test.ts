@@ -34,6 +34,7 @@ async function bootMultiAccount(a: FakeServer, b: FakeServer): Promise<Harness> 
       },
     },
     on: () => {},
+    registerTool: () => {},
   }
   registerFull(api as never)
   const acA = new AbortController()

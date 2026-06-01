@@ -189,7 +189,7 @@ async function sendMessageRequest(
     for (const chunk of chunks) {
       const resp = await outboundQueue.submit('sendMessage', {
         chatId,
-        content: { text: chunk, parseMode: 'markdown' },
+        content: { text: chunk, parseMode: 'html' },
       })
       responses.push(resp)
       const code = responseErrorCode(resp)
@@ -557,7 +557,7 @@ async function prepareAttachmentUpload(
 
 function buildSendFilePayload(chatId: string, upload: PreparedUpload): Record<string, unknown> {
   const content: Record<string, unknown> = { temporalFileId: upload.temporalFileId }
-  if (upload.inlineCaption !== null) content.caption = { text: upload.inlineCaption, parseMode: 'markdown' }
+  if (upload.inlineCaption !== null) content.caption = { text: upload.inlineCaption, parseMode: 'html' }
   const payload: Record<string, unknown> = { chatId, content }
   if (upload.replyMessageId != null) payload.replyMessageId = upload.replyMessageId
   return payload

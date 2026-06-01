@@ -9,6 +9,8 @@ import {
 } from "openclaw/plugin-sdk/reply-payload"
 import { waitUntilAbort } from "openclaw/plugin-sdk/channel-lifecycle"
 import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { Agent as UndiciAgent, type Dispatcher } from 'undici'
 import {
   sendText,
@@ -23,6 +25,8 @@ import { FileUploadLimits } from './limits'
 import { PerChatSendQueue } from './send-queue'
 import { BoundedSeen, handleSdkPushEvent } from './push-events'
 import type { InboundContext } from './inbound'
+import { createNicknameStore, type NicknameStore } from './nickname-store'
+import { createNicknameTools } from './nickname-tools'
 import type { ResolvedChatKind } from './types'
 import {
   listAccountIds as listAccountIdsImpl,
@@ -183,6 +187,9 @@ export function createRuntimeStore() {
     // Recent bot messageIds per chat, used for reply-to-bot detection in
     // groups. FIFO-capped per chat, survives reconnect.
     recentBotMsgIdsByChat: new Map<string, Set<string>>(),
+    // Global bot-nickname store (disk-backed). Created in registerFull; read by
+    // the inbound gate via inboundCtx.matchesNickname.
+    nicknameStore: null as NicknameStore | null,
   }
 }
 
@@ -884,6 +891,7 @@ export const channelPlugin = {
           inflightChatTypes: store.inflightChatTypeLookups,
           recentBotMsgIds: store.recentBotMsgIdsByChat,
           isAlwaysRespond: alwaysRespond.isAlwaysRespond,
+          matchesNickname: (text) => store.nicknameStore?.matches(text) ?? false,
         }
         Promise.resolve(handleInboundMessage(msg, inboundCtx)).catch((err) => {
           logger.error(`[trueconf] handleInboundMessage threw: ${err instanceof Error ? err.message : String(err)}`)
@@ -955,6 +963,17 @@ export function registerFull(api: OpenClawPluginApi): void {
 
   validateStartupConfig(store.channelConfig, logger)
 
+  // Global nickname store lives on the persistent config/state volume so it
+  // survives restarts. OPENCLAW_CONFIG_DIR is the operator-set container var;
+  // OPENCLAW_STATE_DIR is the SDK's canonical override; ~/.openclaw is the SDK
+  // default. The three agent tools write through this store.
+  const nicknameFile = join(
+    process.env.OPENCLAW_CONFIG_DIR || process.env.OPENCLAW_STATE_DIR || join(homedir(), '.openclaw'),
+    'trueconf-nicknames.json',
+  )
+  store.nicknameStore = createNicknameStore(nicknameFile, logger)
+  for (const tool of createNicknameTools(store.nicknameStore)) api.registerTool(tool)
+
   api.on('gateway_stop', async () => {
     logger.info(`[trueconf] Shutting down ${store.accounts.size} connection(s)`)
     for (const [, entry] of store.accounts) shutdownAccountEntry(entry)
@@ -1001,6 +1020,7 @@ export function __resetForTesting(): void {
   store.chatTypeByChatId.clear()
   store.inflightChatTypeLookups.clear()
   store.recentBotMsgIdsByChat.clear()
+  store.nicknameStore = null
   __resetCoalesceBufferForTesting()
   pluginRuntimeStore.clearRuntime()
 }

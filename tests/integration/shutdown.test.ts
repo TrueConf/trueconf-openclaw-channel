@@ -34,6 +34,7 @@ async function bootPlugin(server: FakeServer): Promise<Harness> {
     on: (name: string, handler: () => unknown) => {
       ;(hooks[name] ??= []).push(handler)
     },
+    registerTool: () => {},
   }
   registerFull(api as never)
   const ac = new AbortController()

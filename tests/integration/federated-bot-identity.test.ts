@@ -37,6 +37,7 @@ async function bootPlugin(server: FakeServer): Promise<Harness> {
       },
     },
     on: () => {},
+    registerTool: () => {},
   }
   registerFull(api as never)
   const ac = new AbortController()

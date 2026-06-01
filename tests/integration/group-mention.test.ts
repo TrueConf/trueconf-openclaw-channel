@@ -37,6 +37,7 @@ async function bootPlugin(
       },
     },
     on: () => {},
+    registerTool: () => {},
   }
   registerFull(api as never)
   const ac = new AbortController()
@@ -155,6 +156,7 @@ describe('integration: group chat mention/reply gate', () => {
             },
           },
           on: () => {},
+          registerTool: () => {},
         }
         registerFull(api as never)
         const ac = new AbortController()

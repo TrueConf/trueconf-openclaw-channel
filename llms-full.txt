@@ -499,6 +499,24 @@ MIT
 
 # Changelog
 
+## [1.2.5] - 2026-06-01
+
+### Added
+- Global bot nicknames (#29). The agent can be taught names it answers to in group chats: a group message now activates the bot on @-mention, reply, **or** any configured nickname. Three agent tools — `remember_bot_nickname`, `forget_bot_nickname`, `list_bot_nicknames` — manage a global, disk-backed nickname list that survives Gateway restarts. Tool names are declared in `openclaw.plugin.json` under `contracts.tools` so the gateway registers them.
+- Quoted-message reply context (#29). When an inbound message quotes/replies to another message, the plugin fetches the quoted message via `getMessageById` and prepends its author and text as context for the agent, so a reply to a quote is understood without the surrounding history.
+
+### Fixed
+- Account startup no longer leaks resources (#30). When `lifecycle.start()` throws, the account's undici dispatcher (keep-alive socket pool) and registry entry are now torn down (`shutdownAccountEntry` + `accounts.delete` + `clearAccountChats`) instead of lingering as a zombie that could shadow a later re-add.
+- Inbound dispatch no longer produces an unhandled promise rejection (#30). A throwing async `onInboundMessage` handler is now caught and logged, matching the existing push-listener guard.
+- `forget_bot_nickname` reports the truth when the on-disk write fails (#30). `NicknameStore.remove()` returns a discriminated result (`removed` / `not_found` / `persist_failed`) instead of always claiming success, so a nickname can no longer silently reappear after a restart.
+- The nickname store reloads from disk when the file changes (#29), so a nickname registered through a tool is seen by the in-process activation gate without a Gateway restart.
+
+### Changed
+- The two markdown sanitizers now share a single `sanitizeMarkdownCore` helper (#30); the differing blank-line collapse step is injected. Output is unchanged.
+
+### Removed
+- Dead code (#30): `buildAck`, `IdCounter.current()`, `RequestMatcher.size`, the write-only `pluginRuntimeStore`, and the unused probe helpers `decide()` / `categorizeOAuthError()` (production routing already lives in `probeTls` / `validateOAuthCredentials`).
+
 ## [1.2.4] - 2026-05-03
 
 ### Added

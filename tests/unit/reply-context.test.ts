@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatQuotedPrefix } from '../../src/reply-context'
+import { fetchQuotedContext, formatQuotedPrefix } from '../../src/reply-context'
 
 describe('formatQuotedPrefix', () => {
   it('builds a Russian quoted-context block', () => {
@@ -20,5 +20,45 @@ describe('formatQuotedPrefix', () => {
 
   it('neutral author fallback', () => {
     expect(formatQuotedPrefix('', 'текст')).toBe('[В ответ на сообщение от участника: «текст»]')
+  })
+})
+
+const wsOf = (resp: unknown, o: { throws?: boolean; delayMs?: number } = {}) =>
+  ({
+    sendRequest: async () => {
+      if (o.delayMs) await new Promise((r) => setTimeout(r, o.delayMs))
+      if (o.throws) throw new Error('net')
+      return resp
+    },
+  }) as never
+
+describe('fetchQuotedContext', () => {
+  it('text quote → prefix', async () => {
+    const ws = wsOf({ payload: { type: 200, author: { id: 'ivan@s' }, content: { text: 'Привет', parseMode: 'text' } } })
+    expect(await fetchQuotedContext(ws, 'm', () => 'Иван', null)).toBe('[В ответ на сообщение от Иван: «Привет»]')
+  })
+
+  it('strips html', async () => {
+    const ws = wsOf({ payload: { type: 200, author: { id: 'a' }, content: { text: '<b>ж</b> т', parseMode: 'html' } } })
+    expect(await fetchQuotedContext(ws, 'm', () => 'A', null)).toBe('[В ответ на сообщение от A: «ж т»]')
+  })
+
+  it('errorCode → null', async () => {
+    expect(await fetchQuotedContext(wsOf({ payload: { errorCode: 306 } }), 'm', () => 'A', null)).toBeNull()
+  })
+
+  it('throw → null', async () => {
+    expect(await fetchQuotedContext(wsOf(null, { throws: true }), 'm', () => 'A', null)).toBeNull()
+  })
+
+  it('non-text type → null', async () => {
+    expect(
+      await fetchQuotedContext(wsOf({ payload: { type: 202, author: { id: 'a' }, content: {} } }), 'm', () => 'A', null),
+    ).toBeNull()
+  })
+
+  it('timeout → null', async () => {
+    const ws = wsOf({ payload: { type: 200, author: { id: 'a' }, content: { text: 'x', parseMode: 'text' } } }, { delayMs: 50 })
+    expect(await fetchQuotedContext(ws, 'm', () => 'A', null, 10)).toBeNull()
   })
 })

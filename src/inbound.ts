@@ -21,6 +21,7 @@ import type {
   AttachmentContent,
 } from './types'
 import { WsClient, hostPort } from './ws-client'
+import { fetchQuotedContext } from './reply-context'
 import { sendText, sendTextToChat, isReconnectableSendError } from './outbound'
 import { resolveAccount } from './config'
 import { PerChatSendQueue } from './send-queue'
@@ -365,11 +366,24 @@ export async function handleInboundMessage(
     ...(extraContext ? { extraContext } : {}),
   }
 
+  // F2: when this message replies to ANOTHER user's message (not the bot's
+  // own), fetch the quoted text+author and prepend it so the agent sees the
+  // context. Awaited before buffering, so the prefix lands in the same
+  // coalesced turn (see plan NEW-4 trade-off: this can exceed the 300ms
+  // coalesce window for the rare reply+caption+attachment combo).
+  let replyPrefix: string | null = null
+  if (envelope.replyMessageId && !isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))) {
+    replyPrefix = await fetchQuotedContext(ctx.wsClient, envelope.replyMessageId, (id) => id || 'участника', ctx.logger)
+  }
+  const textForAgent = replyPrefix
+    ? `${replyPrefix}\n\n${plainText ?? syntheticText ?? ''}`
+    : (plainText ?? syntheticText ?? '')
+
   if (envelope.type === EnvelopeType.PLAIN_MESSAGE) {
     if (pendingTextInbounds.has(key)) flushPendingText(key)
     const timer = setTimeout(() => flushPendingText(key), COALESCE_WINDOW_MS)
     timer.unref?.()
-    pendingTextInbounds.set(key, { base, text: plainText!, timer, dispatch: ctx.dispatch, logger: ctx.logger })
+    pendingTextInbounds.set(key, { base, text: textForAgent, timer, dispatch: ctx.dispatch, logger: ctx.logger })
     return
   }
 
@@ -393,7 +407,7 @@ export async function handleInboundMessage(
   if (pendingTextInbounds.has(key)) flushPendingText(key)
   const timer = setTimeout(() => flushPendingText(key), COALESCE_WINDOW_MS)
   timer.unref?.()
-  pendingTextInbounds.set(key, { base, text: syntheticText!, timer, dispatch: ctx.dispatch, logger: ctx.logger })
+  pendingTextInbounds.set(key, { base, text: textForAgent, timer, dispatch: ctx.dispatch, logger: ctx.logger })
 }
 
 function dispatchWithFence(dispatch: InboundDispatchFn, inbound: InboundMessage, logger: Logger): void {

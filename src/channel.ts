@@ -23,6 +23,7 @@ import { FileUploadLimits } from './limits'
 import { PerChatSendQueue } from './send-queue'
 import { BoundedSeen, handleSdkPushEvent } from './push-events'
 import type { InboundContext } from './inbound'
+import type { NicknameStore } from './nickname-store'
 import type { ResolvedChatKind } from './types'
 import {
   listAccountIds as listAccountIdsImpl,
@@ -183,6 +184,9 @@ export function createRuntimeStore() {
     // Recent bot messageIds per chat, used for reply-to-bot detection in
     // groups. FIFO-capped per chat, survives reconnect.
     recentBotMsgIdsByChat: new Map<string, Set<string>>(),
+    // Global bot-nickname store (disk-backed). Created in registerFull; read by
+    // the inbound gate via inboundCtx.matchesNickname.
+    nicknameStore: null as NicknameStore | null,
   }
 }
 
@@ -837,6 +841,7 @@ export const channelPlugin = {
           inflightChatTypes: store.inflightChatTypeLookups,
           recentBotMsgIds: store.recentBotMsgIdsByChat,
           isAlwaysRespond: alwaysRespond.isAlwaysRespond,
+          matchesNickname: (text) => store.nicknameStore?.matches(text) ?? false,
         }
         Promise.resolve(handleInboundMessage(msg, inboundCtx)).catch((err) => {
           logger.error(`[trueconf] handleInboundMessage threw: ${err instanceof Error ? err.message : String(err)}`)
@@ -954,6 +959,7 @@ export function __resetForTesting(): void {
   store.chatTypeByChatId.clear()
   store.inflightChatTypeLookups.clear()
   store.recentBotMsgIdsByChat.clear()
+  store.nicknameStore = null
   __resetCoalesceBufferForTesting()
   pluginRuntimeStore.clearRuntime()
 }

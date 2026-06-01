@@ -31,7 +31,7 @@ const BOB = 'bob@srv'
 const DM_CHAT = 'chat_alice@srv'
 const GROUP_CHAT = 'group_42'
 
-function makeHarness(opts?: { chatType?: 'p2p' | 'group' }): Harness {
+function makeHarness(opts?: { chatType?: 'p2p' | 'group'; matchesNickname?: (text: string) => boolean }): Harness {
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
   const dispatch = vi.fn()
   const wsClient: FakeWsClient = {
@@ -60,6 +60,7 @@ function makeHarness(opts?: { chatType?: 'p2p' | 'group' }): Harness {
     inflightChatTypes: new Map(),
     recentBotMsgIds,
     isAlwaysRespond: (chatId: string) => alwaysRespondChats.has(chatId),
+    matchesNickname: opts?.matchesNickname ?? (() => false),
   }
   return { ctx, dispatch, logger, wsClient, chatTypes, recentBotMsgIds, alwaysRespondChats }
 }

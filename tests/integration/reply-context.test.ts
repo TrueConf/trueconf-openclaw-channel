@@ -38,6 +38,7 @@ function makeCtx(opts: CtxOpts = {}) {
     inflightChatTypes: new Map(),
     recentBotMsgIds: opts.recentBotMsgIds ?? new Map<string, Set<string>>(),
     isAlwaysRespond: () => false,
+    matchesNickname: () => false,
   }
   return { ctx, dispatch, sendRequest, logger }
 }

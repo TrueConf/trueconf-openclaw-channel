@@ -190,6 +190,7 @@ export interface InboundContext {
   inflightChatTypes: Map<string, Promise<ResolvedChatKind>>
   recentBotMsgIds: Map<string, Set<string>>
   isAlwaysRespond: (chatId: string) => boolean
+  matchesNickname: (text: string) => boolean
 }
 
 export async function handleInboundMessage(
@@ -320,7 +321,7 @@ export async function handleInboundMessage(
         (id) => normalizeForCompare(id) === normalizedBot,
       )
       const replied = isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))
-      activated = mentioned || replied
+      activated = mentioned || replied || ctx.matchesNickname(plainText ?? content.text)
     } else if (envelope.type === EnvelopeType.FORWARDED_MESSAGE) {
       // Forwards don't carry the bot's mention markup, so reply-to-bot is the
       // only direct activation path. A preceding gated text in the coalescer

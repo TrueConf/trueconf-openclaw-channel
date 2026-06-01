@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { saveJsonFile } from 'openclaw/plugin-sdk/json-store'
 import type { Logger } from './types'
 import { matchesAnyNickname, normalizeNickname } from './nickname-match'
@@ -46,10 +46,26 @@ export interface NicknameStore {
 // the tool still reporting success, is the worst failure mode for this feature.
 export function createNicknameStore(filePath: string, logger: Logger | null = null): NicknameStore {
   let names: string[] = loadNicknames(filePath, logger)
+  let lastMtimeMs = mtimeMsOrZero(filePath)
+
+  // The list is global but the plugin is instantiated in more than one runtime
+  // context (the inbound gate and the agent tools each hold their own store),
+  // and disk is the only shared state. Reload when the file's mtime moved so a
+  // nickname registered through a tool is seen live by the gate — not only after
+  // a restart. Called before every read and before every mutate (so add/remove
+  // merge with concurrent writes instead of clobbering them).
+  const refreshIfChanged = (): void => {
+    const m = mtimeMsOrZero(filePath)
+    if (m !== lastMtimeMs) {
+      names = loadNicknames(filePath, logger)
+      lastMtimeMs = m
+    }
+  }
 
   const persist = (): boolean => {
     try {
       saveJsonFile(filePath, { nicknames: names } satisfies Data)
+      lastMtimeMs = mtimeMsOrZero(filePath)
       return true
     } catch (err) {
       logger?.error(
@@ -60,9 +76,16 @@ export function createNicknameStore(filePath: string, logger: Logger | null = nu
   }
 
   return {
-    list: () => [...names],
-    matches: (text) => matchesAnyNickname(text, names),
+    list: () => {
+      refreshIfChanged()
+      return [...names]
+    },
+    matches: (text) => {
+      refreshIfChanged()
+      return matchesAnyNickname(text, names)
+    },
     add: (name) => {
+      refreshIfChanged()
       const n = normalizeNickname(name)
       if (n.length < MIN_LEN) return { status: 'too_short' }
       if (RESERVED.has(n)) return { status: 'reserved' }
@@ -72,6 +95,7 @@ export function createNicknameStore(filePath: string, logger: Logger | null = nu
       return persist() ? { status: 'added' } : { status: 'persist_failed' }
     },
     remove: (name) => {
+      refreshIfChanged()
       const n = normalizeNickname(name)
       const i = names.indexOf(n)
       if (i < 0) return false
@@ -126,4 +150,15 @@ function loadNicknames(filePath: string, logger: Logger | null): string[] {
     if (names.length >= MAX) break
   }
   return names
+}
+
+// Modification time in ms, or 0 when the file is absent/unstattable — a cheap
+// change sentinel so the store can detect out-of-process writes without reading
+// the whole file on every call.
+function mtimeMsOrZero(filePath: string): number {
+  try {
+    return statSync(filePath).mtimeMs
+  } catch {
+    return 0
+  }
 }

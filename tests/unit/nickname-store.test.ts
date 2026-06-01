@@ -79,3 +79,22 @@ describe('global nickname store', () => {
     expect(warns.some((m) => m.includes('unexpected shape'))).toBe(true)
   })
 })
+
+describe('global nickname store — cross-instance disk sync', () => {
+  it('a second live instance sees a nickname added by another (no reopen)', () => {
+    const gate = createNicknameStore(file)
+    const tool = createNicknameStore(file)
+    expect(gate.matches('Клешня, привет')).toBe(false)
+    expect(tool.add('Клешня').status).toBe('added')
+    expect(gate.matches('Клешня, привет')).toBe(true)
+    expect(gate.list()).toEqual(['клешня'])
+  })
+
+  it('add() merges with a concurrent addition instead of clobbering it', () => {
+    const a = createNicknameStore(file)
+    const b = createNicknameStore(file)
+    expect(a.add('Клешня').status).toBe('added')
+    expect(b.add('Лобстер').status).toBe('added')
+    expect(createNicknameStore(file).list()).toEqual(['клешня', 'лобстер'])
+  })
+})

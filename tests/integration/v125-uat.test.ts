@@ -59,6 +59,7 @@ async function bootPlugin(server: FakeServer, opts: { waitForConnection?: boolea
       },
     },
     on: () => {},
+    registerTool: () => {},
   }
   registerFull(api as never)
   const ac = new AbortController()

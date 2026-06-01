@@ -321,6 +321,7 @@ describe('startAccount onTerminalFailure → outboundQueue.failAll wiring', () =
         },
       },
       on: () => {},
+      registerTool: () => {},
     }
     registerFull(api as never)
     const ac = new AbortController()

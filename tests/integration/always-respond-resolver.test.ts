@@ -35,6 +35,7 @@ async function bootPlugin(server: FakeServer, extraConfig: Partial<TrueConfFlatC
       },
     },
     on: () => {},
+    registerTool: () => {},
   }
   registerFull(api as never)
   const ac = new AbortController()

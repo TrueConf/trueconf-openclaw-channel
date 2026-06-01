@@ -33,6 +33,7 @@ async function bootPlugin(server: FakeServer, policyOverride: Record<string, unk
       },
     },
     on: () => {},
+    registerTool: () => {},
   }
   registerFull(api as never)
   const ac = new AbortController()

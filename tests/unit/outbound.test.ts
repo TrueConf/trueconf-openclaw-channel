@@ -169,7 +169,7 @@ describe('sendMessageRequest auto-split + sendQueue', () => {
     expect(client.sendRequest).toHaveBeenCalledTimes(1)
     expect(client.sendRequest).toHaveBeenCalledWith('sendMessage', {
       chatId: 'chat-X',
-      content: { text: 'short text', parseMode: 'markdown' },
+      content: { text: 'short text', parseMode: 'html' },
     }, expect.any(String))
   })
 

@@ -67,6 +67,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.2.0",
+    "@sinclair/typebox": "^0.34.48",
     "jiti": "^2.6.1",
     "sharp": "^0.34.5",
     "undici": "^7.0.0",

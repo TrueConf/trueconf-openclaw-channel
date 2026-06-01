@@ -2,11 +2,18 @@
   "id": "trueconf",
   "label": "TrueConf",
   "blurb": "Connect OpenClaw to TrueConf Server corporate messenger.",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "channels": [
     "trueconf"
   ],
   "minOpenClawVersion": "2026.3.22",
+  "contracts": {
+    "tools": [
+      "remember_bot_nickname",
+      "forget_bot_nickname",
+      "list_bot_nicknames"
+    ]
+  },
   "channelConfigs": {
     "trueconf": {
       "label": "TrueConf",

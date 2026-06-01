@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, it, expect, vi } from 'vitest'
 import { createNicknameTools } from '../../src/nickname-tools'
 
@@ -48,5 +49,17 @@ describe('nickname tools', () => {
   it('list returns current names, or a placeholder when empty', async () => {
     expect((await find(store(), 'list_bot_nicknames').execute('id', {})).content[0].text).toContain('клешня')
     expect((await find(store({ list: () => [] }), 'list_bot_nicknames').execute('id', {})).content[0].text).toContain('пока нет')
+  })
+
+  // The openclaw runtime rejects api.registerTool unless the plugin manifest
+  // declares the tool name under contracts.tools. Keep the manifest in sync with
+  // the tools this factory registers (the mocked api in other tests can't catch
+  // this — only the real gateway loader enforces it).
+  it('manifest declares contracts.tools for every registered nickname tool', () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL('../../openclaw.plugin.json', import.meta.url), 'utf8'),
+    ) as { contracts?: { tools?: string[] } }
+    const declared = manifest.contracts?.tools ?? []
+    for (const t of createNicknameTools(store() as never)) expect(declared).toContain(t.name)
   })
 })

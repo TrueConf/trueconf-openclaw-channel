@@ -342,15 +342,10 @@ export function isAuthTerminalCode(status: number): boolean {
 // err.code can distinguish a terminal auth failure from a transient one.
 export const OAUTH_TERMINAL_CODE = 'OAUTH_GIVEUP' as const
 
-export function buildAck(serverRequestId: number): TrueConfResponse {
-  return { type: 2, id: serverRequestId }
-}
-
 export class IdCounter {
   private counter = 0
   next(): number { return ++this.counter }
   reset(): void { this.counter = 0 }
-  current(): number { return this.counter }
 }
 
 interface PendingRequest {
@@ -398,6 +393,4 @@ export class RequestMatcher {
     }
     this.pending.clear()
   }
-
-  get size(): number { return this.pending.size }
 }

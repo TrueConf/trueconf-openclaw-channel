@@ -1,6 +1,4 @@
-import type { PluginRuntime } from "openclaw/plugin-sdk/core"
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk"
-import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store"
 import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound"
 import {
   deliverTextOrMediaReply,
@@ -160,8 +158,6 @@ export function mapPushToResolverEvent(
       return null
   }
 }
-
-const pluginRuntimeStore = createPluginRuntimeStore<PluginRuntime>("TrueConf runtime not initialized")
 
 export function createRuntimeStore() {
   return {
@@ -958,7 +954,6 @@ export function registerFull(api: OpenClawPluginApi): void {
   store.logger = logger
   store.runtime = api.runtime
   store.fullConfig = api.config
-  pluginRuntimeStore.setRuntime(api.runtime)
   store.channelConfig = getChannelConfig(api.config)
 
   validateStartupConfig(store.channelConfig, logger)
@@ -1022,7 +1017,6 @@ export function __resetForTesting(): void {
   store.recentBotMsgIdsByChat.clear()
   store.nicknameStore = null
   __resetCoalesceBufferForTesting()
-  pluginRuntimeStore.clearRuntime()
 }
 
 // Test-only handle. Returns the live store.accounts Map by reference;

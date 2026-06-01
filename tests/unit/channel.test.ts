@@ -351,3 +351,77 @@ describe('startAccount onTerminalFailure → outboundQueue.failAll wiring', () =
     vi.resetModules()
   })
 })
+
+describe('startAccount cleanup when lifecycle.start() fails', () => {
+  it('shuts down and removes the account entry when startup throws', async () => {
+    vi.resetModules()
+
+    const shutdownSpy = vi.fn()
+    vi.doMock('../../src/ws-client', async () => {
+      const actual = await vi.importActual<typeof import('../../src/ws-client')>('../../src/ws-client')
+      class FakeLifecycle {
+        constructor(_ws: unknown, _cfg: unknown, _logger: unknown, _opts: unknown) {}
+        async start(): Promise<void> { throw new Error('startup boom') }
+        shutdown(): void { shutdownSpy() }
+        async forceReconnect(): Promise<void> {}
+      }
+      class FakeWsClient {
+        botUserId: string | null = null
+        onAuth(_l: () => void): () => void { return () => {} }
+        onPush(_l: unknown): () => void { return () => {} }
+        async sendRequest(): Promise<never> { throw new Error('not used in this test') }
+        markAuthenticated(): void {}
+        markAuthFailed(_e: Error): void {}
+        async waitAuthenticated(): Promise<void> {}
+        resetAuthBarrier(): void {}
+        close(): void {}
+        ping(): void {}
+        terminate(): void {}
+      }
+      return { ...actual, WsClient: FakeWsClient, ConnectionLifecycle: FakeLifecycle }
+    })
+
+    vi.doMock('openclaw/plugin-sdk/channel-inbound', () => ({
+      dispatchInboundDirectDmWithRuntime: vi.fn().mockResolvedValue({}),
+    }))
+
+    const { channelPlugin, registerFull, __resetForTesting, __getAccountsForTesting } = await import('../../src/channel')
+    __resetForTesting()
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+    const api = {
+      logger,
+      runtime: {},
+      config: {
+        channels: {
+          trueconf: {
+            serverUrl: 'tc.example.com',
+            port: 4309,
+            useTls: false,
+            username: 'bot',
+            password: 'p',
+            dmPolicy: 'open',
+          },
+        },
+      },
+      on: () => {},
+      registerTool: () => {},
+    }
+    registerFull(api as never)
+    const ac = new AbortController()
+    const statuses: Array<{ running: boolean }> = []
+    await (channelPlugin.gateway.startAccount as (ctx: Record<string, unknown>) => Promise<void>)({
+      accountId: 'default',
+      setStatus: (s: { running: boolean }) => { statuses.push(s) },
+      abortSignal: ac.signal,
+    })
+
+    expect(__getAccountsForTesting().has('default')).toBe(false)
+    expect(shutdownSpy).toHaveBeenCalledTimes(1)
+    expect(statuses.at(-1)?.running).toBe(false)
+
+    ac.abort()
+    vi.doUnmock('../../src/ws-client')
+    vi.doUnmock('openclaw/plugin-sdk/channel-inbound')
+    vi.resetModules()
+  })
+})

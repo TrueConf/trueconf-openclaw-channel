@@ -929,6 +929,10 @@ export const channelPlugin = {
         await lifecycle.start()
       } catch (err) {
         logger.error(`[trueconf] Account ${accountId} startup failed: ${err instanceof Error ? err.message : String(err)}`)
+        const failedEntry = store.accounts.get(accountId)
+        if (failedEntry) shutdownAccountEntry(failedEntry)
+        store.accounts.delete(accountId)
+        clearAccountChats(accountId)
         setStatus({
           accountId,
           running: false,

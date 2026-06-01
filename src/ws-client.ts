@@ -457,7 +457,13 @@ export class WsClient {
               }
             }
           }
-          if (this.onInboundMessage) this.onInboundMessage(msg as TrueConfRequest)
+          if (this.onInboundMessage) {
+            void Promise.resolve(this.onInboundMessage(msg as TrueConfRequest)).catch((err) => {
+              this.logger?.error(
+                `[trueconf] inbound message handler error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
+              )
+            })
+          }
         }
       })
 

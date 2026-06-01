@@ -49,7 +49,15 @@ export function createNicknameTools(store: NicknameStore) {
       parameters: Type.Object({ name: Type.String({ description: 'Псевдоним' }) }),
       async execute(_id: string, p: Record<string, unknown>): Promise<AgentToolResult> {
         const norm = normalizeNickname(String(p.name ?? ''))
-        return say(store.remove(String(p.name ?? '')) ? `Убрал псевдоним «${norm}».` : `Псевдоним «${norm}» не найден.`)
+        const r = store.remove(String(p.name ?? ''))
+        switch (r.status) {
+          case 'removed':
+            return say(`Убрал псевдоним «${norm}».`)
+          case 'not_found':
+            return say(`Псевдоним «${norm}» не найден.`)
+          case 'persist_failed':
+            return say(`Убрал псевдоним «${norm}», но не смог сохранить — он вернётся после перезапуска.`)
+        }
       },
     },
     {

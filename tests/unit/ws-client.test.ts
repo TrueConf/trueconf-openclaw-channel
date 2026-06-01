@@ -718,6 +718,23 @@ describe('WsClient — message handling on captured ws', () => {
 
     client.close()
   })
+
+  it('logs (does not leave unhandled) a rejection thrown by onInboundMessage', async () => {
+    const client = new WsClient()
+    const errorSpy = vi.fn()
+    client.logger = { info: () => {}, warn: () => {}, error: errorSpy, debug: () => {} }
+    await client.connect(makeConfig(server!.port), 'fake-token')
+
+    client.onInboundMessage = () => Promise.reject(new Error('handler boom'))
+
+    server!.pushToActive({ type: 1, id: 2001, method: 'sendMessage', payload: { chatId: 'c', envelope: { type: 200 } } })
+    await new Promise<void>((r) => setTimeout(r, 50))
+
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    expect(String(errorSpy.mock.calls[0]?.[0])).toMatch(/inbound message handler error/)
+
+    client.close()
+  })
 })
 
 describe('WsClient SO_KEEPALIVE on the underlying socket', () => {

@@ -11,8 +11,6 @@ vi.mock('undici', async (importOriginal) => {
 import { fetch as undiciFetch } from 'undici'
 import {
   summarizeCert,
-  decide,
-  categorizeOAuthError,
   buildCertChainPem,
   validateCaAgainstServer,
 } from '../../src/probe.mjs'
@@ -62,98 +60,6 @@ describe('probe-trueconf: summarizeCert', () => {
       issuer: { CN: 'trueconf.example', O: 'Corporate CA' },
     }
     expect(summarizeCert(cert)?.selfSigned).toBe(false)
-  })
-})
-
-describe('probe-trueconf: decide', () => {
-  const host = 'team.trueconf.com'
-
-  it('picks tls-valid when TLS reachable and trusted', () => {
-    const d = decide({ host, bridge: { open: true }, tls: { reachable: true, trusted: true } })
-    expect(d).toMatchObject({
-      useTls: true,
-      port: 443,
-      reason: 'tls-valid',
-      wsUrl: 'wss://team.trueconf.com/websocket/chat_bot/',
-      tokenUrl: 'https://team.trueconf.com/bridge/api/client/v1/oauth/token',
-    })
-  })
-
-  it('picks tls-untrusted when TLS reachable but not trusted', () => {
-    const d = decide({ host, bridge: { open: false }, tls: { reachable: true, trusted: false } })
-    expect(d.reason).toBe('tls-untrusted')
-    expect(d.useTls).toBe(true)
-  })
-
-  it('falls back to bridge-open when TLS unreachable but bridge open', () => {
-    const d = decide({ host, bridge: { open: true }, tls: { reachable: false } })
-    expect(d).toMatchObject({
-      useTls: false,
-      port: 4309,
-      reason: 'bridge-open',
-      wsUrl: 'ws://team.trueconf.com:4309/websocket/chat_bot/',
-    })
-  })
-
-  it('falls back to nothing-reachable with TLS defaults', () => {
-    const d = decide({ host, bridge: { open: false }, tls: { reachable: false } })
-    expect(d.reason).toBe('nothing-reachable')
-    expect(d.useTls).toBe(true)
-    expect(d.port).toBe(443)
-  })
-
-  it('honors tlsOverride=true and custom port', () => {
-    const d = decide({ host, bridge: null, tls: null, tlsOverride: 'true', portOverride: 8443 })
-    expect(d).toMatchObject({
-      useTls: true,
-      port: 8443,
-      reason: 'override',
-      explicitPort: true,
-      wsUrl: 'wss://team.trueconf.com:8443/websocket/chat_bot/',
-    })
-  })
-
-  it('honors tlsOverride=false without port override -> defaults to 4309', () => {
-    const d = decide({ host, bridge: null, tls: null, tlsOverride: 'false', portOverride: null })
-    expect(d.useTls).toBe(false)
-    expect(d.port).toBe(4309)
-    expect(d.explicitPort).toBe(false)
-  })
-
-  it('omits port from URL when TLS and port=443 (scheme default)', () => {
-    const d = decide({ host, tls: { reachable: true, trusted: true } })
-    expect(d.wsUrl).toBe('wss://team.trueconf.com/websocket/chat_bot/')
-    expect(d.tokenUrl).toBe('https://team.trueconf.com/bridge/api/client/v1/oauth/token')
-  })
-})
-
-describe('probe-trueconf: categorizeOAuthError', () => {
-  it('maps 401/403 to invalid-credentials', () => {
-    expect(categorizeOAuthError(401)).toBe('invalid-credentials')
-    expect(categorizeOAuthError(403)).toBe('invalid-credentials')
-  })
-
-  it('maps 404 to endpoint-missing', () => {
-    expect(categorizeOAuthError(404)).toBe('endpoint-missing')
-  })
-
-  it('maps 0 to network', () => {
-    expect(categorizeOAuthError(0)).toBe('network')
-  })
-
-  it('maps 5xx to server-error', () => {
-    expect(categorizeOAuthError(500)).toBe('server-error')
-    expect(categorizeOAuthError(503)).toBe('server-error')
-  })
-
-  it('maps 200-299 to ok', () => {
-    expect(categorizeOAuthError(200)).toBe('ok')
-    expect(categorizeOAuthError(299)).toBe('ok')
-  })
-
-  it('falls back to other for 300/400', () => {
-    expect(categorizeOAuthError(301)).toBe('other')
-    expect(categorizeOAuthError(418)).toBe('other')
   })
 })
 

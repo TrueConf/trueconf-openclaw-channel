@@ -121,15 +121,15 @@ async function resolveDirectChat(
   return { stableUserId, chatId }
 }
 
-// TrueConf markdown is unreliable inside list items and after emoji, so strip
-// emphasis markers and render links as "text (url)" rather than leaking raw
-// syntax to the user. Used for short captions where paragraph breaks aren't
-// meaningful — collapses `\n{2,}` to a single newline.
-export function sanitizeMarkdown(text: string): string {
+// Core TrueConf markdown→plaintext stripping. TrueConf markdown is unreliable
+// inside list items and after emoji, so strip emphasis markers and render links
+// as "text (url)" rather than leaking raw syntax to the user. The two public
+// variants differ only in how blank lines collapse, so that one step is injected.
+function sanitizeMarkdownCore(text: string, collapseBlankLines: (s: string) => string): string {
   let r = text.replace(/\r\n?/g, '\n')
   r = r.replace(/&lt;\s*\/?\s*br\s*\/?\s*&gt;/gi, '\n')
   r = r.replace(/<\s*\/?\s*br\s*\/?\s*>/gi, '\n')
-  r = r.replace(/\n{2,}/g, '\n')
+  r = collapseBlankLines(r)
   r = r.replace(/<\/?[^>]+(>|$)/g, '')
   r = r.replace(/^#{1,6}\s+(.+)$/gm, '$1')
   r = r.replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, '').replace(/```/g, '').trim())
@@ -145,29 +145,19 @@ export function sanitizeMarkdown(text: string): string {
   return r.trim()
 }
 
+// Used for short captions where paragraph breaks aren't meaningful — collapses
+// `\n{2,}` to a single newline.
+export function sanitizeMarkdown(text: string): string {
+  return sanitizeMarkdownCore(text, (r) => r.replace(/\n{2,}/g, '\n'))
+}
+
 // Same as `sanitizeMarkdown` but preserves single blank lines between
 // paragraphs. Long agent replies often arrive with deliberate paragraph breaks;
 // collapsing them to a single newline (the caption-style behavior) destroys
 // readability when chunks are auto-split by `splitTextForSending`. We only
 // collapse runs of 3+ consecutive newlines down to `\n\n`.
 export function sanitizeMarkdownPreservingParagraphs(text: string): string {
-  let r = text.replace(/\r\n?/g, '\n')
-  r = r.replace(/&lt;\s*\/?\s*br\s*\/?\s*&gt;/gi, '\n')
-  r = r.replace(/<\s*\/?\s*br\s*\/?\s*>/gi, '\n')
-  r = r.replace(/\n{3,}/g, '\n\n')
-  r = r.replace(/<\/?[^>]+(>|$)/g, '')
-  r = r.replace(/^#{1,6}\s+(.+)$/gm, '$1')
-  r = r.replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, '').replace(/```/g, '').trim())
-  r = r.replace(/`([^`]+)`/g, '$1')
-  r = r.replace(/^[\s]*[*+-]\s+/gm, '- ')
-  r = r.replace(/^[\s]*(\d+)\.\s+/gm, '$1. ')
-  r = r.replace(/^>\s?/gm, '')
-  r = r.replace(/^[-*_]{3,}$/gm, '---')
-  r = r.replace(/\*\*([\s\S]+?)\*\*/g, '$1')
-  r = r.replace(/(?<![A-Za-z0-9_*])\*([^\s*][^*\n]*?[^\s*])\*(?![A-Za-z0-9_*])/g, '$1')
-  r = r.replace(/~~([\s\S]+?)~~/g, '$1')
-  r = r.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
-  return r.trim()
+  return sanitizeMarkdownCore(text, (r) => r.replace(/\n{3,}/g, '\n\n'))
 }
 
 // Auto-split + per-chat queue. Each chunk is a separate `sendMessage` request

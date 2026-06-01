@@ -10,7 +10,6 @@ import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { Agent as UndiciAgent, fetch } from 'undici'
 
-const BRIDGE_PORT = 4309
 const BRIDGE_TIMEOUT_MS = 3000
 const TLS_TIMEOUT_MS = 4000
 // AbortSignal.timeout is wall-clock, not socket-idle — on slow/corporate
@@ -302,49 +301,6 @@ export function summarizeCert(cert) {
   }
 }
 
-export function decide({ host, bridge, tls, tlsOverride, portOverride }) {
-  let useTls
-  let port
-  let reason
-
-  if (tlsOverride === 'true') {
-    useTls = true
-    port = Number.isFinite(portOverride) ? portOverride : 443
-    reason = 'override'
-  } else if (tlsOverride === 'false') {
-    useTls = false
-    port = Number.isFinite(portOverride) ? portOverride : BRIDGE_PORT
-    reason = 'override'
-  } else if (tls?.reachable) {
-    useTls = true
-    port = 443
-    reason = tls.trusted ? 'tls-valid' : 'tls-untrusted'
-  } else if (bridge?.open) {
-    useTls = false
-    port = BRIDGE_PORT
-    reason = 'bridge-open'
-  } else {
-    useTls = true
-    port = 443
-    reason = 'nothing-reachable'
-  }
-
-  const isDefaultPort = (useTls && port === 443) || (!useTls && port === 80)
-  const hostPart = isDefaultPort ? host : `${host}:${port}`
-  const wsProtocol = useTls ? 'wss' : 'ws'
-  const httpProtocol = useTls ? 'https' : 'http'
-
-  return {
-    useTls,
-    port,
-    reason,
-    protocol: wsProtocol,
-    wsUrl: `${wsProtocol}://${hostPart}/websocket/chat_bot/`,
-    tokenUrl: `${httpProtocol}://${hostPart}/bridge/api/client/v1/oauth/token`,
-    explicitPort: reason === 'override' && Number.isFinite(portOverride),
-  }
-}
-
 function derToPem(derBuffer) {
   const base64 = derBuffer.toString('base64')
   const lines = base64.match(/.{1,64}/g) || []
@@ -368,15 +324,6 @@ export function buildCertChainPem(leafCert) {
     }
   }
   return pems.join('\n')
-}
-
-export function categorizeOAuthError(status) {
-  if (status === 401 || status === 403) return 'invalid-credentials'
-  if (status === 404) return 'endpoint-missing'
-  if (status === 0) return 'network'
-  if (status >= 500) return 'server-error'
-  if (status >= 200 && status < 300) return 'ok'
-  return 'other'
 }
 
 // Split a DN string on unescaped commas and newlines, honoring quoted sections.

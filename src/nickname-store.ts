@@ -28,11 +28,19 @@ export type NicknameAddResult =
   | { status: 'cap' }
   | { status: 'persist_failed' }
 
+// Closed outcome of remove(): mirrors add() so the tool layer can tell the user
+// the truth — including 'persist_failed', when the name was dropped from the
+// in-memory list but the disk write threw, so it will reappear on restart.
+export type NicknameRemoveResult =
+  | { status: 'removed' }
+  | { status: 'not_found' }
+  | { status: 'persist_failed' }
+
 export interface NicknameStore {
   list(): string[]
   matches(text: string): boolean
   add(name: string): NicknameAddResult
-  remove(name: string): boolean
+  remove(name: string): NicknameRemoveResult
 }
 
 // Global, flat, disk-backed list of bot nicknames. The list is global (one set
@@ -98,10 +106,9 @@ export function createNicknameStore(filePath: string, logger: Logger | null = nu
       refreshIfChanged()
       const n = normalizeNickname(name)
       const i = names.indexOf(n)
-      if (i < 0) return false
+      if (i < 0) return { status: 'not_found' }
       names = names.filter((_, j) => j !== i)
-      persist()
-      return true
+      return persist() ? { status: 'removed' } : { status: 'persist_failed' }
     },
   }
 }

@@ -38,12 +38,23 @@ describe('global nickname store', () => {
     expect(s.add('ещёодно').status).toBe('cap')
   })
 
-  it('remove existing → true, missing → false', () => {
+  it('remove existing → removed, missing → not_found', () => {
     const s = createNicknameStore(file)
     s.add('Клешня')
-    expect(s.remove('нет такого')).toBe(false)
-    expect(s.remove('КЛЕШНЯ')).toBe(true)
+    expect(s.remove('нет такого').status).toBe('not_found')
+    expect(s.remove('КЛЕШНЯ').status).toBe('removed')
     expect(s.list()).toEqual([])
+  })
+
+  it('remove surfaces persist_failed when the write throws', () => {
+    // Point the store at a path whose parent is a regular file, so the SDK's
+    // saveJsonFile cannot create the directory and persist() throws. The name
+    // still lands in memory on add, so remove finds it but the write fails.
+    const blocker = join(mkdtempSync(join(tmpdir(), 'nick-')), 'blocker')
+    writeFileSync(blocker, 'x')
+    const s = createNicknameStore(join(blocker, 'n.json'), { info() {}, warn() {}, error() {} })
+    expect(s.add('Клешня').status).toBe('persist_failed')
+    expect(s.remove('Клешня').status).toBe('persist_failed')
   })
 
   it('matches whole-word', () => {

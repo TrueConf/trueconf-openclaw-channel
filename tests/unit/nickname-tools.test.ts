@@ -4,7 +4,7 @@ import { createNicknameTools } from '../../src/nickname-tools'
 
 const store = (over: Record<string, unknown> = {}) => ({
   add: vi.fn(() => ({ status: 'added' })),
-  remove: vi.fn(() => true),
+  remove: vi.fn(() => ({ status: 'removed' })),
   list: vi.fn(() => ['клешня']),
   matches: vi.fn(() => false),
   ...over,
@@ -41,9 +41,12 @@ describe('nickname tools', () => {
     expect(await text('exists')).toContain('уже задан')
   })
 
-  it('forget reports removed vs not-found', async () => {
-    expect((await find(store({ remove: () => true }), 'forget_bot_nickname').execute('id', { name: 'клешня' })).content[0].text).toContain('Убрал')
-    expect((await find(store({ remove: () => false }), 'forget_bot_nickname').execute('id', { name: 'нет' })).content[0].text).toContain('не найден')
+  it('forget reports removed / not-found / persist_failed', async () => {
+    const text = async (status: string) =>
+      (await find(store({ remove: () => ({ status }) }), 'forget_bot_nickname').execute('id', { name: 'клешня' })).content[0].text
+    expect(await text('removed')).toContain('Убрал')
+    expect(await text('not_found')).toContain('не найден')
+    expect(await text('persist_failed')).toContain('вернётся после перезапуска')
   })
 
   it('list returns current names, or a placeholder when empty', async () => {

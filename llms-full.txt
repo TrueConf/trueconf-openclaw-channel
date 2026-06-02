@@ -499,6 +499,14 @@ MIT
 
 # Changelog
 
+## [1.2.6] - 2026-06-02
+
+### Fixed
+- The published npm package now ships compiled JavaScript so it installs into OpenClaw. 1.2.5 (and earlier) shipped only TypeScript source (`main: ./index.ts`, no `dist/`), so `openclaw plugins install @trueconf-community/trueconf-openclaw-channel` failed with `requires compiled runtime output for TypeScript entry ./index.ts` (`TypeScript source fallback is only supported for source checkouts`). Installing from npm now works without a manual source build.
+
+### Changed
+- Build pipeline: a `build` step (`tsc` + `tsc-alias` + copy of `src/probe.mjs`) compiles the plugin per-file into `dist/`, runs in CI before publish, and `dist/` is now in the published `files` with `main`/`extensions`/`setupEntry` pointing at it. Per-file output (not a single bundle) preserves the env/network file separation so the OpenClaw install scanner stays green. Also dropped a stale `tsconfig` `include` entry for a non-existent root `setup-entry.ts`.
+
 ## [1.2.5] - 2026-06-01
 
 ### Added

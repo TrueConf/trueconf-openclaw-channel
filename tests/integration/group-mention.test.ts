@@ -240,11 +240,12 @@ describe('integration: group chat mention/reply gate', () => {
       replyMessageId: botMsgId,
     }))
 
-    // Bumped from 3000ms because under CI runner load the inbound coalesce
-    // window (300ms) + WS round-trip + dispatch routing intermittently
-    // exceeds the 3s budget. Local runs complete in <500ms; the higher cap
-    // is only consumed on the slow path.
-    await waitFor(() => dispatch.mock.calls.length >= 1, 6000)
+    // Bumped again (6000 -> 12000): under CI runner load the inbound coalesce
+    // window (300ms) + reply-context getMessageById round-trip + WS + dispatch
+    // routing intermittently exceeds the 6s budget (observed ~6.3s, failing).
+    // Local runs complete in <1s; the higher cap is only consumed on the slow
+    // path and stays under the 15s vitest testTimeout.
+    await waitFor(() => dispatch.mock.calls.length >= 1, 12000)
     const arg = dispatch.mock.calls[0][0] as { senderId: string; rawBody: string }
     expect(arg.senderId).toBe(BOB)
     expect(arg.rawBody).toBe('replying without mention')

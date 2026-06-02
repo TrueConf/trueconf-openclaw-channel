@@ -72,6 +72,7 @@ openclaw gateway
 git clone https://github.com/TrueConf/trueconf-openclaw-channel.git
 cd trueconf-openclaw-channel
 npm install
+npm run build
 openclaw plugins install -l .
 npm run setup      
 openclaw gateway

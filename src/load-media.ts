@@ -3,6 +3,7 @@ import { basename, isAbsolute as pathIsAbsolute, resolve as pathResolve, sep as 
 import { fileURLToPath } from 'node:url'
 
 import { request } from 'undici'
+import { getDefaultDispatcher } from './default-dispatcher'
 
 export type WebMediaResult = {
   buffer: Buffer
@@ -99,6 +100,7 @@ async function loadHttpMedia(
     method: 'GET',
     headersTimeout: 15_000,
     bodyTimeout: 60_000,
+    dispatcher: getDefaultDispatcher(),
   })
   if (statusCode < 200 || statusCode >= 300) {
     body.destroy()

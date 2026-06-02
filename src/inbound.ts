@@ -7,6 +7,7 @@ import { basename, resolve as pathResolve, sep as pathSep, join as pathJoin } fr
 import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web'
 import { getMediaDir, kindFromMime, type MediaKind } from 'openclaw/plugin-sdk/media-runtime'
 import { fetch, type Dispatcher, type Response } from 'undici'
+import { getDefaultDispatcher } from './default-dispatcher'
 import { EnvelopeType, FileReadyState, TrueConfChatType } from './types'
 import type {
   TrueConfRequest,
@@ -525,7 +526,7 @@ export async function downloadFile(
     // configured for OAuth and WS (caPath / tlsVerify:false). Without it,
     // self-signed-server deployments connect over OAuth/WS but fail on
     // inbound media — see TLS-trust invariant in AGENTS.md.
-    response = await fetch(downloadUrl, dispatcher ? { dispatcher } : undefined)
+    response = await fetch(downloadUrl, { dispatcher: dispatcher ?? getDefaultDispatcher() })
   } catch (err) {
     const cause = err instanceof Error ? (err as Error & { cause?: unknown }).cause : undefined
     const causeMsg = cause instanceof Error ? cause.message : cause != null ? String(cause) : ''

@@ -28,9 +28,21 @@
 </p>
 
 > [!CAUTION]
-> This project is still in development and is not recommended for production use. That said, we’d greatly appreciate it if you gave it a try. If you run into any problems, please feel free to open an [issue](https://github.com/TrueConf/trueconf-openclaw-channel/issues) with a detailed description.
+> This plugin acts as a gateway interface for interacting with OpenClaw. TrueConf LLC does not encourage the use of OpenClaw, does not recommend deploying it within corporate infrastructure, and assumes no responsibility for the operation of OpenClaw, associated AI agents, external services, or third-party components.
+>
+> Use of this plugin and connection to OpenClaw are performed solely at the user’s own discretion and risk. Before deploying it in a corporate network, users should carefully review the relevant information security risks, including data leakage, unauthorized access, prompt injection, execution of unintended commands, compromise of API keys, and unpredictable behavior of AI agents:
+>
+> - [OpenClaw threats: assessing the risks, and how to handle shadow AI](https://www.kaspersky.com/blog/moltbot-enterprise-risk-management/55317/)
+> - [Don’t Let the Claw Grip Your Hand: A Security Analysis and Defense Framework for OpenClaw](https://arxiv.org/html/2603.10387v1)
+>
+> This plugin should be used only after conducting a risk assessment, testing it in an isolated environment, restricting access privileges, configuring monitoring, and implementing appropriate measures to protect corporate infrastructure.
 
-A channel that connects OpenClaw to the TrueConf corporate messenger. After installation, the OpenClaw AI agent communicates with users via TrueConf — messages sent to the bot are forwarded to the AI agent, and responses are delivered back to the chat.
+> [!IMPORTANT]
+> This project is still in development. That said, we’d greatly appreciate it if you gave it a try. If you run into any problems, please feel free to open an [issue](https://github.com/TrueConf/trueconf-openclaw-channel/issues) with a detailed description.
+
+## How it works
+
+After installation, the OpenClaw AI agent communicates with users via TrueConf — messages sent to the bot are forwarded to the AI agent, and responses are delivered back to the chat.
 
 ```
 [TrueConf client]  ->  [TrueConf Server]  ->  [OpenClaw + plugin]  ->      [LLM]

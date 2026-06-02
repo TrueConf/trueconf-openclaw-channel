@@ -28,7 +28,7 @@
 </p>
 
 > [!CAUTION]
-> This plugin acts as a gateway interface for interacting with OpenClaw. TrueConf LLC does not encourage the use of OpenClaw, does not recommend deploying it within corporate infrastructure, and assumes no responsibility for the operation of OpenClaw, associated AI agents, external services, or third-party components.
+> This plugin acts as a gateway interface for interacting with OpenClaw. TrueConf does not encourage the use of OpenClaw, does not recommend deploying it within corporate infrastructure, and assumes no responsibility for the operation of OpenClaw, associated AI agents, external services, or third-party components.
 >
 > Use of this plugin and connection to OpenClaw are performed solely at the user’s own discretion and risk. Before deploying it in a corporate network, users should carefully review the relevant information security risks, including data leakage, unauthorized access, prompt injection, execution of unintended commands, compromise of API keys, and unpredictable behavior of AI agents:
 >

@@ -1,5 +1,6 @@
 import WebSocket from 'ws'
 import { fetch, type Dispatcher, type RequestInit, type Response } from 'undici'
+import { getDefaultDispatcher } from './default-dispatcher'
 import {
   IdCounter,
   RequestMatcher,
@@ -111,7 +112,7 @@ export async function acquireToken(
         username: config.username,
         password: config.password,
       }),
-      ...(options?.dispatcher && { dispatcher: options.dispatcher }),
+      dispatcher: options?.dispatcher ?? getDefaultDispatcher(),
       signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
     } as RequestInit)
   } catch (err) {

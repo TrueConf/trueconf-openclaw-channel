@@ -500,6 +500,14 @@ MIT
 
 # Changelog
 
+## [1.2.7] - 2026-06-02
+
+### Fixed
+- Account startup no longer fails with `OAuth token request failed: fetch failed (UND_ERR_INVALID_ARG: invalid onRequestStart method)` on hosts whose runtime `undici` differs from the one this plugin bundles. The plugin ships its own `undici` and called `fetch`/`request` without an explicit dispatcher, so those calls fell through to the process-global dispatcher. The OpenClaw runtime installs a custom global dispatcher built from *its own* `undici` (stream-timeout / env-proxy wrapping via `setGlobalDispatcher`); dispatching a request handler created by our bundled `undici` through that foreign Agent throws `UND_ERR_INVALID_ARG`. This reproduced on a host running Node 24+ (whose built-in undici is a newer major than the bundled `^7`) with a private-network LLM provider configured — the gateway aborted the channel at `Account default startup failed`. The OAuth token request (`ws-client`), inbound media download (`inbound`), and outbound media fetch (`load-media`) now always dispatch through an `Agent` from the plugin's own `undici`, so they never route through the host's global dispatcher. The outbound file upload (`outbound`) already used the runtime's global `fetch` and was unaffected. Verified red→green against a live gateway on Node 26.
+
+### Changed
+- New internal `src/default-dispatcher.ts` exposes a lazily-created, pooled `Agent` (from the plugin's own `undici`) reused as the default dispatcher across the OAuth, inbound-download, and media-fetch paths. The existing `global-fetch-isolation` regression now also covers a broken global dispatcher (not just a broken global `fetch`).
+
 ## [1.2.6] - 2026-06-02
 
 ### Fixed

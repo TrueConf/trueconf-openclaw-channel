@@ -65,12 +65,15 @@ describe('downloadFile — TLS trust threading', () => {
     }
   })
 
-  it('passes no init object when dispatcher is omitted (system trust path)', async () => {
+  it('falls back to a default own-undici dispatcher when none is provided (never the host global dispatcher)', async () => {
     const dest = join(workDir, 'out-no-dispatcher.bin')
     const result = await downloadFile(url, dest, 1024 * 1024, silentLogger)
     expect(result.ok).toBe(true)
 
     const [, init] = vi.mocked(undiciFetch).mock.calls.at(-1)!
-    expect(init).toBeUndefined()
+    expect(init).toBeDefined()
+    // System-trust path still pins a dispatcher from OUR undici so fetch never
+    // routes through the host runtime's (foreign) global dispatcher.
+    expect((init as { dispatcher?: unknown }).dispatcher).toBeInstanceOf(UndiciAgent)
   })
 })

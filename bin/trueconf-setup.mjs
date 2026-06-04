@@ -15,6 +15,7 @@ import { parseArgs } from 'node:util'
 import { createJiti } from 'jiti'
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..')
+const NPM_SPEC = '@trueconf-community/trueconf-openclaw-channel'
 // fsCache:false — transpiled-TS cache persists stale channel-setup.ts across
 // edits in dev, masking wizard changes.
 const jiti = createJiti(import.meta.url, { interopDefault: true, fsCache: false, moduleCache: false })
@@ -267,6 +268,18 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
   const envLocale = readSetupLocale()
   const cfgLocale = readCfgLocale(cfg)
   const { t } = await loadI18n()
+
+  // Refuse to run from a disposable npx cache copy when the plugin is not
+  // installed: the wizard would otherwise record ~/.npm/_npx/<hash>/... as the
+  // load path, which dies when the cache is evicted (-> "unknown channel id").
+  // Runs before the prompter/probe are created, so the throw drains the loop
+  // immediately and the 10s leaked-handle watchdog stays inert.
+  const gateLocale = envLocale ?? cfgLocale ?? 'en'
+  if (isEphemeralPluginHostDir(pluginHostDir) && cfg.plugins?.installs?.trueconf === undefined) {
+    const err = new Error(t('bin.ephemeralHost.error', gateLocale, { path: pluginHostDir, npmSpec: NPM_SPEC }))
+    err.userFacing = true
+    throw err
+  }
 
   if (hasSetupShortcut()) {
     // Headless path bypasses the wizard entirely. Locale only matters for

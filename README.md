@@ -426,14 +426,13 @@ Six tunables expose the network-resilience knobs that ship with sensible default
 
 - **Symptom:** the gateway refuses to start with `Invalid config ... channels.trueconf: unknown channel id: trueconf` — often after it previously worked ("worked yesterday, broke today").
 - **Cause:** `trueconf-setup` was run via `npx -p ... trueconf-setup` **without** a prior `openclaw plugins install`. The wizard then recorded the disposable npx cache dir (`~/.npm/_npx/<hash>/...`) as the plugin load path; once npm evicts that cache, the channel can no longer be found.
-- **Fix:**
+- **Solution:** remove the stale `~/.npm/_npx/...` entry from `plugins.load.paths` in `~/.openclaw/openclaw.json` (or run `openclaw doctor --fix` if your openclaw build supports it), then reinstall and re-run setup:
   ```bash
-  openclaw doctor --fix        # drops the dead load path
   openclaw plugins install @trueconf-community/trueconf-openclaw-channel
   npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
   openclaw gateway
   ```
-  Always run `openclaw plugins install` **before** `trueconf-setup`. Recent versions fail fast with this guidance instead of writing the bad path.
+  (Or run `openclaw onboard` and pick TrueConf instead of the `npx ... trueconf-setup` step.) Always run `openclaw plugins install` **before** `trueconf-setup`. Recent versions fail fast with this guidance instead of writing the bad path.
 
 ### TLS mismatch
 

@@ -420,14 +420,13 @@ Callback `setChatMutationHandler` (события edit / remove / clearHistory) 
 
 - **Симптом:** gateway не стартует с `Invalid config ... channels.trueconf: unknown channel id: trueconf` — часто после того как раньше всё работало («вчера работало, сегодня нет»).
 - **Причина:** `trueconf-setup` запускали через `npx -p ... trueconf-setup` **без** предварительного `openclaw plugins install`. Мастер записал временную npx-папку (`~/.npm/_npx/<hash>/...`) как путь загрузки плагина; после очистки кэша канал перестаёт находиться.
-- **Решение:**
+- **Решение:** удалите устаревшую запись `~/.npm/_npx/...` из `plugins.load.paths` в `~/.openclaw/openclaw.json` (или выполните `openclaw doctor --fix`, если ваша сборка openclaw это поддерживает), затем переустановите и запустите настройку заново:
   ```bash
-  openclaw doctor --fix        # убирает мёртвый путь
   openclaw plugins install @trueconf-community/trueconf-openclaw-channel
   npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
   openclaw gateway
   ```
-  Всегда запускайте `openclaw plugins install` **до** `trueconf-setup`. Свежие версии падают сразу с этой подсказкой, не записывая плохой путь.
+  (Либо выполните `openclaw onboard` и выберите TrueConf вместо шага `npx ... trueconf-setup`.) Всегда запускайте `openclaw plugins install` **до** `trueconf-setup`. Свежие версии падают сразу с этой подсказкой, не записывая плохой путь.
 
 ### Несовпадение TLS
 

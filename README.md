@@ -422,6 +422,19 @@ Six tunables expose the network-resilience knobs that ship with sensible default
   ```
 - **What not to do:** Do not adopt `--dangerously-force-unsafe-install` as a default install command. The flag bypasses ALL plugin-security checks, not just the env-harvesting rule, for ALL plugins it installs. Use the upgraded plugin first; reach for the flag only as a last-resort compatibility shim.
 
+### `unknown channel id: trueconf` at `openclaw gateway`
+
+- **Symptom:** the gateway refuses to start with `Invalid config ... channels.trueconf: unknown channel id: trueconf` — often after it previously worked ("worked yesterday, broke today").
+- **Cause:** `trueconf-setup` was run via `npx -p ... trueconf-setup` **without** a prior `openclaw plugins install`. The wizard then recorded the disposable npx cache dir (`~/.npm/_npx/<hash>/...`) as the plugin load path; once npm evicts that cache, the channel can no longer be found.
+- **Fix:**
+  ```bash
+  openclaw doctor --fix        # drops the dead load path
+  openclaw plugins install @trueconf-community/trueconf-openclaw-channel
+  npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
+  openclaw gateway
+  ```
+  Always run `openclaw plugins install` **before** `trueconf-setup`. Recent versions fail fast with this guidance instead of writing the bad path.
+
 ### TLS mismatch
 
 - **Symptom:** `WebSocket error: connect ECONNREFUSED` right after start.

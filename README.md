@@ -461,7 +461,7 @@ Six tunables expose the network-resilience knobs that ship with sensible default
 
 - **Symptom:** The agent replies "Here's a cat 🐱" with an attached picture; the TrueConf chat only shows the photo, the text is gone.
 - **Cause:** In openclaw `2026.4.22`, when `agents.defaults.blockStreamingDefault` is `"off"` (also the default when the field is unset), the caption and the media are split into separate blocks and the text part is dropped by the final filter before reaching the plugin's deliver.
-- **Fix:**
+- **Solution:**
   ```bash
   openclaw config set agents.defaults.blockStreamingDefault on
   openclaw config set agents.defaults.blockStreamingBreak message_end

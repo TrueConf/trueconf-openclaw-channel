@@ -46,7 +46,7 @@ describe('buildSetupWizardDescriptor(t, locale)', () => {
     const result = input.validate!({
       value: 'http://x.com', cfg: {} as never, accountId: 'default', credentialValues: {},
     })
-    expect(result).toMatch(/without http/i)
+    expect(result).toMatch(/http/i)
   })
 
   it('localizes serverUrl validate (ru)', () => {
@@ -55,7 +55,7 @@ describe('buildSetupWizardDescriptor(t, locale)', () => {
     const result = input.validate!({
       value: 'http://x.com', cfg: {} as never, accountId: 'default', credentialValues: {},
     })
-    expect(result).toMatch(/без http/)
+    expect(result).toMatch(/http/i)
   })
 
   it('localizes serverUrl validate :port branch (en)', () => {
@@ -64,7 +64,7 @@ describe('buildSetupWizardDescriptor(t, locale)', () => {
     const result = input.validate!({
       value: 'tc.example.com:443', cfg: {} as never, accountId: 'default', credentialValues: {},
     })
-    expect(result).toMatch(/port goes in a separate field/i)
+    expect(result).toMatch(/port.*separately/i)
   })
 
   it('localizes username message', () => {

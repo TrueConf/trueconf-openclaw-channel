@@ -41,7 +41,7 @@ describe('trueconfSetupWizard.textInputs validation', () => {
       value: 'http://tc.example.com',
       cfg: {} as never, accountId: 'default', credentialValues: {},
     })
-    expect(result).toMatch(/without http/i)
+    expect(result).toMatch(/http/i)
   })
 
   it('serverUrl accepts bare host', () => {

@@ -181,7 +181,7 @@ export function buildSetupWizardDescriptor(
     textInputs: [
       {
         inputKey: 'serverUrl' as never,
-        message: 'URL TrueConf Server',
+        message: translate('wizard.input.serverUrl.message', locale),
         placeholder: 'tc.example.com',
         required: true,
         currentValue: ({ cfg }) => readTrueConfSection(cfg).serverUrl,

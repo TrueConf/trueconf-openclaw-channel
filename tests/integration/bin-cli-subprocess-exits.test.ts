@@ -90,7 +90,9 @@ async function runCliStderr(env: NodeJS.ProcessEnv, fakeHome: string): Promise<{
       child.kill('SIGKILL')
       rejectExit(new Error(`CLI did not exit within ${HARD_KILL_MS}ms`))
     }, HARD_KILL_MS)
-    child.on('exit', (code) => {
+    // 'close' (not 'exit') so all stderr has flushed before we read it — 'exit'
+    // can fire before the piped stream ends, dropping a trailing chunk.
+    child.on('close', (code) => {
       clearTimeout(timer)
       resolveExit({ code: code ?? -1, stderr })
     })

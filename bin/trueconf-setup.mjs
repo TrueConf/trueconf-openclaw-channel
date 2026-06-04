@@ -252,9 +252,10 @@ function showFinalBanner(prompter, { backupPath, caPath, wizard, t, locale }) {
   return prompter.note(lines.join('\n'), wizard.completionNote?.title ?? t('bin.completion.title', locale))
 }
 
-export async function runSetup({ configPath: configPathArg, prompter: injectedPrompter, probeModule: injectedProbe } = {}) {
+export async function runSetup({ configPath: configPathArg, prompter: injectedPrompter, probeModule: injectedProbe, pluginHostDir: injectedPluginHostDir } = {}) {
   checkNodeVersion()
 
+  const pluginHostDir = injectedPluginHostDir ?? REPO_ROOT
   const configPath = configPathArg ?? join(homedir(), '.openclaw', 'openclaw.json')
   const cfg = readJsonConfig(configPath)
   const { buildSetupWizardDescriptor, runHeadlessFinalize } = await loadFinalizers()
@@ -272,8 +273,8 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
     // any error throwsa runHeadlessFinalize emits; default 'en' is fine.
     const nextCfg = await runHeadlessFinalize(cfg)
     const { cfg: cleaned } = cleanupStaleEntries(nextCfg)
-    const { cfg: withLoadPath, changed: loadPathChanged } = registerLoadPathIfMissing(cleaned, REPO_ROOT)
-    if (loadPathChanged) console.info(`[trueconf-setup] Registered plugin host at ${realpathSync(REPO_ROOT)}`)
+    const { cfg: withLoadPath, changed: loadPathChanged } = registerLoadPathIfMissing(cleaned, pluginHostDir)
+    if (loadPathChanged) console.info(`[trueconf-setup] Registered plugin host at ${realpathSync(pluginHostDir)}`)
     // Backup only after finalize succeeds — otherwise repeated CI failures
     // accumulate orphan .bak.* files in ~/.openclaw/.
     const { backupPath, error: backupErr } = backupConfigIfExists(configPath)
@@ -335,8 +336,8 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
   const username = finalCfg.channels?.trueconf?.username ?? ''
 
   const { cfg: cleanedFinal, cleaned } = cleanupStaleEntries(finalCfg)
-  const { cfg: withLoadPath, changed: loadPathChanged } = registerLoadPathIfMissing(cleanedFinal, REPO_ROOT)
-  if (loadPathChanged) console.info(`[trueconf-setup] Registered plugin host at ${realpathSync(REPO_ROOT)}`)
+  const { cfg: withLoadPath, changed: loadPathChanged } = registerLoadPathIfMissing(cleanedFinal, pluginHostDir)
+  if (loadPathChanged) console.info(`[trueconf-setup] Registered plugin host at ${realpathSync(pluginHostDir)}`)
   const { backupPath, error: backupErr } = backupConfigIfExists(configPath)
   if (backupErr) {
     await prompter.note(

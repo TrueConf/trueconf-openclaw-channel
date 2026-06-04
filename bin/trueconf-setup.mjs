@@ -163,6 +163,18 @@ function cleanupStaleEntries(cfg) {
   return { cfg, cleaned: false }
 }
 
+// True when the wizard is running from a disposable npx cache copy
+// (~/.npm/_npx/<hash>/...). The package physically lives under a `_npx`
+// segment there, so a raw lexical check catches it without touching the FS —
+// which also makes synthetic/already-evicted paths (tests, cleared caches)
+// safe to pass. realpathSync is only a best-effort second pass; a missing or
+// non-string path resolves to false instead of throwing.
+export function isEphemeralPluginHostDir(dir) {
+  const hasNpxSegment = (p) => typeof p === 'string' && p.split(/[\\/]+/).includes('_npx')
+  if (hasNpxSegment(dir)) return true
+  try { return hasNpxSegment(realpathSync(dir)) } catch { return false }
+}
+
 // Auto-registers pluginHostDir in cfg.plugins.load.paths. Stale entries that
 // fail realpathSync (ENOENT) are treated as non-matching, not as no-ops —
 // otherwise a deleted-but-not-cleaned-up path would silently block the

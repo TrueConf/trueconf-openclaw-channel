@@ -181,6 +181,7 @@ export function isEphemeralPluginHostDir(dir) {
 // re-registration. Skipped when plugins.installs.trueconf is set (npm-install
 // path already wires discovery).
 export function registerLoadPathIfMissing(cfg, pluginHostDir) {
+  if (isEphemeralPluginHostDir(pluginHostDir)) return { cfg, changed: false }
   if (cfg.plugins?.installs?.trueconf !== undefined) return { cfg, changed: false }
 
   const targetReal = realpathSync(pluginHostDir)

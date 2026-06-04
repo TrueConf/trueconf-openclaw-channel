@@ -427,8 +427,12 @@ if (isCliEntry) {
       // pending-handle set empty so the process exits within milliseconds.
       process.exitCode = 0
     } catch (err) {
-      const detail = err instanceof Error ? (err.stack ?? err.message) : String(err)
-      process.stderr.write(`trueconf-setup failed: ${detail}\n`)
+      if (err && err.userFacing) {
+        process.stderr.write(`${err.message}\n`)
+      } else {
+        const detail = err instanceof Error ? (err.stack ?? err.message) : String(err)
+        process.stderr.write(`trueconf-setup failed: ${detail}\n`)
+      }
       process.exitCode = 1
     }
   }

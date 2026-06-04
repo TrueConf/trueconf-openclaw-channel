@@ -87,11 +87,4 @@ describe('registerLoadPathIfMissing', () => {
     expect(second.cfg).toEqual(first.cfg)
     expect(second.changed).toBe(false)
   })
-
-  it('refuses an npx-cache pluginHostDir (no-op, no throw)', () => {
-    const cfg = { plugins: { load: { paths: ['/existing/plugin'] } } }
-    const out = registerLoadPathIfMissing(cfg, '/home/u/.npm/_npx/abc/node_modules/@s/p')
-    expect(out.changed).toBe(false)
-    expect(out.cfg).toEqual(cfg)
-  })
 })

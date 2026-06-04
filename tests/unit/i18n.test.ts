@@ -37,6 +37,7 @@ describe('i18n', () => {
     expect(en).toContain('openclaw plugins install @trueconf-community/trueconf-openclaw-channel')
     const ru = t('bin.ephemeralHost.error', 'ru', vars)
     expect(ru).toMatch(/[А-Яа-я]/)
+    expect(ru).toContain('/u/.npm/_npx/x/p')
     expect(ru).toContain('npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup')
   })
 })

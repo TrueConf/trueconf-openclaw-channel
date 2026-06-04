@@ -74,6 +74,33 @@ async function runCli(env: NodeJS.ProcessEnv, fakeHome: string): Promise<SpawnRe
   })
 }
 
+// Variant that captures stderr so we can assert the CLI catch block's output
+// format (the `if (isCliEntry) { ... } catch (err)` branch). stdout stays
+// ignored; only stderr is piped.
+async function runCliStderr(env: NodeJS.ProcessEnv, fakeHome: string): Promise<{ code: number; stderr: string }> {
+  return await new Promise<{ code: number; stderr: string }>((resolveExit, rejectExit) => {
+    const child = spawn(process.execPath, [BIN_PATH], {
+      env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome, ...env },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    })
+    let stderr = ''
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      rejectExit(new Error(`CLI did not exit within ${HARD_KILL_MS}ms`))
+    }, HARD_KILL_MS)
+    child.on('exit', (code) => {
+      clearTimeout(timer)
+      resolveExit({ code: code ?? -1, stderr })
+    })
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      rejectExit(err)
+    })
+  })
+}
+
 describe('bin/trueconf-setup.mjs CLI subprocess', () => {
   it('exits 0 quickly on a successful headless run (no process.exit)', async () => {
     const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server')
@@ -120,6 +147,32 @@ describe('bin/trueconf-setup.mjs CLI subprocess', () => {
       // ECONNREFUSED to a closed loopback port is sub-millisecond; node start
       // dominates. Same partial-leak rationale as the success case.
       expect(result.elapsedMs).toBeLessThan(3000)
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true })
+    }
+  }, HARD_KILL_MS + 4000)
+
+  it('prints a non-userFacing error with the "trueconf-setup failed:" prefix on stderr', async () => {
+    const port = await reserveClosedPort()
+    const fakeHome = mkdtempSync(join(tmpdir(), 'tc-cli-stderr-'))
+    try {
+      const { code, stderr } = await runCliStderr(
+        {
+          TRUECONF_SERVER_URL: '127.0.0.1',
+          TRUECONF_USERNAME: 'x',
+          TRUECONF_PASSWORD: 'x',
+          TRUECONF_USE_TLS: 'false',
+          TRUECONF_PORT: String(port),
+        },
+        fakeHome,
+      )
+      expect(code).toBe(1)
+      // Exercises the CLI catch discriminator: an OAuth/connection failure is
+      // NOT userFacing, so the catch takes the else branch and prefixes the
+      // message. (The userFacing branch — the npx-cache gate — is covered
+      // in-process in bin-ephemeral-gate.test.ts; triggering it via subprocess
+      // would require an _npx REPO_ROOT.)
+      expect(stderr).toContain('trueconf-setup failed:')
     } finally {
       rmSync(fakeHome, { recursive: true, force: true })
     }

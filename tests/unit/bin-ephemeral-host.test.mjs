@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isEphemeralPluginHostDir } from '../../bin/trueconf-setup.mjs'
+import { isEphemeralPluginHostDir, registerLoadPathIfMissing } from '../../bin/trueconf-setup.mjs'
 
 describe('isEphemeralPluginHostDir', () => {
   it('detects a POSIX npx cache path', () => {
@@ -28,5 +28,18 @@ describe('isEphemeralPluginHostDir', () => {
 
   it('returns false for a non-string input', () => {
     expect(isEphemeralPluginHostDir(undefined)).toBe(false)
+  })
+})
+
+// Lives here (not in bin-register-load-path.test.mjs) so it runs on Windows
+// too: that suite's beforeAll creates a symlink, which throws EPERM without
+// Developer Mode and skips the whole file. This case is a pure lexical check
+// and needs no filesystem fixture.
+describe('registerLoadPathIfMissing + npx-cache host', () => {
+  it('refuses an npx-cache pluginHostDir (no-op, no throw)', () => {
+    const cfg = { plugins: { load: { paths: ['/existing/plugin'] } } }
+    const out = registerLoadPathIfMissing(cfg, '/home/u/.npm/_npx/abc/node_modules/@s/p')
+    expect(out.changed).toBe(false)
+    expect(out.cfg).toEqual(cfg)
   })
 })

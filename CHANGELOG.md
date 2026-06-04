@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.2.8] - 2026-06-04
+
+### Fixed
+- `trueconf-setup` now fails fast instead of recording a disposable npx cache path (`~/.npm/_npx/<hash>/...`) in `openclaw.json` when the wizard is run via `npx -p` without a prior `openclaw plugins install`. Prevents the channel later failing to load with `unknown channel id: trueconf` once the npx cache is evicted.
+
 ## [1.2.7] - 2026-06-02
 
 ### Fixed

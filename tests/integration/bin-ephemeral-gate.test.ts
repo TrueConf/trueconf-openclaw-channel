@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -51,6 +51,24 @@ describe('bin: npx-cache ephemeral-host gate', () => {
     expect(caught.message).toContain(NPX_HOST)
     expect(caught.userFacing).toBe(true)
     expect(existsSync(configPath)).toBe(false)
+  })
+
+  it('does NOT fire when extensions/trueconf exists next to the config (openclaw 2026.6.x layout)', async () => {
+    // 2026.6.x keeps install records in the plugin index, not in openclaw.json:
+    // after `openclaw plugins install` the raw config only has plugins.entries
+    // while the package lives in <state-dir>/extensions/trueconf. The gate must
+    // accept that layout, otherwise the documented install -> npx-setup order
+    // dead-ends with "plugin is not installed" on a machine where it is.
+    mkdirSync(join(tmpDir, 'extensions', 'trueconf'), { recursive: true })
+    writeFileSync(configPath, JSON.stringify({ plugins: { entries: { trueconf: { enabled: true } } } }, null, 2))
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; pluginHostDir: string; prompter: unknown }) => Promise<void>
+    }
+    let caught: any
+    await runSetup({ configPath, pluginHostDir: NPX_HOST, prompter: haltPrompter() }).catch((e) => { caught = e })
+
+    expect(caught).toBeDefined()
+    expect(caught.message).toContain(HALT)
   })
 
   it('does NOT fire when plugins.installs.trueconf is present (passes gate into creds)', async () => {

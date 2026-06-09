@@ -1,9 +1,12 @@
 # Changelog
 
-## [1.2.8] - 2026-06-04
+## [1.2.8] - 2026-06-10
 
 ### Fixed
 - `trueconf-setup` now fails fast instead of recording a disposable npx cache path (`~/.npm/_npx/<hash>/...`) in `openclaw.json` when the wizard is run via `npx -p` without a prior `openclaw plugins install`. Prevents the channel later failing to load with `unknown channel id: trueconf` once the npx cache is evicted.
+- The npx-cache gate detects an installed plugin on openclaw >= 2026.6.x too: those versions keep install records in the plugin index instead of `plugins.installs` inside `openclaw.json`, so the gate now also accepts an `extensions/trueconf` directory next to the config as install evidence. Without this, the documented `openclaw plugins install` -> `npx ... trueconf-setup` order dead-ended with "plugin is not installed" on a machine where it was.
+- `trueconf-setup` no longer deletes `plugins.entries.trueconf` when the plugin is installed. On openclaw 2026.6.x that entry is the live enable record — removing it made the gateway silently skip the installed plugin right after a successful setup (8-plugins-instead-of-9 startup, no `[trueconf]` log lines, channel gone). The stale-entry cleanup still runs when no install evidence exists.
+- `trueconf-setup` no longer appends a redundant `plugins.load.paths` entry when the plugin is already installed (extensions/install-record discovery already wires loading).
 
 ## [1.2.7] - 2026-06-02
 

@@ -31,9 +31,21 @@
 </p>
 
 > [!CAUTION]
-> This project is still in development and is not recommended for production use. That said, we’d greatly appreciate it if you gave it a try. If you run into any problems, please feel free to open an [issue](https://github.com/TrueConf/trueconf-openclaw-channel/issues) with a detailed description.
+> This plugin acts as a gateway interface for interacting with OpenClaw. TrueConf does not encourage the use of OpenClaw, does not recommend deploying it within corporate infrastructure, and assumes no responsibility for the operation of OpenClaw, associated AI agents, external services, or third-party components.
+>
+> Use of this plugin and connection to OpenClaw are performed solely at the user’s own discretion and risk. Before deploying it in a corporate network, users should carefully review the relevant information security risks, including data leakage, unauthorized access, prompt injection, execution of unintended commands, compromise of API keys, and unpredictable behavior of AI agents:
+>
+> - [OpenClaw threats: assessing the risks, and how to handle shadow AI](https://www.kaspersky.com/blog/moltbot-enterprise-risk-management/55317/)
+> - [Don’t Let the Claw Grip Your Hand: A Security Analysis and Defense Framework for OpenClaw](https://arxiv.org/html/2603.10387v1)
+>
+> This plugin should be used only after conducting a risk assessment, testing it in an isolated environment, restricting access privileges, configuring monitoring, and implementing appropriate measures to protect corporate infrastructure.
 
-A channel that connects OpenClaw to the TrueConf corporate messenger. After installation, the OpenClaw AI agent communicates with users via TrueConf — messages sent to the bot are forwarded to the AI agent, and responses are delivered back to the chat.
+> [!IMPORTANT]
+> This project is still in development. That said, we’d greatly appreciate it if you gave it a try. If you run into any problems, please feel free to open an [issue](https://github.com/TrueConf/trueconf-openclaw-channel/issues) with a detailed description.
+
+## How it works
+
+After installation, the OpenClaw AI agent communicates with users via TrueConf — messages sent to the bot are forwarded to the AI agent, and responses are delivered back to the chat.
 
 ```
 [TrueConf client]  ->  [TrueConf Server]  ->  [OpenClaw + plugin]  ->      [LLM]
@@ -437,6 +449,15 @@ Six tunables expose the network-resilience knobs that ship with sensible default
   ```
   (Or run `openclaw onboard` and pick TrueConf instead of the `npx ... trueconf-setup` step.) Always run `openclaw plugins install` **before** `trueconf-setup`. Recent versions fail fast with this guidance instead of writing the bad path.
 
+### Channel gone right after running `trueconf-setup` (openclaw 2026.6.x)
+
+- **Symptom:** the plugin was installed and loading fine, but after a successful `trueconf-setup` run the gateway silently skips it — no `[trueconf]` lines in the log, the channel is missing from `openclaw channels status`.
+- **Cause:** plugin versions before 1.2.8 removed `plugins.entries.trueconf` from `openclaw.json` as a "stale" entry. On openclaw 2026.6.x that entry is the live enable record for an installed plugin, so deleting it disabled the plugin.
+- **Solution:** upgrade the plugin to >= 1.2.8 (the cleanup now only runs when no install evidence exists), then restore the entry — either re-run `openclaw plugins install @trueconf-community/trueconf-openclaw-channel`, or add it back manually in `~/.openclaw/openclaw.json`:
+  ```json
+  { "plugins": { "entries": { "trueconf": { "enabled": true } } } }
+  ```
+
 ### TLS mismatch
 
 - **Symptom:** `WebSocket error: connect ECONNREFUSED` right after start.
@@ -512,10 +533,13 @@ MIT
 
 # Changelog
 
-## [1.2.8] - 2026-06-04
+## [1.2.8] - 2026-06-10
 
 ### Fixed
 - `trueconf-setup` now fails fast instead of recording a disposable npx cache path (`~/.npm/_npx/<hash>/...`) in `openclaw.json` when the wizard is run via `npx -p` without a prior `openclaw plugins install`. Prevents the channel later failing to load with `unknown channel id: trueconf` once the npx cache is evicted.
+- The npx-cache gate detects an installed plugin on openclaw >= 2026.6.x too: those versions keep install records in the plugin index instead of `plugins.installs` inside `openclaw.json`, so the gate now also accepts an `extensions/trueconf` directory next to the config as install evidence. Without this, the documented `openclaw plugins install` -> `npx ... trueconf-setup` order dead-ended with "plugin is not installed" on a machine where it was.
+- `trueconf-setup` no longer deletes `plugins.entries.trueconf` when the plugin is installed. On openclaw 2026.6.x that entry is the live enable record — removing it made the gateway silently skip the installed plugin right after a successful setup (8-plugins-instead-of-9 startup, no `[trueconf]` log lines, channel gone). The stale-entry cleanup still runs when no install evidence exists.
+- `trueconf-setup` no longer appends a redundant `plugins.load.paths` entry when the plugin is already installed (extensions/install-record discovery already wires loading).
 
 ## [1.2.7] - 2026-06-02
 

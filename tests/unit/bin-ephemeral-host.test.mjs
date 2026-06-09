@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { isEphemeralPluginHostDir, registerLoadPathIfMissing } from '../../bin/trueconf-setup.mjs'
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { isEphemeralPluginHostDir, isTrueconfInstalled, registerLoadPathIfMissing } from '../../bin/trueconf-setup.mjs'
 
 describe('isEphemeralPluginHostDir', () => {
   it('detects a POSIX npx cache path', () => {
@@ -31,6 +34,37 @@ describe('isEphemeralPluginHostDir', () => {
   })
 })
 
+describe('isTrueconfInstalled', () => {
+  it('true when plugins.installs.trueconf is recorded in the config (openclaw <= 2026.4.x)', () => {
+    const cfg = { plugins: { installs: { trueconf: {} } } }
+    expect(isTrueconfInstalled(cfg, '/nonexistent/openclaw.json')).toBe(true)
+  })
+
+  it('true when extensions/trueconf exists next to the config (openclaw >= 2026.6.x)', () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'tc-state-'))
+    try {
+      mkdirSync(join(stateDir, 'extensions', 'trueconf'), { recursive: true })
+      expect(isTrueconfInstalled({}, join(stateDir, 'openclaw.json'))).toBe(true)
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true })
+    }
+  })
+
+  it('false for plugins.entries.trueconf alone (enable flag is not install evidence)', () => {
+    const cfg = { plugins: { entries: { trueconf: { enabled: true } } } }
+    expect(isTrueconfInstalled(cfg, '/nonexistent/openclaw.json')).toBe(false)
+  })
+
+  it('false when there is no install evidence at all', () => {
+    expect(isTrueconfInstalled({}, '/nonexistent/openclaw.json')).toBe(false)
+  })
+
+  it('false for a missing or non-string configPath without throwing', () => {
+    expect(isTrueconfInstalled({}, undefined)).toBe(false)
+    expect(isTrueconfInstalled(undefined, undefined)).toBe(false)
+  })
+})
+
 // Lives here (not in bin-register-load-path.test.mjs) so it runs on Windows
 // too: that suite's beforeAll creates a symlink, which throws EPERM without
 // Developer Mode and skips the whole file. This case is a pure lexical check
@@ -41,5 +75,20 @@ describe('registerLoadPathIfMissing + npx-cache host', () => {
     const out = registerLoadPathIfMissing(cfg, '/home/u/.npm/_npx/abc/node_modules/@s/p')
     expect(out.changed).toBe(false)
     expect(out.cfg).toEqual(cfg)
+  })
+
+  it('no-ops when extensions/trueconf exists next to the config', () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'tc-state-'))
+    const hostDir = mkdtempSync(join(tmpdir(), 'tc-host-'))
+    try {
+      mkdirSync(join(stateDir, 'extensions', 'trueconf'), { recursive: true })
+      const cfg = { plugins: {} }
+      const out = registerLoadPathIfMissing(cfg, hostDir, join(stateDir, 'openclaw.json'))
+      expect(out.changed).toBe(false)
+      expect(out.cfg).toEqual(cfg)
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true })
+      rmSync(hostDir, { recursive: true, force: true })
+    }
   })
 })

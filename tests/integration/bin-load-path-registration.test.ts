@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -129,6 +129,77 @@ describe('bin/trueconf-setup.mjs runSetup auto-registers plugins.load.paths', ()
       expect(calls[0]).toContain(realpathSync(REPO_ROOT))
     } finally {
       infoSpy.mockRestore()
+      await teardownFake(fake)
+    }
+  })
+
+  it('skips registration when extensions/trueconf exists next to the config (openclaw 2026.6.x layout)', async () => {
+    const fake = await setupHeadlessEnv()
+    try {
+      mkdirSync(join(tmpDir, 'extensions', 'trueconf'), { recursive: true })
+
+      const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+        runSetup: (opts: { configPath: string }) => Promise<unknown>
+      }
+      await runSetup({ configPath })
+
+      const written = JSON.parse(readFileSync(configPath, 'utf8')) as {
+        plugins?: { load?: { paths?: string[] } }
+      }
+      expect(written.plugins?.load?.paths ?? []).not.toContain(realpathSync(REPO_ROOT))
+    } finally {
+      await teardownFake(fake)
+    }
+  })
+
+  it('preserves plugins.entries.trueconf when the plugin is installed (extensions layout)', async () => {
+    // On openclaw 2026.6.x plugins.entries.trueconf is the live enable record
+    // for the installed plugin — removing it makes the gateway skip the plugin
+    // right after a successful setup.
+    const fake = await setupHeadlessEnv()
+    try {
+      mkdirSync(join(tmpDir, 'extensions', 'trueconf'), { recursive: true })
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          plugins: { entries: { trueconf: { enabled: true } } },
+          meta: { lastTouchedVersion: '2026.6.5' },
+        }, null, 2),
+      )
+
+      const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+        runSetup: (opts: { configPath: string }) => Promise<unknown>
+      }
+      await runSetup({ configPath })
+
+      const written = JSON.parse(readFileSync(configPath, 'utf8')) as {
+        plugins?: { entries?: { trueconf?: { enabled?: boolean } }; load?: { paths?: string[] } }
+      }
+      expect(written.plugins?.entries?.trueconf?.enabled).toBe(true)
+      expect(written.plugins?.load?.paths ?? []).not.toContain(realpathSync(REPO_ROOT))
+    } finally {
+      await teardownFake(fake)
+    }
+  })
+
+  it('still removes a stale plugins.entries.trueconf when nothing is installed', async () => {
+    const fake = await setupHeadlessEnv()
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({ plugins: { entries: { trueconf: { enabled: true } } } }, null, 2),
+      )
+
+      const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+        runSetup: (opts: { configPath: string }) => Promise<unknown>
+      }
+      await runSetup({ configPath })
+
+      const written = JSON.parse(readFileSync(configPath, 'utf8')) as {
+        plugins?: { entries?: Record<string, unknown> }
+      }
+      expect(written.plugins?.entries?.trueconf).toBeUndefined()
+    } finally {
       await teardownFake(fake)
     }
   })

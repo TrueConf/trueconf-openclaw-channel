@@ -443,6 +443,15 @@ Callback `setChatMutationHandler` (события edit / remove / clearHistory) 
   ```
   (Либо выполните `openclaw onboard` и выберите TrueConf вместо шага `npx ... trueconf-setup`.) Всегда запускайте `openclaw plugins install` **до** `trueconf-setup`. Свежие версии падают сразу с этой подсказкой, не записывая плохой путь.
 
+### Канал пропал сразу после `trueconf-setup` (openclaw 2026.6.x)
+
+- **Симптом:** плагин был установлен и загружался, но после успешного прогона `trueconf-setup` gateway молча его пропускает — в логе нет строк `[trueconf]`, канала нет в `openclaw channels status`.
+- **Причина:** версии плагина до 1.2.8 удаляли `plugins.entries.trueconf` из `openclaw.json` как «устаревшую» запись. На openclaw 2026.6.x эта запись — живой признак включения установленного плагина, и её удаление отключало плагин.
+- **Решение:** обновите плагин до >= 1.2.8 (теперь очистка срабатывает только при отсутствии следов установки), затем восстановите запись — повторно выполните `openclaw plugins install @trueconf-community/trueconf-openclaw-channel` или верните её вручную в `~/.openclaw/openclaw.json`:
+  ```json
+  { "plugins": { "entries": { "trueconf": { "enabled": true } } } }
+  ```
+
 ### Несовпадение TLS
 
 - **Симптом:** `WebSocket error: connect ECONNREFUSED` сразу после запуска.

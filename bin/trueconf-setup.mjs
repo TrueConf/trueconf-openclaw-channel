@@ -153,10 +153,29 @@ function backupConfigIfExists(configPath) {
   }
 }
 
-function cleanupStaleEntries(cfg) {
-  // plugins.entries.trueconf is legacy; discovery now uses plugins.installs +
-  // plugins.load.paths. A stale entry here confuses the loader.
-  if (cfg.plugins?.entries?.trueconf) {
+// True when the plugin is physically installed for the openclaw state dir that
+// owns configPath. Two install layouts exist across openclaw versions:
+//  - <= 2026.4.x: `openclaw plugins install` records plugins.installs.trueconf
+//    inside openclaw.json itself.
+//  - >= 2026.6.x: install records moved to openclaw's plugin index; the raw
+//    config only carries plugins.entries.trueconf, and the package lives in
+//    <state-dir>/extensions/trueconf next to openclaw.json.
+// plugins.entries alone is deliberately NOT accepted as evidence: it is an
+// enable flag that can outlive an uninstall, and treating it as "installed"
+// would let the npx-cache gate pass on a machine with no plugin bits on disk.
+export function isTrueconfInstalled(cfg, configPath) {
+  if (cfg?.plugins?.installs?.trueconf !== undefined) return true
+  if (typeof configPath !== 'string' || configPath === '') return false
+  try { return existsSync(join(dirname(configPath), 'extensions', 'trueconf')) } catch { return false }
+}
+
+function cleanupStaleEntries(cfg, configPath) {
+  // Drop plugins.entries.trueconf only when nothing is physically installed —
+  // a leftover entry without plugin bits confuses the loader. When the plugin
+  // IS installed, the entry is openclaw's live enable record (on 2026.6.x it
+  // is the ONLY thing that makes the gateway load an installed plugin), so
+  // deleting it would disable the channel right after a successful setup.
+  if (cfg.plugins?.entries?.trueconf && !isTrueconfInstalled(cfg, configPath)) {
     const next = { ...cfg, plugins: { ...cfg.plugins, entries: { ...cfg.plugins.entries } } }
     delete next.plugins.entries.trueconf
     return { cfg: next, cleaned: true }
@@ -180,16 +199,16 @@ export function isEphemeralPluginHostDir(dir) {
 // Auto-registers pluginHostDir in cfg.plugins.load.paths. Stale entries that
 // fail realpathSync (ENOENT) are treated as non-matching, not as no-ops —
 // otherwise a deleted-but-not-cleaned-up path would silently block the
-// re-registration. Skipped when plugins.installs.trueconf is set (npm-install
-// path already wires discovery).
-export function registerLoadPathIfMissing(cfg, pluginHostDir) {
+// re-registration. Skipped when the plugin is installed (npm-install path
+// already wires discovery; registering the extensions dir again is redundant).
+export function registerLoadPathIfMissing(cfg, pluginHostDir, configPath) {
   // Redundant safety net for direct (non-CLI) callers: through runSetup the
   // gate already throws for an ephemeral host that isn't installed, and the
-  // installs check below covers the ephemeral-but-installed case. Kept so this
-  // function can never record a cache path on its own — if you relax one of
-  // these two checks, revisit the other (and the runSetup gate) together.
+  // installed check below covers the ephemeral-but-installed case. Kept so
+  // this function can never record a cache path on its own — if you relax one
+  // of these two checks, revisit the other (and the runSetup gate) together.
   if (isEphemeralPluginHostDir(pluginHostDir)) return { cfg, changed: false }
-  if (cfg.plugins?.installs?.trueconf !== undefined) return { cfg, changed: false }
+  if (isTrueconfInstalled(cfg, configPath)) return { cfg, changed: false }
 
   const targetReal = realpathSync(pluginHostDir)
   const existingPaths = cfg.plugins?.load?.paths ?? []
@@ -282,7 +301,7 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
   // Runs before loadFinalizers, the deferred locale throw, and the prompter/
   // probe — so none of them can mask this guidance — and the throw drains the
   // loop immediately (the 10s leaked-handle watchdog stays inert).
-  if (isEphemeralPluginHostDir(pluginHostDir) && cfg.plugins?.installs?.trueconf === undefined) {
+  if (isEphemeralPluginHostDir(pluginHostDir) && !isTrueconfInstalled(cfg, configPath)) {
     const err = new Error(t('bin.ephemeralHost.error', envLocale ?? cfgLocale ?? 'en', { path: pluginHostDir, npmSpec: NPM_SPEC }))
     err.userFacing = true
     throw err
@@ -298,8 +317,8 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
     // Headless path bypasses the wizard entirely. Locale only matters for
     // any error that runHeadlessFinalize emits; default 'en' is fine.
     const nextCfg = await runHeadlessFinalize(cfg)
-    const { cfg: cleaned } = cleanupStaleEntries(nextCfg)
-    const { cfg: withLoadPath, changed: loadPathChanged } = registerLoadPathIfMissing(cleaned, pluginHostDir)
+    const { cfg: cleaned } = cleanupStaleEntries(nextCfg, configPath)
+    const { cfg: withLoadPath, changed: loadPathChanged } = registerLoadPathIfMissing(cleaned, pluginHostDir, configPath)
     if (loadPathChanged) console.info(`[trueconf-setup] Registered plugin host at ${realpathSync(pluginHostDir)}`)
     // Backup only after finalize succeeds — otherwise repeated CI failures
     // accumulate orphan .bak.* files in ~/.openclaw/.
@@ -361,8 +380,8 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
   // invariants before patching.
   const username = finalCfg.channels?.trueconf?.username ?? ''
 
-  const { cfg: cleanedFinal, cleaned } = cleanupStaleEntries(finalCfg)
-  const { cfg: withLoadPath, changed: loadPathChanged } = registerLoadPathIfMissing(cleanedFinal, pluginHostDir)
+  const { cfg: cleanedFinal, cleaned } = cleanupStaleEntries(finalCfg, configPath)
+  const { cfg: withLoadPath, changed: loadPathChanged } = registerLoadPathIfMissing(cleanedFinal, pluginHostDir, configPath)
   if (loadPathChanged) console.info(`[trueconf-setup] Registered plugin host at ${realpathSync(pluginHostDir)}`)
   const { backupPath, error: backupErr } = backupConfigIfExists(configPath)
   if (backupErr) {

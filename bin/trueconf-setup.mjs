@@ -15,6 +15,7 @@ import { parseArgs } from 'node:util'
 import { createJiti } from 'jiti'
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..')
+const NPM_SPEC = '@trueconf-community/trueconf-openclaw-channel'
 // fsCache:false — transpiled-TS cache persists stale channel-setup.ts across
 // edits in dev, masking wizard changes.
 const jiti = createJiti(import.meta.url, { interopDefault: true, fsCache: false, moduleCache: false })
@@ -163,12 +164,31 @@ function cleanupStaleEntries(cfg) {
   return { cfg, cleaned: false }
 }
 
+// True when the wizard is running from a disposable npx cache copy
+// (~/.npm/_npx/<hash>/...). The package physically lives under a `_npx`
+// segment there, so a raw lexical check catches it without touching the FS —
+// which also makes synthetic/already-evicted paths (tests, cleared caches)
+// safe to pass. realpathSync is only a best-effort fallback, consulted when
+// the raw path has no `_npx` segment; a missing or non-string path resolves to
+// false instead of throwing.
+export function isEphemeralPluginHostDir(dir) {
+  const hasNpxSegment = (p) => typeof p === 'string' && p.split(/[\\/]+/).includes('_npx')
+  if (hasNpxSegment(dir)) return true
+  try { return hasNpxSegment(realpathSync(dir)) } catch { return false }
+}
+
 // Auto-registers pluginHostDir in cfg.plugins.load.paths. Stale entries that
 // fail realpathSync (ENOENT) are treated as non-matching, not as no-ops —
 // otherwise a deleted-but-not-cleaned-up path would silently block the
 // re-registration. Skipped when plugins.installs.trueconf is set (npm-install
 // path already wires discovery).
 export function registerLoadPathIfMissing(cfg, pluginHostDir) {
+  // Redundant safety net for direct (non-CLI) callers: through runSetup the
+  // gate already throws for an ephemeral host that isn't installed, and the
+  // installs check below covers the ephemeral-but-installed case. Kept so this
+  // function can never record a cache path on its own — if you relax one of
+  // these two checks, revisit the other (and the runSetup gate) together.
+  if (isEphemeralPluginHostDir(pluginHostDir)) return { cfg, changed: false }
   if (cfg.plugins?.installs?.trueconf !== undefined) return { cfg, changed: false }
 
   const targetReal = realpathSync(pluginHostDir)
@@ -239,28 +259,48 @@ function showFinalBanner(prompter, { backupPath, caPath, wizard, t, locale }) {
   return prompter.note(lines.join('\n'), wizard.completionNote?.title ?? t('bin.completion.title', locale))
 }
 
-export async function runSetup({ configPath: configPathArg, prompter: injectedPrompter, probeModule: injectedProbe } = {}) {
+export async function runSetup({ configPath: configPathArg, prompter: injectedPrompter, probeModule: injectedProbe, pluginHostDir: injectedPluginHostDir } = {}) {
   checkNodeVersion()
 
+  const pluginHostDir = injectedPluginHostDir ?? REPO_ROOT
   const configPath = configPathArg ?? join(homedir(), '.openclaw', 'openclaw.json')
   const cfg = readJsonConfig(configPath)
-  const { buildSetupWizardDescriptor, runHeadlessFinalize } = await loadFinalizers()
   const { readSetupLocale, hasSetupShortcut } = await loadEnvConfig()
-
-  // Fail-fast on invalid TRUECONF_SETUP_LOCALE before any backup/probe/OAuth
-  // work. cfg-read is separate so we can decide between honoring stored locale
-  // and surfacing a language prompt for fresh installs.
-  const envLocale = readSetupLocale()
-  const cfgLocale = readCfgLocale(cfg)
   const { t } = await loadI18n()
+  const cfgLocale = readCfgLocale(cfg)
+
+  // Read TRUECONF_SETUP_LOCALE but defer an invalid-value throw: the locale is
+  // validated for fail-fast, yet the ephemeral-host gate below is a higher-
+  // priority failure and must not be masked by a locale error. cfg-read is
+  // separate so we can honor a stored locale or surface a language prompt.
+  let envLocale, localeError
+  try { envLocale = readSetupLocale() } catch (err) { localeError = err }
+
+  // Refuse to run from a disposable npx cache copy when the plugin is not
+  // installed: the wizard would otherwise record ~/.npm/_npx/<hash>/... as the
+  // load path, which dies when the cache is evicted (-> "unknown channel id").
+  // Runs before loadFinalizers, the deferred locale throw, and the prompter/
+  // probe — so none of them can mask this guidance — and the throw drains the
+  // loop immediately (the 10s leaked-handle watchdog stays inert).
+  if (isEphemeralPluginHostDir(pluginHostDir) && cfg.plugins?.installs?.trueconf === undefined) {
+    const err = new Error(t('bin.ephemeralHost.error', envLocale ?? cfgLocale ?? 'en', { path: pluginHostDir, npmSpec: NPM_SPEC }))
+    err.userFacing = true
+    throw err
+  }
+
+  // Surface a deferred invalid-locale error now (fail-fast for the normal path,
+  // still before any backup/probe/OAuth work).
+  if (localeError) throw localeError
+
+  const { buildSetupWizardDescriptor, runHeadlessFinalize } = await loadFinalizers()
 
   if (hasSetupShortcut()) {
     // Headless path bypasses the wizard entirely. Locale only matters for
-    // any error throwsa runHeadlessFinalize emits; default 'en' is fine.
+    // any error that runHeadlessFinalize emits; default 'en' is fine.
     const nextCfg = await runHeadlessFinalize(cfg)
     const { cfg: cleaned } = cleanupStaleEntries(nextCfg)
-    const { cfg: withLoadPath, changed: loadPathChanged } = registerLoadPathIfMissing(cleaned, REPO_ROOT)
-    if (loadPathChanged) console.info(`[trueconf-setup] Registered plugin host at ${realpathSync(REPO_ROOT)}`)
+    const { cfg: withLoadPath, changed: loadPathChanged } = registerLoadPathIfMissing(cleaned, pluginHostDir)
+    if (loadPathChanged) console.info(`[trueconf-setup] Registered plugin host at ${realpathSync(pluginHostDir)}`)
     // Backup only after finalize succeeds — otherwise repeated CI failures
     // accumulate orphan .bak.* files in ~/.openclaw/.
     const { backupPath, error: backupErr } = backupConfigIfExists(configPath)
@@ -322,8 +362,8 @@ export async function runSetup({ configPath: configPathArg, prompter: injectedPr
   const username = finalCfg.channels?.trueconf?.username ?? ''
 
   const { cfg: cleanedFinal, cleaned } = cleanupStaleEntries(finalCfg)
-  const { cfg: withLoadPath, changed: loadPathChanged } = registerLoadPathIfMissing(cleanedFinal, REPO_ROOT)
-  if (loadPathChanged) console.info(`[trueconf-setup] Registered plugin host at ${realpathSync(REPO_ROOT)}`)
+  const { cfg: withLoadPath, changed: loadPathChanged } = registerLoadPathIfMissing(cleanedFinal, pluginHostDir)
+  if (loadPathChanged) console.info(`[trueconf-setup] Registered plugin host at ${realpathSync(pluginHostDir)}`)
   const { backupPath, error: backupErr } = backupConfigIfExists(configPath)
   if (backupErr) {
     await prompter.note(
@@ -400,8 +440,12 @@ if (isCliEntry) {
       // pending-handle set empty so the process exits within milliseconds.
       process.exitCode = 0
     } catch (err) {
-      const detail = err instanceof Error ? (err.stack ?? err.message) : String(err)
-      process.stderr.write(`trueconf-setup failed: ${detail}\n`)
+      if (err && err.userFacing) {
+        process.stderr.write(`${err.message}\n`)
+      } else {
+        const detail = err instanceof Error ? (err.stack ?? err.message) : String(err)
+        process.stderr.write(`trueconf-setup failed: ${detail}\n`)
+      }
       process.exitCode = 1
     }
   }

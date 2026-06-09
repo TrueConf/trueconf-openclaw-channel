@@ -434,6 +434,18 @@ Six tunables expose the network-resilience knobs that ship with sensible default
   ```
 - **What not to do:** Do not adopt `--dangerously-force-unsafe-install` as a default install command. The flag bypasses ALL plugin-security checks, not just the env-harvesting rule, for ALL plugins it installs. Use the upgraded plugin first; reach for the flag only as a last-resort compatibility shim.
 
+### `unknown channel id: trueconf` at `openclaw gateway`
+
+- **Symptom:** the gateway refuses to start with `Invalid config ... channels.trueconf: unknown channel id: trueconf` — often after it previously worked ("worked yesterday, broke today").
+- **Cause:** `trueconf-setup` was run via `npx -p ... trueconf-setup` **without** a prior `openclaw plugins install`. The wizard then recorded the disposable npx cache dir (`~/.npm/_npx/<hash>/...`) as the plugin load path; once npm evicts that cache, the channel can no longer be found.
+- **Solution:** remove the stale `~/.npm/_npx/...` entry from `plugins.load.paths` in `~/.openclaw/openclaw.json` (or run `openclaw doctor --fix` if your openclaw build supports it), then reinstall and re-run setup:
+  ```bash
+  openclaw plugins install @trueconf-community/trueconf-openclaw-channel
+  npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
+  openclaw gateway
+  ```
+  (Or run `openclaw onboard` and pick TrueConf instead of the `npx ... trueconf-setup` step.) Always run `openclaw plugins install` **before** `trueconf-setup`. Recent versions fail fast with this guidance instead of writing the bad path.
+
 ### TLS mismatch
 
 - **Symptom:** `WebSocket error: connect ECONNREFUSED` right after start.
@@ -461,7 +473,7 @@ Six tunables expose the network-resilience knobs that ship with sensible default
 
 - **Symptom:** The agent replies "Here's a cat 🐱" with an attached picture; the TrueConf chat only shows the photo, the text is gone.
 - **Cause:** In openclaw `2026.4.22`, when `agents.defaults.blockStreamingDefault` is `"off"` (also the default when the field is unset), the caption and the media are split into separate blocks and the text part is dropped by the final filter before reaching the plugin's deliver.
-- **Fix:**
+- **Solution:**
   ```bash
   openclaw config set agents.defaults.blockStreamingDefault on
   openclaw config set agents.defaults.blockStreamingBreak message_end

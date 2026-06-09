@@ -142,6 +142,7 @@ const TRANSLATIONS = {
   'bin.cleanup.removed':               { en: 'Removed stale plugins.entries.trueconf from the config', ru: 'Удалил устаревший plugins.entries.trueconf из конфига' },
   'bin.savedNoOauth.title':            { en: 'Important', ru: 'Важно' },
   'bin.savedNoOauth.body':             { en: 'Config written without OAuth validation. If you see connection errors at `openclaw gateway` — run `npm run setup` again.', ru: 'Конфиг записан без OAuth-валидации. Если при `openclaw gateway` будут ошибки подключения — запусти `npm run setup` ещё раз.' },
+  'bin.ephemeralHost.error':           { en: 'TrueConf setup was launched from a throwaway npx cache copy ({{path}}), and the plugin is not installed yet.\n\nA wizard run from here would write a temporary path into openclaw.json that stops working once the npx cache is cleared.\n\nInstall the plugin first, then configure it:\n  openclaw plugins install {{npmSpec}}\n  npx -y -p {{npmSpec}} trueconf-setup\n\n(or run `openclaw onboard` and pick TrueConf).', ru: 'Мастер TrueConf запущен из временной npx-копии ({{path}}), а плагин ещё не установлен.\n\nЗапуск отсюда записал бы в openclaw.json временный путь, который перестанет работать после очистки npx-кэша.\n\nСначала установите плагин, затем настройте:\n  openclaw plugins install {{npmSpec}}\n  npx -y -p {{npmSpec}} trueconf-setup\n\n(или `openclaw onboard` и выберите TrueConf).' },
 
   // Setup wizard descriptor — operator-facing copy in trueconfSetupWizard.
   // Resolved lazily by buildSetupWizardDescriptor(t, locale) so the bin can

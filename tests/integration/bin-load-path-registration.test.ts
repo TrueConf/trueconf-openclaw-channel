@@ -132,4 +132,24 @@ describe('bin/trueconf-setup.mjs runSetup auto-registers plugins.load.paths', ()
       await teardownFake(fake)
     }
   })
+
+  it('registers the injected pluginHostDir instead of REPO_ROOT', async () => {
+    const fake = await setupHeadlessEnv()
+    const hostDir = mkdtempSync(join(tmpdir(), 'tc-host-'))
+    try {
+      const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+        runSetup: (opts: { configPath: string; pluginHostDir: string }) => Promise<unknown>
+      }
+      await runSetup({ configPath, pluginHostDir: hostDir })
+
+      const written = JSON.parse(readFileSync(configPath, 'utf8')) as {
+        plugins?: { load?: { paths?: string[] } }
+      }
+      expect(written.plugins?.load?.paths).toContain(realpathSync(hostDir))
+      expect(written.plugins?.load?.paths).not.toContain(realpathSync(REPO_ROOT))
+    } finally {
+      rmSync(hostDir, { recursive: true, force: true })
+      await teardownFake(fake)
+    }
+  })
 })

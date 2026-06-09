@@ -29,4 +29,15 @@ describe('i18n', () => {
     expect(t('tls.cafile.unreadable', 'en', { path: '/etc/ca.pem', reason: 'EACCES' }))
       .toMatch(/EACCES/)
   })
+
+  it('ephemeral-host error interpolates path + npmSpec (en + ru)', () => {
+    const vars = { path: '/u/.npm/_npx/x/p', npmSpec: '@trueconf-community/trueconf-openclaw-channel' }
+    const en = t('bin.ephemeralHost.error', 'en', vars)
+    expect(en).toMatch(/\/u\/\.npm\/_npx\/x\/p/)
+    expect(en).toContain('openclaw plugins install @trueconf-community/trueconf-openclaw-channel')
+    const ru = t('bin.ephemeralHost.error', 'ru', vars)
+    expect(ru).toMatch(/[А-Яа-я]/)
+    expect(ru).toContain('/u/.npm/_npx/x/p')
+    expect(ru).toContain('npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup')
+  })
 })

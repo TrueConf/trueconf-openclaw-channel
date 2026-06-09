@@ -7,7 +7,7 @@
 // ships plugin wizard discovery, we surface the wizard here and write the
 // resulting creds to ~/.openclaw/openclaw.json directly.
 
-import { readFileSync, writeFileSync, renameSync, chmodSync, existsSync, mkdirSync, copyFileSync, unlinkSync, realpathSync } from 'node:fs'
+import { readFileSync, writeFileSync, renameSync, chmodSync, existsSync, mkdirSync, copyFileSync, readdirSync, unlinkSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -153,20 +153,36 @@ function backupConfigIfExists(configPath) {
   }
 }
 
-// True when the plugin is physically installed for the openclaw state dir that
-// owns configPath. Two install layouts exist across openclaw versions:
-//  - <= 2026.4.x: `openclaw plugins install` records plugins.installs.trueconf
-//    inside openclaw.json itself.
-//  - >= 2026.6.x: install records moved to openclaw's plugin index; the raw
-//    config only carries plugins.entries.trueconf, and the package lives in
-//    <state-dir>/extensions/trueconf next to openclaw.json.
-// plugins.entries alone is deliberately NOT accepted as evidence: it is an
-// enable flag that can outlive an uninstall, and treating it as "installed"
-// would let the npx-cache gate pass on a machine with no plugin bits on disk.
+// Physical plugin bits on disk for the openclaw state dir that owns
+// configPath. Two install layouts observed on openclaw 2026.6.x:
+//  - tarball installs:  <state-dir>/extensions/trueconf
+//  - registry installs: <state-dir>/npm/projects/
+//                         trueconf-community-trueconf-openclaw-channel-<hash>/
+function hasTrueconfBitsOnDisk(configPath) {
+  if (typeof configPath !== 'string' || configPath === '') return false
+  const stateDir = dirname(configPath)
+  try { if (existsSync(join(stateDir, 'extensions', 'trueconf'))) return true } catch { /* fall through to the other layout */ }
+  try {
+    return readdirSync(join(stateDir, 'npm', 'projects'))
+      .some((entry) => entry.startsWith('trueconf-community-trueconf-openclaw-channel-'))
+  } catch { return false }
+}
+
+// True when the plugin counts as installed for the openclaw state dir that
+// owns configPath. Accepted evidence, broad on purpose:
+//  - plugins.installs.trueconf in openclaw.json (openclaw <= 2026.4.x);
+//  - plugins.entries.trueconf (every observed version writes it on install;
+//    2026.6.x keeps install records in the plugin index, so the raw config
+//    carries nothing else);
+//  - plugin bits on disk in either 2026.6.x layout.
+// A stale entry can make the gate pass on a machine with no plugin bits, but
+// that is the cheap failure: registerLoadPathIfMissing refuses ephemeral dirs,
+// so a false pass can no longer poison the config with an npx-cache path —
+// while a false block dead-ends the documented install -> setup order.
 export function isTrueconfInstalled(cfg, configPath) {
   if (cfg?.plugins?.installs?.trueconf !== undefined) return true
-  if (typeof configPath !== 'string' || configPath === '') return false
-  try { return existsSync(join(dirname(configPath), 'extensions', 'trueconf')) } catch { return false }
+  if (cfg?.plugins?.entries?.trueconf !== undefined) return true
+  return hasTrueconfBitsOnDisk(configPath)
 }
 
 function cleanupStaleEntries(cfg, configPath) {
@@ -175,7 +191,12 @@ function cleanupStaleEntries(cfg, configPath) {
   // IS installed, the entry is openclaw's live enable record (on 2026.6.x it
   // is the ONLY thing that makes the gateway load an installed plugin), so
   // deleting it would disable the channel right after a successful setup.
-  if (cfg.plugins?.entries?.trueconf && !isTrueconfInstalled(cfg, configPath)) {
+  // Deliberately checks disk bits + installs record, NOT isTrueconfInstalled:
+  // there the entry itself counts as install evidence, which would make this
+  // check circular and the cleanup unreachable.
+  if (cfg.plugins?.entries?.trueconf
+      && cfg.plugins?.installs?.trueconf === undefined
+      && !hasTrueconfBitsOnDisk(configPath)) {
     const next = { ...cfg, plugins: { ...cfg.plugins, entries: { ...cfg.plugins.entries } } }
     delete next.plugins.entries.trueconf
     return { cfg: next, cleaned: true }

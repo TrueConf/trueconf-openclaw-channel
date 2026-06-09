@@ -40,7 +40,7 @@ describe('isTrueconfInstalled', () => {
     expect(isTrueconfInstalled(cfg, '/nonexistent/openclaw.json')).toBe(true)
   })
 
-  it('true when extensions/trueconf exists next to the config (openclaw >= 2026.6.x)', () => {
+  it('true when extensions/trueconf exists next to the config (2026.6.x tarball install)', () => {
     const stateDir = mkdtempSync(join(tmpdir(), 'tc-state-'))
     try {
       mkdirSync(join(stateDir, 'extensions', 'trueconf'), { recursive: true })
@@ -50,9 +50,29 @@ describe('isTrueconfInstalled', () => {
     }
   })
 
-  it('false for plugins.entries.trueconf alone (enable flag is not install evidence)', () => {
+  it('true when npm/projects/<pkg>-<hash> exists next to the config (2026.6.x registry install)', () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'tc-state-'))
+    try {
+      mkdirSync(join(stateDir, 'npm', 'projects', 'trueconf-community-trueconf-openclaw-channel-d120d8b679'), { recursive: true })
+      expect(isTrueconfInstalled({}, join(stateDir, 'openclaw.json'))).toBe(true)
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true })
+    }
+  })
+
+  it('does NOT match unrelated npm/projects dirs', () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'tc-state-'))
+    try {
+      mkdirSync(join(stateDir, 'npm', 'projects', 'some-other-plugin-abc123'), { recursive: true })
+      expect(isTrueconfInstalled({}, join(stateDir, 'openclaw.json'))).toBe(false)
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true })
+    }
+  })
+
+  it('true for plugins.entries.trueconf alone (2026.6.x registry installs leave nothing else in the raw config)', () => {
     const cfg = { plugins: { entries: { trueconf: { enabled: true } } } }
-    expect(isTrueconfInstalled(cfg, '/nonexistent/openclaw.json')).toBe(false)
+    expect(isTrueconfInstalled(cfg, '/nonexistent/openclaw.json')).toBe(true)
   })
 
   it('false when there is no install evidence at all', () => {

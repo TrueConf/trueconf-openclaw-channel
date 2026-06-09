@@ -452,8 +452,8 @@ Six tunables expose the network-resilience knobs that ship with sensible default
 ### Channel gone right after running `trueconf-setup` (openclaw 2026.6.x)
 
 - **Symptom:** the plugin was installed and loading fine, but after a successful `trueconf-setup` run the gateway silently skips it — no `[trueconf]` lines in the log, the channel is missing from `openclaw channels status`.
-- **Cause:** plugin versions before 1.2.8 removed `plugins.entries.trueconf` from `openclaw.json` as a "stale" entry. On openclaw 2026.6.x that entry is the live enable record for an installed plugin, so deleting it disabled the plugin.
-- **Solution:** upgrade the plugin to >= 1.2.8 (the cleanup now only runs when no install evidence exists), then restore the entry — either re-run `openclaw plugins install @trueconf-community/trueconf-openclaw-channel`, or add it back manually in `~/.openclaw/openclaw.json`:
+- **Cause:** plugin versions before 1.2.9 removed `plugins.entries.trueconf` from `openclaw.json` as a "stale" entry (1.2.8 fixed this for tarball installs but missed registry installs, which live under `~/.openclaw/npm/projects/`). On openclaw 2026.6.x that entry is the live enable record for an installed plugin, so deleting it disabled the plugin.
+- **Solution:** upgrade the plugin to >= 1.2.9 (the cleanup now only runs when no install evidence exists), then restore the entry — either re-run `openclaw plugins install @trueconf-community/trueconf-openclaw-channel`, or add it back manually in `~/.openclaw/openclaw.json`:
   ```json
   { "plugins": { "entries": { "trueconf": { "enabled": true } } } }
   ```
@@ -532,6 +532,12 @@ MIT
 
 
 # Changelog
+
+## [1.2.9] - 2026-06-10
+
+### Fixed
+- The npx-cache gate and the entries cleanup now recognize **registry** installs on openclaw >= 2026.6.x. `openclaw plugins install <npm-spec>` on those versions stores the package under `<state-dir>/npm/projects/trueconf-community-trueconf-openclaw-channel-<hash>/` (not `extensions/trueconf`, which 1.2.8 checked) and leaves only `plugins.entries.trueconf` in the raw config. In 1.2.8 the documented `openclaw plugins install` -> `npx ... trueconf-setup` order therefore still dead-ended with "plugin is not installed", and a setup run could still delete the live `plugins.entries.trueconf`, silently disabling the plugin.
+- Install detection now accepts `plugins.entries.trueconf` itself as evidence (every observed openclaw version writes it on install). A stale entry letting the gate pass is the cheap failure: the load-path registrar refuses npx-cache dirs, so a false pass can no longer poison the config — while a false block dead-ends the documented flow. The stale-entries cleanup keeps its narrower disk-evidence check (it would otherwise be circular) and still removes a leftover entry when no plugin bits exist anywhere.
 
 ## [1.2.8] - 2026-06-10
 

@@ -449,8 +449,8 @@ Six tunables expose the network-resilience knobs that ship with sensible default
 ### Channel gone right after running `trueconf-setup` (openclaw 2026.6.x)
 
 - **Symptom:** the plugin was installed and loading fine, but after a successful `trueconf-setup` run the gateway silently skips it — no `[trueconf]` lines in the log, the channel is missing from `openclaw channels status`.
-- **Cause:** plugin versions before 1.2.8 removed `plugins.entries.trueconf` from `openclaw.json` as a "stale" entry. On openclaw 2026.6.x that entry is the live enable record for an installed plugin, so deleting it disabled the plugin.
-- **Solution:** upgrade the plugin to >= 1.2.8 (the cleanup now only runs when no install evidence exists), then restore the entry — either re-run `openclaw plugins install @trueconf-community/trueconf-openclaw-channel`, or add it back manually in `~/.openclaw/openclaw.json`:
+- **Cause:** plugin versions before 1.2.9 removed `plugins.entries.trueconf` from `openclaw.json` as a "stale" entry (1.2.8 fixed this for tarball installs but missed registry installs, which live under `~/.openclaw/npm/projects/`). On openclaw 2026.6.x that entry is the live enable record for an installed plugin, so deleting it disabled the plugin.
+- **Solution:** upgrade the plugin to >= 1.2.9 (the cleanup now only runs when no install evidence exists), then restore the entry — either re-run `openclaw plugins install @trueconf-community/trueconf-openclaw-channel`, or add it back manually in `~/.openclaw/openclaw.json`:
   ```json
   { "plugins": { "entries": { "trueconf": { "enabled": true } } } }
   ```

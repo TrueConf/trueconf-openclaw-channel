@@ -71,6 +71,30 @@ describe('bin: npx-cache ephemeral-host gate', () => {
     expect(caught.message).toContain(HALT)
   })
 
+  it('does NOT fire when npm/projects/<pkg>-<hash> exists next to the config (2026.6.x registry install)', async () => {
+    mkdirSync(join(tmpDir, 'npm', 'projects', 'trueconf-community-trueconf-openclaw-channel-d120d8b679'), { recursive: true })
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; pluginHostDir: string; prompter: unknown }) => Promise<void>
+    }
+    let caught: any
+    await runSetup({ configPath, pluginHostDir: NPX_HOST, prompter: haltPrompter() }).catch((e) => { caught = e })
+
+    expect(caught).toBeDefined()
+    expect(caught.message).toContain(HALT)
+  })
+
+  it('does NOT fire on a bare plugins.entries.trueconf config (registry install leaves nothing else)', async () => {
+    writeFileSync(configPath, JSON.stringify({ plugins: { entries: { trueconf: { enabled: true } } } }, null, 2))
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; pluginHostDir: string; prompter: unknown }) => Promise<void>
+    }
+    let caught: any
+    await runSetup({ configPath, pluginHostDir: NPX_HOST, prompter: haltPrompter() }).catch((e) => { caught = e })
+
+    expect(caught).toBeDefined()
+    expect(caught.message).toContain(HALT)
+  })
+
   it('does NOT fire when plugins.installs.trueconf is present (passes gate into creds)', async () => {
     writeFileSync(configPath, JSON.stringify({ plugins: { installs: { trueconf: {} } } }, null, 2))
     const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {

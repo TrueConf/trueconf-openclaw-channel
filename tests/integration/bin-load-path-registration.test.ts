@@ -182,6 +182,33 @@ describe('bin/trueconf-setup.mjs runSetup auto-registers plugins.load.paths', ()
     }
   })
 
+  it('preserves plugins.entries.trueconf when the registry layout (npm/projects) is present', async () => {
+    const fake = await setupHeadlessEnv()
+    try {
+      mkdirSync(join(tmpDir, 'npm', 'projects', 'trueconf-community-trueconf-openclaw-channel-d120d8b679'), { recursive: true })
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          plugins: { entries: { trueconf: { enabled: true } } },
+          meta: { lastTouchedVersion: '2026.6.5' },
+        }, null, 2),
+      )
+
+      const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+        runSetup: (opts: { configPath: string }) => Promise<unknown>
+      }
+      await runSetup({ configPath })
+
+      const written = JSON.parse(readFileSync(configPath, 'utf8')) as {
+        plugins?: { entries?: { trueconf?: { enabled?: boolean } }; load?: { paths?: string[] } }
+      }
+      expect(written.plugins?.entries?.trueconf?.enabled).toBe(true)
+      expect(written.plugins?.load?.paths ?? []).not.toContain(realpathSync(REPO_ROOT))
+    } finally {
+      await teardownFake(fake)
+    }
+  })
+
   it('still removes a stale plugins.entries.trueconf when nothing is installed', async () => {
     const fake = await setupHeadlessEnv()
     try {

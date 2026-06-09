@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.2.9] - 2026-06-10
+
+### Fixed
+- The npx-cache gate and the entries cleanup now recognize **registry** installs on openclaw >= 2026.6.x. `openclaw plugins install <npm-spec>` on those versions stores the package under `<state-dir>/npm/projects/trueconf-community-trueconf-openclaw-channel-<hash>/` (not `extensions/trueconf`, which 1.2.8 checked) and leaves only `plugins.entries.trueconf` in the raw config. In 1.2.8 the documented `openclaw plugins install` -> `npx ... trueconf-setup` order therefore still dead-ended with "plugin is not installed", and a setup run could still delete the live `plugins.entries.trueconf`, silently disabling the plugin.
+- Install detection now accepts `plugins.entries.trueconf` itself as evidence (every observed openclaw version writes it on install). A stale entry letting the gate pass is the cheap failure: the load-path registrar refuses npx-cache dirs, so a false pass can no longer poison the config — while a false block dead-ends the documented flow. The stale-entries cleanup keeps its narrower disk-evidence check (it would otherwise be circular) and still removes a leftover entry when no plugin bits exist anywhere.
+
 ## [1.2.8] - 2026-06-10
 
 ### Fixed

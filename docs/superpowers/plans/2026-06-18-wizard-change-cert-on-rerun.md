@@ -21,6 +21,25 @@
 - **TOCTOU:** OAuth must receive the exact bytes validated in-process. `TrustDecision.pinned` carries `caBytes` co-required with `caPath`. The lenient unreachable-keep mints bytes via the documented cast escape (`bytes as unknown as ValidatedCaBytes`), **NOT** `markValidated` (importing it from `channel-setup.ts` would create a circular import); OAuth's `rejectUnauthorized:true` is the sole gate for those bytes.
 - **Windows dev-machine baseline:** the full suite is green EXCEPT two pre-existing Windows-only failures that are NOT regressions and must be ignored by verify: `tests/unit/bin-register-load-path.test.mjs` (`EPERM: symlink`) and `bin-trueconf-setup.test.ts › 'headless … 0600 permissions'` (`expected 438 to be 384`). On Linux/CI both pass.
 
+### Test-authoring discipline (MANDATORY — from plan review; applies to every test step below)
+
+These rules override any illustrative snippet that contradicts them; where a snippet below is wrong, follow the rule.
+
+1. **The keep gate fires FIRST.** On any pinned/insecure re-run, `reviewExistingTrust` asks the keep `confirm` before anything else. To reach the **change menu**, the FIRST `confirm` MUST be `false`. NEVER use a constant-return confirm stub (`async () => true`) for a change-path test — it can only express "keep." Use ORDERED arrays:
+   - keep → `confirm:[true]` (or `[false-overwrite?...]` see rule 4).
+   - change → use-file → `confirm:[false]`, `select:['use-file']`, `text:['<pem path>']`.
+   - change → insecure (accepted) → `confirm:[false, true]` (decline keep, then accept the `promptInsecureConfirm`).
+   - change → insecure (declined → throws) → `confirm:[false, false]`. *(With only `[false]` the insecure-confirm drains to the fake-prompter default `true` and the throw is never exercised.)*
+   - change → re-probe → `confirm:[false]`, `select:['re-probe', ...]` (see rule 2).
+   - change → abort / empty-select → `confirm:[false]`, `select:['abort']` / `select:[]`.
+2. **`re-probe → still untrusted` consumes TWO selects:** `changeMenu` reads `select` (=`'re-probe'`), then `reprobe` reads `select` again for the nested use-file/insecure/abort menu. Queue is `select:['re-probe','use-file']` (or `['re-probe','insecure']`). Assert `probe.probeTls` WAS called (proves re-probe ran, not a use-file shortcut).
+3. **Note assertions:** the smoke `makeFakePrompter.note` (tests/smoke/fake-prompter.ts) is a NO-OP. For UNIT tests use an inline prompter that captures notes in a **closure array** (`const notes:string[]=[]; note: async (b)=>{ notes.push(b) }`) — do NOT use a `this.notes = []` self-reinitialising helper. For INTEGRATION tests wrap `prompter.note` (pattern at `setup-wizard-trust.test.ts:330-334`). The gate-NOTE assertion is load-bearing in EVERY gate test (a default-true confirm would otherwise pass even if the gate never rendered).
+4. **Bin/CLI tests prefix the OVERWRITE confirm.** `runSetup` on an EXISTING cfg issues `bin.overwrite.confirm` as confirm[0]. So every Task-8 confirm queue starts with `true` (overwrite), THEN the gate confirms: keep → `[true,true]`; change→use-file → `[true]` (use-file consumes `text`, no 2nd confirm); change→insecure → `[true,false,true]`.
+5. **`download()` negative is required:** every keep / use-file / insecure test (onboard AND CLI) asserts `expect(download()).not.toHaveBeenCalled()` (the fixture download mock writes `ca-valid` by default → a stray call masks a wrong-branch fall-through).
+6. **"probe not entered" (insecure-keep):** assert via notes — the insecure-keep note rendered and `t('probe.detecting')` did NOT — do NOT add `probeTls` to the file-level `vi.mock` (other describe blocks rely on the real probe).
+7. **Env hygiene:** every NEW test file's `beforeEach` wipes all `TRUECONF_*`. Unit asserts use locale `'en'` (no `TRUECONF_SETUP_LOCALE` pin needed); integration files already pin `ru` at their `beforeEach`.
+8. **Fixture limits:** there is NO system-trusted fixture cert. `change → re-probe → server trusted → {kind:'system'}` AND `change → re-probe → still untrusted` are **unit-only** (stubbed `probeTls`); they are unwritable as integration (a live fixture is always `caUntrusted:true`, and a re-probe of a server whose stored CA validates returns `caUntrusted:false` → system). Do not attempt integration variants for these two.
+
 ## File Structure
 
 - **Create** `src/setup-trust.ts` — shared trust module (primitives + `reviewExistingTrust` + `TrustDecision`).
@@ -36,7 +55,7 @@
 ### Task 1: i18n keys
 
 **Files:**
-- Modify: `src/i18n.ts` (add to `TRANSLATIONS`, after the existing `tls.banner.missing.*` block, ~line 105)
+- Modify: `src/i18n.ts` (insert into `TRANSLATIONS` at line 106 — immediately AFTER `tls.banner.missing.reasonReadErr` (the last `missing.*` entry, :105) and BEFORE the `// Probe preview` comment (:107); do NOT split the missing block)
 - Test: `tests/unit/i18n.test.ts` (parity loop at :17-24 auto-covers; add explicit render asserts)
 
 **Interfaces:**
@@ -101,13 +120,38 @@ git commit -m "feat(i18n): add trust.review.* keys for the re-run trust gate"
 **Interfaces:**
 - Produces: `resolveAbsPath(raw: string): string`, `shortFp(fp: string | null | undefined): string`.
 
-- [ ] **Step 1: Failing test** — `tests/unit/setup-trust.test.ts`:
+- [ ] **Step 1: Failing test** — `tests/unit/setup-trust.test.ts` (create the file WITH the env-wipe `beforeEach` and the shared closure-capturing helpers reused by Tasks 4-6):
 
 ```ts
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { homedir } from 'node:os'
 import { resolve as pathResolve } from 'node:path'
 import { resolveAbsPath, shortFp } from '../../src/setup-trust'
+
+// Global-Constraints rule 7: wipe TRUECONF_* so a leaked env can't perturb a test.
+beforeEach(() => { for (const k of Object.keys(process.env)) if (k.startsWith('TRUECONF_')) delete process.env[k] })
+
+// Shared helpers (Global-Constraints rules 1-3). ORDERED queues; confirm default = true (keep).
+export function mkPrompter(q: { confirm?: boolean[]; select?: string[]; text?: string[] } = {}) {
+  const c = [...(q.confirm ?? [])], s = [...(q.select ?? [])], x = [...(q.text ?? [])]
+  const notes: string[] = []
+  return {
+    notes,
+    note: async (b: string) => { notes.push(b) },
+    confirm: async () => (c.length ? Boolean(c.shift()) : true),
+    select: async () => (s.length ? s.shift() : ''),
+    text: async () => (x.length ? x.shift() : ''),
+  } as any
+}
+export function mkProbe(over: any = {}) {
+  return {
+    probeTls: async () => ({ reachable: true, useTls: true, port: 443, caUntrusted: true }),
+    parseCertFromPem: () => ({ subject: 's', issuerCN: 'i', fingerprint: 'fp' }),
+    validateCaAgainstServer: async () => ({ ok: true, caBytes: Buffer.from('NEWCA') }),
+    ...over,
+  } as any
+}
+export const BYTES = Buffer.from('VALID') as any // stands in for ValidatedCaBytes in unit tests
 
 describe('setup-trust primitives', () => {
   it('resolveAbsPath expands ~ and absolutises', () => {
@@ -261,32 +305,19 @@ git commit -m "refactor: move readCaFileInteractive + factor promptInsecureConfi
     `ReviewExistingTrustArgs = { prompter: WizardPrompter; probe: ProbeModule; host: string; port: number; current: { caPath?: string; tlsVerify?: boolean }; alreadyValidated?: { caBytes: ValidatedCaBytes }; locale: Locale }`.
 - This task implements ONLY: the `alreadyValidated` pinned path → keep/change gate, where "change" throws a `not-implemented` placeholder replaced in Task 5. (Keeps the task independently testable.)
 
-- [ ] **Step 1: Failing tests** — add to `tests/unit/setup-trust.test.ts`:
+> **Depends on Task 1** — `t('trust.review.*')` does not typecheck until the keys exist (`TranslationKey` union). Task 1 is committed first; do not run typecheck on this task before Task 1.
+
+- [ ] **Step 1: Failing test** — add to `tests/unit/setup-trust.test.ts` (reuse `mkPrompter`/`BYTES` defined in Task 2; import `reviewExistingTrust`):
 
 ```ts
-import { reviewExistingTrust } from '../../src/setup-trust'
-
-function fakePrompter(opts: { confirm?: boolean[]; select?: string[]; note?: string[] } = {}) {
-  const confirm = [...(opts.confirm ?? [])], select = [...(opts.select ?? [])]
-  return {
-    notes: opts.note ?? [],
-    note: async function (this: any, b: string) { (opts.note ?? (this.notes = [])).push?.(b) },
-    confirm: async () => (confirm.length ? Boolean(confirm.shift()) : true),
-    select: async () => (select.length ? select.shift() : ''),
-    text: async () => '',
-  } as any
-}
-const BYTES = Buffer.from('VALID') as any // stands in for ValidatedCaBytes in unit tests
-
 it('alreadyValidated + keep → pinned, gate note shown', async () => {
-  const notes: string[] = []
-  const prompter = { note: async (b: string) => { notes.push(b) }, confirm: async () => true, select: async () => '', text: async () => '' } as any
+  const prompter = mkPrompter({ confirm: [true] })   // keep
   const d = await reviewExistingTrust({
     prompter, probe: {} as any, host: 'h', port: 443,
     current: { caPath: '/ca.pem' }, alreadyValidated: { caBytes: BYTES }, locale: 'en',
   })
   expect(d).toEqual({ kind: 'pinned', caPath: expect.stringContaining('ca.pem'), caBytes: BYTES })
-  expect(notes.join('\n')).toMatch(/Verification by CA file/)
+  expect(prompter.notes.join('\n')).toMatch(/Verification by CA file/)  // gate note rendered
 })
 ```
 
@@ -348,34 +379,33 @@ git commit -m "feat(setup-trust): TrustDecision + reviewExistingTrust pinned kee
 - Consumes: `readCaFileInteractive`, `promptInsecureConfirm` (Task 3), `ProbeModule.probeTls`.
 - Produces: complete `reviewExistingTrust` insecure branch + `changeMenu` (use-file / insecure / re-probe / abort) + `reprobe` (system vs nested fresh-untrusted).
 
-- [ ] **Step 1: Failing tests** — add to `tests/unit/setup-trust.test.ts` (one canonical test shown; add the full matrix in Step listing below):
+> **Depends on Task 1** (i18n keys must exist to typecheck `t('trust.review.*')`).
+
+- [ ] **Step 1: Failing tests** — add to `tests/unit/setup-trust.test.ts`, reusing `mkPrompter`/`mkProbe`/`BYTES` from Task 2 (ORDERED queues per Global-Constraints rules 1-2; the keep gate fires first → change paths lead with `confirm:false`).
+
+  Canonical (correct) change→insecure test:
 
 ```ts
-it('change → insecure → kind:insecure', async () => {
-  const prompter = {
-    note: async () => {}, confirm: async () => true,
-    select: async () => 'insecure', text: async () => '',
-  } as any
+it('pinned valid → change → insecure (accepted) → kind:insecure', async () => {
+  const prompter = mkPrompter({ confirm: [false, true], select: ['insecure'] })
   const d = await reviewExistingTrust({
-    prompter, probe: {} as any, host: 'h', port: 443,
+    prompter, probe: mkProbe(), host: 'h', port: 443,
     current: { caPath: '/ca.pem' }, alreadyValidated: { caBytes: BYTES }, locale: 'en',
   })
-  // keep-confirm default true would keep; force change by returning false from confirm:
-  // (use a confirm queue: first confirm = keep? → false)
   expect(d).toEqual({ kind: 'insecure' })
+  expect(prompter.notes.join('\n')).toMatch(/Verification by CA file/) // gate note rendered
 })
 ```
 
-  **Full matrix to add** (each: stubbed prompter + probe; assert decision + that the gate note rendered; assert `download` never referenced — there is none here):
-  - `insecure account → keep` → `current:{tlsVerify:false}`, confirm `[true]` → `{kind:'insecure'}`; note matches `/disabled \(insecure\)/`.
-  - `insecure account → change → use-file` → confirm `[false]`, select `['use-file']`, probe stub `validateCaAgainstServer→ok`, text `['/new.pem']` → `{kind:'pinned', caPath:/new.pem/}`.
-  - `pinned valid → change → use-file` → confirm `[false]`, select `['use-file']` → `{kind:'pinned'}` new path.
-  - `pinned valid → change → insecure` → confirm `[false]`, select `['insecure']`, insecure-confirm `[true]` → `{kind:'insecure'}`.
-  - `pinned valid → change → insecure declined` → insecure-confirm `[false]` → throws.
-  - `pinned valid → change → re-probe → trusted` → select `['re-probe']`, probe stub `probeTls→{reachable:true,caUntrusted:false}` → `{kind:'system'}`.
-  - `pinned valid → change → re-probe → still untrusted → use-file` → probe stub `probeTls→{reachable:true,caUntrusted:true}`, nested select `['use-file']` + validate ok → `{kind:'pinned'}`.
-  - `pinned valid → change → abort` → select `['abort']` → throws `/cancelled/`.
-  - `pinned valid → change → empty select` → select `[]` (drained → '') → throws `/cancelled/` (NOT use-file).
+  **Full matrix** (each: assert the decision; assert the gate note rendered via `prompter.notes`). `download` is not referenced at the unit layer — the negative assertion belongs to the integration tests (Tasks 7/8), per Global-Constraints rule 5:
+  - `insecure account → keep` → `current:{tlsVerify:false}` (no `caPath`/`alreadyValidated`), `confirm:[true]` → `{kind:'insecure'}`; note matches `/disabled \(insecure\)/`.
+  - `insecure account → change → use-file` → `current:{tlsVerify:false}`, `confirm:[false]`, `select:['use-file']`, `text:['/new.pem']`, `probe:mkProbe()` → `{kind:'pinned', caPath: expect.stringContaining('new.pem'), caBytes: Buffer.from('NEWCA')}`.
+  - `pinned valid → change → use-file` → `current:{caPath:'/ca.pem'}` + `alreadyValidated:{caBytes:BYTES}`, `confirm:[false]`, `select:['use-file']`, `text:['/new.pem']` → `{kind:'pinned'}` new path.
+  - `pinned valid → change → insecure (declined)` → `confirm:[false, false]` (decline keep, decline insecure), `select:['insecure']` → **rejects** (`/declined/`). *(With `[false]` only, the insecure-confirm drains to default true → returns insecure → throw never exercised.)*
+  - `pinned valid → change → re-probe → trusted` → `confirm:[false]`, `select:['re-probe']`, `probe:mkProbe({ probeTls: async () => ({ reachable:true, useTls:true, port:443, caUntrusted:false }) })` → `{kind:'system'}`; assert `probeTls` was called (use a `vi.fn()` for it).
+  - `pinned valid → change → re-probe → still untrusted → use-file` → `confirm:[false]`, `select:['re-probe','use-file']` (TWO slots — rule 2), `text:['/new.pem']`, `probe:mkProbe()` (caUntrusted:true) → `{kind:'pinned'}`; assert `probeTls` called.
+  - `pinned valid → change → abort` → `confirm:[false]`, `select:['abort']` → **rejects** (`/cancelled/`).
+  - `pinned valid → change → empty select` → `confirm:[false]`, `select:[]` (drained → `''`) → **rejects** (`/cancelled/`); MUST NOT route to use-file.
 
 - [ ] **Step 2: Run, verify fail** (changeMenu throws not-implemented).
 
@@ -463,24 +493,27 @@ git commit -m "feat(setup-trust): change menu (use-file/insecure/re-probe) + ins
 **Interfaces:**
 - Produces: the `current.caPath && !alreadyValidated` branch of `reviewExistingTrust` — re-reads + re-validates; valid→gate, unreadable→`fileUnreadable` note+changeMenu, mismatch→`mismatchWarn` note+changeMenu, unreachable→lenient keep (cast, NOT `markValidated`).
 
-- [ ] **Step 1: Failing tests** — add to `tests/unit/setup-trust.test.ts` (stubbed probe):
-  - `CLI valid → keep` → probe `validateCaAgainstServer→{ok:true, caBytes:BYTES}`, file readable (use a real tmp PEM), confirm `[true]` → `{kind:'pinned', caBytes:BYTES}`.
-  - `CLI mismatch → change menu` → `validateCaAgainstServer→{ok:false, kind:'mismatch', error:'e', serverCert:{...}}`, select `['use-file']` → `{kind:'pinned'}`; assert a note matched `/no longer validates/`.
-  - `CLI unreadable → change menu` → caPath points at a non-existent file → assert note `/missing or unreadable/`, select `['use-file']` → `{kind:'pinned'}`.
-  - `CLI unreachable → lenient keep` → `validateCaAgainstServer→{ok:false, kind:'unreachable', error:'e'}` → `{kind:'pinned', caPath, caBytes:<stored bytes>}`; assert note `/keeping the stored CA WITHOUT re-validation/`.
+> **Depends on Task 1** (i18n keys).
+
+- [ ] **Step 1: Failing tests** — add to `tests/unit/setup-trust.test.ts` (reuse `mkPrompter`/`BYTES` from Task 2; these branches have NO keep-gate confirm — mismatch/unreadable call `changeMenu` directly, so `select:['use-file']` is the first prompt; unreachable consumes no prompt at all):
+  - `CLI valid → keep` → write a real tmp PEM at `caPath`, `mkProbe({ validateCaAgainstServer: async () => ({ ok:true, caBytes: BYTES }) })`, `confirm:[true]` → `{kind:'pinned', caBytes:BYTES}`.
+  - `CLI mismatch → change menu` → `mkProbe({ validateCaAgainstServer: async () => ({ ok:false, kind:'mismatch', error:'e', serverCert:{ issuerCN:'x' } }) })`, `select:['use-file']`, `text:['/new.pem']` → `{kind:'pinned'}`; assert a note matched `/no longer validates/`.
+  - `CLI unreadable → change menu` → `caPath:'/definitely-missing.pem'`, `select:['use-file']`, `text:['/new.pem']` → `{kind:'pinned'}`; assert note `/missing or unreadable/`.
+  - `CLI unreachable → lenient keep` (below).
 
 ```ts
 it('CLI unreachable during re-validation → lenient keep with warning', async () => {
-  const tmp = join(mkdtempSync(join(tmpdir(),'st-')), 'ca.pem'); writeFileSync(tmp, 'PEMBYTES')
-  const notes: string[] = []
-  const prompter = { note: async (b: string) => { notes.push(b) }, confirm: async () => true, select: async () => '', text: async () => '' } as any
-  const probe = { validateCaAgainstServer: async () => ({ ok: false, kind: 'unreachable', error: 'ECONNREFUSED' }) } as any
+  const tmp = join(mkdtempSync(join(tmpdir(), 'st-')), 'ca.pem'); writeFileSync(tmp, 'PEMBYTES')
+  const prompter = mkPrompter({})  // unreachable branch consumes no confirm/select
+  const probe = mkProbe({ validateCaAgainstServer: async () => ({ ok: false, kind: 'unreachable', error: 'ECONNREFUSED' }) })
   const d = await reviewExistingTrust({ prompter, probe, host: 'h', port: 443, current: { caPath: tmp }, locale: 'en' })
   expect(d.kind).toBe('pinned')
   expect(Buffer.from((d as any).caBytes).toString()).toBe('PEMBYTES')
-  expect(notes.join('\n')).toMatch(/WITHOUT re-validation/)
+  expect(prompter.notes.join('\n')).toMatch(/WITHOUT re-validation/)
 })
 ```
+
+> **§6 fail-closed proof lives in Task 8** (it must drive the CALLER's OAuth step — `reviewExistingTrust` alone never calls `validateOAuthCredentials`). The unit test above proves the lenient branch returns the *stored* bytes; Task 8 proves those un-revalidated bytes still make OAuth fail closed (`category:'tls'`), not silently save.
 
 - [ ] **Step 2: Run, verify fail** (branch throws not-implemented from Task 4).
 
@@ -538,17 +571,16 @@ git commit -m "feat(setup-trust): CLI internal re-validation (valid/mismatch/unr
 **Interfaces:**
 - Consumes: `reviewExistingTrust`, `TrustDecision` (Tasks 4-6).
 
-- [ ] **Step 1: Update the changed test + add new ones** (RED). In `setup-wizard-trust.test.ts`:
-  - Rename `'silent happy …'` → `'re-run: valid CA → gate → keep preserves caPath'`; body keeps cfg `{useTls:true, caPath: ca-valid.pem}`, prompter `makeFakePrompter({ confirmResponses:[true] })`; capture notes (wrap `prompter.note`) and assert one matches `/Текущая настройка TLS/` (locale pinned ru); assert caPath preserved, `download()` not called, OAuth got the bytes.
+- [ ] **Step 1: Update the changed test + add new ones** (RED). In `setup-wizard-trust.test.ts`. This file pins `TRUECONF_SETUP_LOCALE='ru'` (its `beforeEach`), so the locale picker is skipped and `selectResponses` go straight to the change menu. Wrap `prompter.note` to capture notes (pattern at :330-334). Per Global-Constraints rule 5 EVERY keep/use-file/insecure case asserts `expect(download()).not.toHaveBeenCalled()`; per rule 6 assert "probe not entered" via notes (insecure-keep note rendered, `t('probe.detecting','ru')` NOT in captured notes) — do NOT touch the file-level `vi.mock`.
+  - Rename `'silent happy …'` → `'re-run: valid CA → gate → keep preserves caPath'`; cfg `{useTls:true, caPath: ca-valid.pem}`, `makeFakePrompter({ confirmResponses:[true] })`; assert a note matches `/Текущая настройка TLS/`, caPath preserved, `download()` not called, OAuth got the bytes.
   - Add (cfg `{useTls:true, caPath: ca-valid.pem}`, server `ca-valid`):
-    - keep → as above.
-    - change→use-file: `confirmResponses:[false]`, `selectResponses:['use-file']`, `textResponses:[ca-valid.pem]` → caPath = file, download not called.
-    - change→insecure: `confirmResponses:[false,true]` (gate=change, insecure-confirm=yes), `selectResponses:['insecure']` → `tlsVerify:false`, **caPath undefined** in saved cfg, OAuth `tlsVerify:false`+no ca.
-    - change→re-probe→system: needs stubbed probe → covered in unit (Task 5/6); here assert via cfg `{caPath}` + `selectResponses:['re-probe']` only if a trusted outcome is reachable — otherwise OMIT and rely on the unit test (document in the test comment).
+    - change→use-file: `confirmResponses:[false]`, `selectResponses:['use-file']`, `textResponses:[ca-valid.pem]` → caPath = file; `download()` not called.
+    - change→insecure: `confirmResponses:[false,true]`, `selectResponses:['insecure']` → `tlsVerify:false`, **assert `savedCfg.caPath` is undefined** (the existing `tlsVerify===false` clearFields branch clears the prior caPath), OAuth `tlsVerify:false`+no ca; `download()` not called.
     - change→cancel: `confirmResponses:[false]`, `selectResponses:['abort']` → rejects.
+    - change→re-probe→system AND →still-untrusted: **OMIT here — unit-only** (Global-Constraints rule 8: no trusted/untrusted-after-reprobe fixture exists). Covered by Task 5 unit tests.
   - Insecure account (cfg `{useTls:true, tlsVerify:false}`, NO env):
-    - keep: `confirmResponses:[true]` → `tlsVerify:false` preserved, assert `download` & probe untouched (one trust prompt). Assert the insecure note rendered.
-    - change→use-file: `confirmResponses:[false]`, `selectResponses:['use-file']`, `textResponses:[ca-valid.pem]` → caPath set, tlsVerify cleared.
+    - keep: `confirmResponses:[true]` → `tlsVerify:false` preserved; assert the insecure note rendered AND `probe.detecting` note absent (probe not entered, rule 6); `download()` not called.
+    - change→use-file: `confirmResponses:[false]`, `selectResponses:['use-file']`, `textResponses:[ca-valid.pem]` → caPath set, `tlsVerify` cleared; `download()` not called.
 
 - [ ] **Step 2: Run, verify the new/renamed tests FAIL** (gate not wired yet)
 
@@ -627,12 +659,13 @@ git commit -m "feat(onboard): keep/change trust gate on re-run (interactiveFinal
 **Interfaces:**
 - Consumes: `reviewExistingTrust`, `resolveAbsPath` (setup-trust).
 
-- [ ] **Step 1: Rewrite `:762` + add CLI tests** (RED). In `bin-trueconf-setup.test.ts`:
-  - Rewrite `'skip-probe path preserves existing cfg.caPath…'` → `'re-run: re-validates and keeps stored caPath'`: probeModule stub now provides `validateCaAgainstServer: async () => ({ ok:true, caBytes: <bytes> })`, `parseCertFromPem`, and `probeTls` (may still be called by reviewExistingTrust's re-probe only on change — keep the keep path so probeTls isn't needed, or provide a benign `probeTls`); prompter `confirmResponses:[true]`; assert caPath preserved into saved cfg + OAuth bytes.
-  - Add: re-run change→use-file → `confirmResponses:[false]`, `selectResponses:['use-file']`, `textResponses:[validCa]`, stub `validateCaAgainstServer→ok` → saved caPath = new file.
-  - Add: re-run change→insecure → `confirmResponses:[false,true]`, `selectResponses:['insecure']` → saved `tlsVerify:false`, no caPath.
-  - Add (§1.1 regression): re-run insecure account → cfg `{useTls:true, port, tlsVerify:false}`, `confirmResponses:[true]` → saved `tlsVerify:false` preserved (assert `written.channels.trueconf.tlsVerify === false`).
-  - Add: re-run stored caPath missing → cfg `{useTls:true, port, caPath:'/nope.pem'}`, `selectResponses:['abort']` → rejects, and a note matched `/missing or unreadable/`.
+- [ ] **Step 1: Rewrite `:762` + add CLI tests** (RED). In `bin-trueconf-setup.test.ts`. **Confirm-queue ordering (Global-Constraints rule 4):** `runSetup` on an EXISTING cfg issues `bin.overwrite.confirm` FIRST, then (if a password is stored) the password-keep confirm, THEN the gate's keep/change confirm. The queues below assume the existing-cfg fixtures used by the surrounding tests (overwrite present); **VERIFY the exact positions by running the RED test** — the bin's prompt order is the source of truth, adjust the leading slots to match. Per rule 5, every keep/use-file/insecure case asserts `expect(download()).not.toHaveBeenCalled()`.
+  - Rewrite `'skip-probe path preserves existing cfg.caPath…'` → `'re-run: re-validates and keeps stored caPath'`: probeModule stub provides `validateCaAgainstServer: async () => ({ ok:true, caBytes: <validatedBytes> })` + `parseCertFromPem` + a benign `probeTls` (the keep path won't call it). `confirmResponses:[true, true]` (overwrite, keep). Assert caPath preserved into saved cfg + OAuth received the validated bytes + `download()` not called.
+  - re-run change→use-file → `confirmResponses:[true, false]` (overwrite, keep=NO), `selectResponses:['use-file']`, `textResponses:[validCa]`, stub `validateCaAgainstServer→ok` → saved caPath = new file; `download()` not called.
+  - re-run change→insecure → `confirmResponses:[true, false, true]` (overwrite, keep=NO, insecure-confirm=YES), `selectResponses:['insecure']` → saved `tlsVerify:false`, **no caPath**; `download()` not called.
+  - **§1.1 regression** — re-run insecure account → cfg `{useTls:true, port, tlsVerify:false}`, `confirmResponses:[true, true]` (overwrite, keep) → saved `tlsVerify:false` preserved (`expect(written.channels.trueconf.tlsVerify).toBe(false)`). Also add a cheaper direct assertion: `runWizardAndFinalize(...)` returns `tlsVerify:false`.
+  - re-run stored caPath missing → cfg `{useTls:true, port, caPath:'/nope.pem'}`, `confirmResponses:[true]` (overwrite), `selectResponses:['abort']` → rejects; a captured note matches `/missing or unreadable/`.
+  - **§6 fail-closed proof (security, REQUIRED)** — `'re-run: unreachable-kept un-revalidated CA still fails OAuth closed'`: cfg `{useTls:true, port, caPath: <readable file containing the WRONG/tampered CA>}`; probeModule stub `validateCaAgainstServer: async () => ({ ok:false, kind:'unreachable', error:'ECONNREFUSED' })` (forces the lenient keep → reviewExistingTrust returns the stored tampered bytes) AND `validateOAuthCredentials: async () => ({ ok:false, category:'tls', error:'self-signed cert in chain' })` (models `rejectUnauthorized:true` rejecting the tampered CA). `confirmResponses:[true, false]` (overwrite, then decline the save-anyway prompt). Assert: the flow **rejects** with `/tls/` (NOT a silent save), AND `validateOAuthCredentials` was called with `ca` = the stored tampered bytes (proves the lenient bytes were threaded to OAuth and gated there).
 
 - [ ] **Step 2: Run, verify fail**
 
@@ -640,7 +673,7 @@ Run: `npx vitest run tests/integration/bin-trueconf-setup.test.ts`
 Expected: FAIL.
 
 - [ ] **Step 3: Wire CLI** in `src/setup-shared.ts`:
-  - Add import: `import { resolveAbsPath, reviewExistingTrust, type ProbeModule as TrustProbe } from './setup-trust'`.
+  - Add import: `import { resolveAbsPath, reviewExistingTrust } from './setup-trust'`.
   - Widen the `tcFields` inline type (:429-436) with `tlsVerify?: boolean`. In `runWizardAndFinalize`, pass `tcFields.tlsVerify` to `promptProbePreview` (add the 7th arg before `t, locale`).
   - Change `promptProbePreview` signature to add `currentTlsVerify: boolean | undefined`. Replace the short-circuit body (:161-183):
 
@@ -649,7 +682,10 @@ Expected: FAIL.
     const hasTrust = (currentCaPath !== undefined) || (currentTlsVerify === false)
     if (currentUseTls !== false && hasTrust) {
       const decision = await reviewExistingTrust({
-        prompter, probe: probeModule as unknown as TrustProbe, host: serverUrl, port: currentPort,
+        // setup-shared's ProbeModule is a superset of setup-trust's (it adds
+        // validateOAuthCredentials), so the assignment typechecks WITHOUT a cast —
+        // do NOT write `as unknown as TrustProbe` (it would erase the probe-seam guarantee).
+        prompter, probe: probeModule, host: serverUrl, port: currentPort,
         current: { caPath: currentCaPath, tlsVerify: currentTlsVerify }, locale,
       })
       if (decision.kind === 'pinned') return { useTls: true, port: currentPort, caPath: decision.caPath, caBytes: decision.caBytes, tlsVerify: undefined }
@@ -704,6 +740,10 @@ git commit -m "test: stabilize re-run trust gate suite"
 
 ## Self-Review (run after writing; fix inline)
 
-- **Spec coverage:** §3 decision tree → Tasks 4-8; §4 architecture (setup-trust + integration) → Tasks 2-8; §5 i18n → Task 1; §6 invariants (TOCTOU, lenient-no-brand, clearFields) → Tasks 6/7; §7 tests (2 changed + matrix + unit) → Tasks 7/8 + 4-6; §8 risks → covered in test matrix. CLI mismatch/missing-via-change-menu (§3.A v2.1) → Task 6.
+- **Spec coverage:** §3 decision tree → Tasks 4-8; §4 architecture (setup-trust + integration) → Tasks 2-8; §5 i18n → Task 1; §6 invariants (TOCTOU, lenient-no-brand, clearFields) → Tasks 6/7 + the **§6 fail-closed OAuth test → Task 8**; §7 tests (2 changed + matrix + unit) → Tasks 7/8 + 4-6; §8 risks → covered in test matrix. CLI mismatch/missing-via-change-menu (§3.A v2.1) → Task 6.
 - **Type consistency:** `TrustDecision`/`ReviewExistingTrustArgs`/`ProbeModule` defined Task 3-4, consumed identically Tasks 5-8. `reviewExistingTrust` signature stable across callers.
 - **Placeholder scan:** the only deliberate intermediate placeholder is the Task-4 `changeMenu` throw, explicitly replaced in Task 5 (RED→GREEN sequencing, not a plan gap).
+
+## Revision log
+
+- **v2 (post plan-review):** incorporated 3 plan reviews. Added: central "Test-authoring discipline" rules (keep-gate-first ordered confirm queues, two-select re-probe, bin overwrite-confirm prefix, download-not-called, closure-array note capture, env-wipe, fixture limits); the **§6 fail-closed OAuth test** (Task 8) the security review flagged as a BLOCKER; shared `mkPrompter`/`mkProbe`/`BYTES` helpers in Task 2 (replacing a buggy note-capture helper); corrected the Task-5 matrix queues; dropped the needless `probeModule as unknown as TrustProbe` cast; fixed the Task-1 key-insertion line; Task-1 dependency notes on Tasks 4-6.

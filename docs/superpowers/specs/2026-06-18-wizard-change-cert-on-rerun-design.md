@@ -80,10 +80,17 @@ After resolving the server host/port:
      **"Keep the current TLS/certificate setup?"** (default YES).
      - YES → keep; proceed to OAuth with the validated bytes.
      - NO → **change menu (C)**.
-   - **Mismatch** → existing mismatch banner + existing menu
-     (`accept-new` / `use-file` / `abort`). *(onboard already; CLI gains it.)*
-   - **Unreadable** → existing missing-file banner + existing menu
-     (`re-tofu` / `use-file` / `abort`). *(onboard already; CLI gains it.)*
+   - **Mismatch** — **(onboard)** existing mismatch banner + existing menu
+     (`accept-new` / `use-file` / `abort`), unchanged via `handleUntrustedCert`.
+     **(CLI)** warning note (`trust.review.mismatchWarn`) + the change menu (C).
+     *Rationale:* CLI recovery uses the change menu rather than porting the
+     `accept-new`/TOFU machinery (`buildMismatchBanner`, `downloadAndAudit`) into the
+     shared module — that would force a `setup-trust ↔ channel-setup` circular import
+     and break the byte-for-byte `handleUntrustedCert` + `channel-setup-banners.test.ts`.
+     CLI is thereby slightly more conservative (no auto-download on mismatch).
+   - **Unreadable** — **(onboard)** existing missing-file banner + existing menu
+     (`re-tofu` / `use-file` / `abort`), unchanged. **(CLI)** warning note
+     (`trust.review.fileUnreadable`) + the change menu (C).
    - **Server unreachable during re-validation** → warning note (security-explicit, see
      §5 `trust.review.keepUnreachable`) + keep the stored anchor without re-validation.
      Do not block. *(onboard currently throws at `channel-setup.ts:574-578`; changed to
@@ -223,6 +230,8 @@ only spot-checks descriptor strings.)*
 - `trust.review.optionCaFile` — "Specify a different CA file" / "Указать другой CA-файл"
 - `trust.review.optionReprobe` — "Re-detect from the server (re-probe)" / "Перепроверить с сервера (re-probe)"
 - `trust.review.keepUnreachable` — security-explicit: "Server unreachable — keeping the stored CA WITHOUT re-validation. If this is unexpected it could be a network failure OR an attacker blocking the check; the credential login below still verifies against this CA and will fail closed. ({{error}})" / Russian equivalent naming the MITM possibility.
+- `trust.review.mismatchWarn` — "The stored CA file no longer validates this server ({{error}}). The certificate may have rotated, or this could be a MITM — verify with the admin before trusting a new one." / Russian equivalent (CLI mismatch warning before the change menu).
+- `trust.review.fileUnreadable` — "Stored CA file is missing or unreadable: {{path}} ({{reason}})." / Russian equivalent (CLI missing-file warning before the change menu).
 
 Menu reuses existing keys where copy fits: `tls.untrusted.choice.insecure` (insecure
 option), `select.option.abortSetup` (cancel). The "different CA file" and "re-probe"
@@ -383,3 +392,4 @@ both pass. The verify step treats these two as the known baseline.
 | new file env-leak, download() negative assertion, unreachable classification (R3) | CONCERN | §7 test-infra requirements |
 | menu copy: abort label, CA-file label (R2 N-2) | NIT | §5 (`select.option.abortSetup`, `trust.review.optionCaFile`) |
 | re-probe→untrusted omits TOFU (R1 #5) | NIT | §3.C (deliberate, no new exposure) |
+| CLI recovery can't reuse onboard's `accept-new`/`downloadAndAudit` without a circular import (plan-phase, implied by R2 C-2) | DECISION | §3.A (CLI mismatch/missing → change menu; onboard `handleUntrustedCert` recovery unchanged), §5 (+`mismatchWarn`/`fileUnreadable`) |

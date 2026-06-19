@@ -40,4 +40,14 @@ describe('i18n', () => {
     expect(ru).toContain('/u/.npm/_npx/x/p')
     expect(ru).toContain('npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup')
   })
+
+  it('renders the new trust.review keys in both locales', () => {
+    for (const loc of ['en', 'ru'] as const) {
+      expect(t('trust.review.keep', loc)).toBeTruthy()
+      expect(t('trust.review.currentCaFile', loc, { path: '/x' })).toContain('/x')
+      expect(t('trust.review.keepUnreachable', loc, { error: 'E' })).toContain('E')
+      expect(t('trust.review.mismatchWarn', loc, { error: 'E' })).toContain('E')
+      expect(t('trust.review.fileUnreadable', loc, { path: '/x', reason: 'R' })).toContain('/x')
+    }
+  })
 })

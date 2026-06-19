@@ -144,7 +144,10 @@ export async function reviewExistingTrust(args: ReviewExistingTrustArgs): Promis
     if (keep) return { kind: 'pinned', caPath: resolved, caBytes: alreadyValidated.caBytes }
     return changeMenu(args)
   }
-  if (current.tlsVerify === false && !current.caPath) {
+  // Insecure wins over a stale caPath (a hand-edited cfg may carry both): the
+  // runtime's ws-client treats tlsVerify:false as authoritative and ignores the
+  // ca pin, so the gate must too — keeps CLI + onboard + runtime consistent.
+  if (current.tlsVerify === false) {
     await prompter.note(t('trust.review.currentInsecure', locale), t('trust.review.keepTitle', locale))
     const keep = await prompter.confirm({ message: t('trust.review.keep', locale), initialValue: true })
     if (keep) return { kind: 'insecure' }

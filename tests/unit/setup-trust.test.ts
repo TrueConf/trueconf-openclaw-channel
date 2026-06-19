@@ -205,4 +205,37 @@ describe('reviewExistingTrust', () => {
     expect(Buffer.from((d as any).caBytes).toString()).toBe('PEMBYTES')
     expect(prompter.notes.join('\n')).toMatch(/WITHOUT re-validation/)
   })
+
+  // Contradictory hand-edited cfg (tlsVerify:false AND caPath both set): insecure
+  // wins, matching onboard's pre-probe gate and the runtime's ws-client precedence
+  // ("the insecure flag wins over a stale ca pin"). No alreadyValidated (CLI shape).
+  it('both tlsVerify:false AND caPath set (no alreadyValidated) → insecure wins', async () => {
+    const prompter = mkPrompter({ confirm: [true] })
+    const d = await reviewExistingTrust({
+      prompter, probe: mkProbe(), host: 'h', port: 443,
+      current: { caPath: '/ca.pem', tlsVerify: false }, locale: 'en',
+    })
+    expect(d).toEqual({ kind: 'insecure' })
+    expect(prompter.notes.join('\n')).toMatch(/disabled \(insecure\)/)
+  })
+
+  it('pinned valid → change → re-probe → still untrusted → insecure (declined) → rejects', async () => {
+    const probeTls = vi.fn(async () => ({ reachable: true, useTls: true, port: 443, caUntrusted: true }))
+    const prompter = mkPrompter({ confirm: [false, false], select: ['re-probe', 'insecure'] })
+    await expect(reviewExistingTrust({
+      prompter, probe: mkProbe({ probeTls }), host: 'h', port: 443,
+      current: { caPath: '/ca.pem' }, alreadyValidated: { caBytes: BYTES }, locale: 'en',
+    })).rejects.toThrow(/declined insecure/)
+    expect(probeTls).toHaveBeenCalled()
+  })
+
+  it('pinned valid → change → re-probe → still untrusted → abort → rejects', async () => {
+    const probeTls = vi.fn(async () => ({ reachable: true, useTls: true, port: 443, caUntrusted: true }))
+    const prompter = mkPrompter({ confirm: [false], select: ['re-probe', 'abort'] })
+    await expect(reviewExistingTrust({
+      prompter, probe: mkProbe({ probeTls }), host: 'h', port: 443,
+      current: { caPath: '/ca.pem' }, alreadyValidated: { caBytes: BYTES }, locale: 'en',
+    })).rejects.toThrow(/cancelled.*after re-probe/)
+    expect(probeTls).toHaveBeenCalled()
+  })
 })

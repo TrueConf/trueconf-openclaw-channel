@@ -13,7 +13,8 @@ const FIXTURES = join(process.cwd(), 'tests', '__fixtures__')
 vi.mock('../../src/probe.mjs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/probe.mjs')>()
   return {
-    ...actual,                          // keep real parseCertFromPem, probeTls, validateCaAgainstServer
+    ...actual,                          // keep real parseCertFromPem, probeTls
+    validateCaAgainstServer: vi.fn(actual.validateCaAgainstServer), // real by default; per-test mockImplementationOnce drives the unreachable branch
     validateOAuthCredentials: vi.fn(),  // capture OAuth args incl. `ca`
     downloadCAChain: vi.fn(),           // stubbed to a tmpdir path per-test
   }
@@ -246,6 +247,25 @@ describe('interactiveFinalize — mismatch vs silent happy', () => {
     })
     expect((result.cfg as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
     expect((result.cfg as any).channels.trueconf.tlsVerify).toBeUndefined()
+    expect(download()).not.toHaveBeenCalled()
+  })
+
+  it('re-run: valid CA → re-validation unreachable → lenient keep with warning, caPath preserved', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true, caPath: join(FIXTURES, 'ca-valid.pem') })
+    const prompter = makeFakePrompter({}) // lenient unreachable branch consumes no confirm/select
+    const notes = captureNotes(prompter)
+    // probe stays real (reaches handleUntrustedCert); force the in-handler
+    // re-validation to report unreachable so the lenient keep branch fires.
+    vi.mocked(probe.validateCaAgainstServer).mockImplementationOnce(async () => ({ ok: false, kind: 'unreachable', error: 'ECONNREFUSED' }))
+    const result = await interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })
+    expect((result.cfg as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
+    expect(notes.join('\n')).toMatch(/БЕЗ повторной проверки/) // keepUnreachable ru copy
+    const args = oauth().mock.calls[0][0]
+    expect(args.ca).toBeTruthy()
+    expect(Buffer.from(args.ca!).equals(readFileSync(join(FIXTURES, 'ca-valid.pem')))).toBe(true)
     expect(download()).not.toHaveBeenCalled()
   })
 

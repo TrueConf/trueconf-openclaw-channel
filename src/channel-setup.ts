@@ -6,7 +6,7 @@ import {
 } from 'openclaw/plugin-sdk/setup'
 import { parseCertFromPem, probeTls, downloadCAChain, validateOAuthCredentials, validateCaAgainstServer } from './probe.mjs'
 import type { CertSummary, ValidatedCaBytes } from './probe.d.mts'
-import { resolveAbsPath, readCaFileInteractive, promptInsecureConfirm } from './setup-trust'
+import { resolveAbsPath, readCaFileInteractive, promptInsecureConfirm, reviewExistingTrust } from './setup-trust'
 import { resolveSecret } from './config'
 import type { Locale } from './i18n'
 import { DEFAULT_LOCALE, t } from './i18n'
@@ -472,16 +472,31 @@ async function handleUntrustedCert(args: {
 
     const v = await validateCaAgainstServer({ caBytes: storedBytes, host, port })
     if (v.ok) {
-      return { nextCaPath: resolved, nextCaBytes: v.caBytes }
+      // Re-run trust gate: keep the validated anchor or change it. Onboard
+      // already validated above, so pass alreadyValidated → skip re-validation.
+      const decision = await reviewExistingTrust({
+        prompter,
+        probe: { probeTls, parseCertFromPem, validateCaAgainstServer },
+        host,
+        port,
+        current: { caPath: resolved },
+        alreadyValidated: { caBytes: v.caBytes },
+        locale,
+      })
+      if (decision.kind === 'pinned') return { nextCaPath: decision.caPath, nextCaBytes: decision.caBytes }
+      if (decision.kind === 'insecure') return { tlsVerify: false }
+      return {} // system trust → caller clears caPath
     }
 
     // Unreachable is NOT a trust mismatch — avoid shoving the user into an
     // accept-new/use-file dialog for what is likely a transient network issue.
     if (v.kind === 'unreachable') {
-      throw new Error(
-        `Could not reach ${host}:${port} to re-validate stored CA (${v.error}). ` +
-        `Check network / DNS / firewall and re-run setup.`,
-      )
+      // Interactive re-run: keep the stored anchor WITHOUT re-validation rather
+      // than blocking on a transient blip. NOT branded as server-validated;
+      // OAuth's rejectUnauthorized:true is the sole gate for these bytes
+      // (spec §6). Headless still throws (runHeadlessFinalize, unchanged).
+      await prompter.note(t('trust.review.keepUnreachable', locale, { error: v.error }), t('trust.review.keepTitle', locale))
+      return { nextCaPath: resolved, nextCaBytes: storedBytes as unknown as ValidatedCaBytes }
     }
 
     const storedCert = parseCertFromPem(storedBytes)
@@ -603,6 +618,28 @@ export async function interactiveFinalize(params: {
     port = port ?? 443
     caPath = loaded.abs
     caBytes = loaded.caBytes
+  } else if (useTls !== false && tc.tlsVerify === false) {
+    // (3a) Re-run with an insecure account: show the keep/change trust gate
+    // BEFORE probing. "Keep" must skip the probe entirely, otherwise the probe
+    // would re-enter handleUntrustedCert and double-prompt. Env STEP-1
+    // precedence is preserved (this arm only runs when !envPath).
+    const decision = await reviewExistingTrust({
+      prompter,
+      probe: { probeTls, parseCertFromPem, validateCaAgainstServer },
+      host: serverUrl,
+      port: port ?? 443,
+      current: { tlsVerify: false },
+      locale,
+    })
+    useTls = true
+    port = port ?? 443
+    if (decision.kind === 'insecure') {
+      tlsVerify = false
+    } else if (decision.kind === 'pinned') {
+      caPath = decision.caPath
+      caBytes = decision.caBytes
+    }
+    // decision.kind === 'system' → leave caPath/caBytes/tlsVerify unset
   } else if (useTls !== false) {
     // STEP 2 — probe every run. A fresh probe is what makes re-validation work:
     // on re-setup with a stored caPath, `probe.caUntrusted` fires when the
@@ -694,6 +731,9 @@ export async function interactiveFinalize(params: {
     clearFields.push('caPath')
   } else {
     clearFields.push('tlsVerify')
+    // System-trust transition (trust review returned kind:'system'): the prior
+    // cfg pinned a caPath but we no longer pin → clear the stale anchor.
+    if (tc.caPath && caPath === undefined) clearFields.push('caPath')
   }
 
   const nextCfg = patchTopLevelChannelConfigSection({

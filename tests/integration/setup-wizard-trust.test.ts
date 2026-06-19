@@ -55,6 +55,15 @@ function makeCfg(overrides: Record<string, unknown> = {}) {
   }
 }
 
+// Wrap prompter.note so a test can assert which gate banners rendered (the
+// fake-prompter's own note is a no-op). Captures "title\nbody" per note.
+function captureNotes(prompter: any): string[] {
+  const notes: string[] = []
+  const orig = prompter.note
+  prompter.note = async (body: string, title?: string) => { notes.push(`${title ?? ''}\n${body}`); return orig(body, title) }
+  return notes
+}
+
 let tmpCaDir: string
 // File-level env reset — without this a TRUECONF_* leaked by a prior worker
 // run (or a missed afterEach) would silently change which trust path fires.
@@ -163,13 +172,80 @@ describe('interactiveFinalize — mismatch vs silent happy', () => {
   beforeEach(async () => { server = await startTlsFixtureServer('ca-valid') })
   afterEach(async () => { await server.close() })
 
-  it('silent happy: stored CA validates server → caPath preserved, no prompts', async () => {
+  it('re-run: valid CA → gate → keep preserves caPath', async () => {
     const cfg = makeCfg({ port: server.port, useTls: true, caPath: join(FIXTURES, 'ca-valid.pem') })
+    const prompter = makeFakePrompter({ confirmResponses: [true] })
+    const notes = captureNotes(prompter)
     const result = await interactiveFinalize({
-      cfg, prompter: makeFakePrompter({}), credentialValues: { password: 'x' },
+      cfg, prompter, credentialValues: { password: 'x' },
       accountId: 'default', forceAllowFrom: false,
     })
     expect((result.cfg as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
+    expect(notes.join('\n')).toMatch(/Текущая настройка TLS/)
+    expect(download()).not.toHaveBeenCalled()
+    const args = oauth().mock.calls[0][0]
+    expect(args.ca).toBeTruthy()
+    expect(Buffer.from(args.ca!).equals(readFileSync(join(FIXTURES, 'ca-valid.pem')))).toBe(true)
+  })
+
+  it('re-run: valid CA → gate → change → use-file → caPath set', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true, caPath: join(FIXTURES, 'ca-valid.pem') })
+    const prompter = makeFakePrompter({ confirmResponses: [false], selectResponses: ['use-file'], textResponses: [join(FIXTURES, 'ca-valid.pem')] })
+    const result = await interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })
+    expect((result.cfg as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
+    expect(download()).not.toHaveBeenCalled()
+  })
+
+  it('re-run: valid CA → gate → change → insecure → tlsVerify:false, caPath cleared', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true, caPath: join(FIXTURES, 'ca-valid.pem') })
+    const prompter = makeFakePrompter({ confirmResponses: [false, true], selectResponses: ['insecure'] })
+    const result = await interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })
+    expect((result.cfg as any).channels.trueconf.tlsVerify).toBe(false)
+    expect((result.cfg as any).channels.trueconf.caPath).toBeUndefined()
+    const args = oauth().mock.calls[0][0]
+    expect((args as any).tlsVerify).toBe(false)
+    expect(args.ca).toBeUndefined()
+    expect(download()).not.toHaveBeenCalled()
+  })
+
+  it('re-run: valid CA → gate → change → cancel → throws', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true, caPath: join(FIXTURES, 'ca-valid.pem') })
+    const prompter = makeFakePrompter({ confirmResponses: [false], selectResponses: ['abort'] })
+    await expect(interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })).rejects.toThrow(/cancelled/)
+  })
+
+  it('re-run: insecure account → gate → keep preserves tlsVerify:false, probe not entered', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true, tlsVerify: false })
+    const prompter = makeFakePrompter({ confirmResponses: [true] })
+    const notes = captureNotes(prompter)
+    const result = await interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })
+    expect((result.cfg as any).channels.trueconf.tlsVerify).toBe(false)
+    expect(notes.join('\n')).toMatch(/отключена \(insecure\)/)
+    expect(notes.join('\n')).not.toMatch(/Определяю TLS/)
+    expect(download()).not.toHaveBeenCalled()
+  })
+
+  it('re-run: insecure account → gate → change → use-file → caPath set, tlsVerify cleared', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true, tlsVerify: false })
+    const prompter = makeFakePrompter({ confirmResponses: [false], selectResponses: ['use-file'], textResponses: [join(FIXTURES, 'ca-valid.pem')] })
+    const result = await interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })
+    expect((result.cfg as any).channels.trueconf.caPath).toBe(join(FIXTURES, 'ca-valid.pem'))
+    expect((result.cfg as any).channels.trueconf.tlsVerify).toBeUndefined()
     expect(download()).not.toHaveBeenCalled()
   })
 

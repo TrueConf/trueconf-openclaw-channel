@@ -144,9 +144,62 @@ export async function reviewExistingTrust(args: ReviewExistingTrustArgs): Promis
     if (keep) return { kind: 'pinned', caPath: resolved, caBytes: alreadyValidated.caBytes }
     return changeMenu(args)
   }
+  if (current.tlsVerify === false && !current.caPath) {
+    await prompter.note(t('trust.review.currentInsecure', locale), t('trust.review.keepTitle', locale))
+    const keep = await prompter.confirm({ message: t('trust.review.keep', locale), initialValue: true })
+    if (keep) return { kind: 'insecure' }
+    return changeMenu(args)
+  }
   throw new Error('reviewExistingTrust: branch not implemented (Task 5/6)')
 }
 
-async function changeMenu(_args: ReviewExistingTrustArgs): Promise<TrustDecision> {
-  throw new Error('changeMenu not implemented (Task 5)')
+async function changeMenu(args: ReviewExistingTrustArgs): Promise<TrustDecision> {
+  const { prompter, probe, host, port, locale } = args
+  const choice = await prompter.select<string>({
+    message: t('trust.review.changePrompt', locale),
+    options: [
+      { value: 'use-file', label: t('trust.review.optionCaFile', locale) },
+      { value: 'insecure', label: t('tls.untrusted.choice.insecure', locale) },
+      { value: 're-probe', label: t('trust.review.optionReprobe', locale) },
+      { value: 'abort',    label: t('select.option.abortSetup', locale) },
+    ],
+  })
+  if (choice === 'use-file') {
+    const r = await readCaFileInteractive({ prompter, probe, host, port, locale })
+    return { kind: 'pinned', caPath: r.nextCaPath, caBytes: r.nextCaBytes }
+  }
+  if (choice === 'insecure') {
+    const ok = await promptInsecureConfirm({ prompter, locale })
+    if (!ok) throw new Error(`Trust change: user declined to disable verification on ${host}`)
+    return { kind: 'insecure' }
+  }
+  if (choice === 're-probe') return reprobe(args)
+  // Empty/unrecognized select (drained queue or explicit cancel): abort with an
+  // explicit error. Do NOT fall through to use-file (spec §3.C footgun).
+  throw new Error(`Trust change cancelled on ${host} (choice="${choice}")`)
+}
+
+async function reprobe(args: ReviewExistingTrustArgs): Promise<TrustDecision> {
+  const { prompter, probe, host, port, locale } = args
+  const p = await probe.probeTls({ host, port })
+  if (p.reachable && !p.caUntrusted) return { kind: 'system' }
+  // still untrusted → fresh-untrusted sub-flow, NO auto-download / TOFU
+  const choice = await prompter.select<string>({
+    message: t('select.whatToDo', locale),
+    options: [
+      { value: 'use-file', label: t('tls.untrusted.choice.use-file', locale) },
+      { value: 'insecure', label: t('tls.untrusted.choice.insecure', locale) },
+      { value: 'abort',    label: t('select.option.abortSetup', locale) },
+    ],
+  })
+  if (choice === 'use-file') {
+    const r = await readCaFileInteractive({ prompter, probe, host, port, locale })
+    return { kind: 'pinned', caPath: r.nextCaPath, caBytes: r.nextCaBytes }
+  }
+  if (choice === 'insecure') {
+    const ok = await promptInsecureConfirm({ prompter, locale })
+    if (!ok) throw new Error(`Trust change: user declined insecure on ${host}`)
+    return { kind: 'insecure' }
+  }
+  throw new Error(`Trust change cancelled on ${host} after re-probe`)
 }

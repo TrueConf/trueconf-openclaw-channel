@@ -1,7 +1,16 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, statSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+// Wrap prompter.note so a test can assert which gate banners rendered (the
+// fake-prompter's own note is a no-op). Captures "title\nbody" per note.
+function captureNotes(prompter: any): string[] {
+  const notes: string[] = []
+  const orig = prompter.note
+  prompter.note = async (body: string, title?: string) => { notes.push(`${title ?? ''}\n${body}`); return orig(body, title) }
+  return notes
+}
 
 // Integration tests for bin/trueconf-setup.mjs runSetup().
 // The bin is the programmatic entry point users hit via `npx trueconf-setup`;
@@ -759,49 +768,171 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
     }
   })
 
-  it('skip-probe path preserves existing cfg.caPath into OAuth + saved cfg', async () => {
-    const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
-    const { makeFakePrompter } = await import('../smoke/fake-prompter')
-    const fake = await (startFakeServer as (opts: unknown) => Promise<{ host: string; port: number }>)(
-      { oauthResponse: { status: 200, body: { access_token: 'ok' } } },
-    )
-    const validCa = join(process.cwd(), 'tests', '__fixtures__', 'ca-valid.pem')
-    // Pre-existing strict-mode cfg: useTls + port pinned (triggers short-circuit)
-    // AND a caPath operator set by hand previously. Re-running setup must not
-    // silently drop that pin.
-    writeFileSync(configPath, JSON.stringify({
-      channels: { trueconf: { useTls: true, port: fake.port, caPath: validCa } },
-    }, null, 2))
+  // --- Re-run trust gate (CLI / promptProbePreview short-circuit) -------
+  // These inject a fully-stubbed probeModule, so no real socket / fake-server
+  // is needed (probeTls/validateCaAgainstServer/validateOAuthCredentials are
+  // all stubbed). cfg pins serverUrl+username+useTls+port so the 4 wizard text
+  // inputs drain to '' (keep current); setupLocale:'en' skips the language
+  // prompt and pins English copy.
 
-    let lastOAuthCall: { ca?: unknown; tlsVerify?: unknown } | null = null
+  it('re-run: re-validates and keeps stored caPath into OAuth + saved cfg', async () => {
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const validCa = join(process.cwd(), 'tests', '__fixtures__', 'ca-valid.pem')
+    writeFileSync(configPath, JSON.stringify({
+      channels: { trueconf: { serverUrl: 'srv.example.com', username: 'bot', useTls: true, port: 8443, caPath: validCa, setupLocale: 'en' } },
+    }, null, 2))
+    let lastOAuthCall: { ca?: unknown } | null = null
+    const dl = vi.fn(async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }))
+    const validate = vi.fn(async ({ caBytes }: { caBytes: Buffer }) => ({ ok: true, caBytes }))
     const probeStub = {
-      probeTls: async () => { throw new Error('probe should not be called when useTls+port pinned') },
-      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
-      validateOAuthCredentials: async (opts: { ca?: unknown; tlsVerify?: unknown }) => {
-        lastOAuthCall = opts
-        return { ok: true }
-      },
+      probeTls: async () => ({ reachable: true, useTls: true, port: 8443, caUntrusted: false }),
+      downloadCAChain: dl,
+      parseCertFromPem: () => ({ subject: 'localhost', issuerCN: 'localhost' }),
+      validateCaAgainstServer: validate,
+      validateOAuthCredentials: async (opts: { ca?: unknown }) => { lastOAuthCall = opts; return { ok: true } },
+    }
+    const prompter = makeFakePrompter({ passwordResponses: ['secret'], confirmResponses: [true, true] }) // overwrite, keep
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<{ mode: string }>
+    }
+    await runSetup({ configPath, prompter, probeModule: probeStub })
+    const written = JSON.parse(readFileSync(configPath, 'utf8')) as { channels?: { trueconf?: { caPath?: string } } }
+    expect(written.channels?.trueconf?.caPath).toBe(validCa)
+    expect(Buffer.from(lastOAuthCall!.ca as Uint8Array).equals(readFileSync(validCa))).toBe(true)
+    expect(validate).toHaveBeenCalled() // re-validated on keep (old short-circuit did NOT)
+    expect(dl).not.toHaveBeenCalled()
+  })
+
+  it('re-run: gate → change → use-file → new caPath saved', async () => {
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const validCa = join(process.cwd(), 'tests', '__fixtures__', 'ca-valid.pem')
+    writeFileSync(configPath, JSON.stringify({
+      channels: { trueconf: { serverUrl: 'srv.example.com', username: 'bot', useTls: true, port: 8443, caPath: validCa, setupLocale: 'en' } },
+    }, null, 2))
+    const dl = vi.fn(async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }))
+    const validate = vi.fn(async ({ caBytes }: { caBytes: Buffer }) => ({ ok: true, caBytes }))
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: 8443, caUntrusted: false }),
+      downloadCAChain: dl,
+      parseCertFromPem: () => ({ subject: 'localhost', issuerCN: 'localhost' }),
+      validateCaAgainstServer: validate,
+      validateOAuthCredentials: async () => ({ ok: true }),
     }
     const prompter = makeFakePrompter({
-      textResponses: [fake.host, 'bot@localhost'],
+      textResponses: ['', '', '', '', validCa], // 4 inputs kept, then use-file path
       passwordResponses: ['secret'],
-      confirmResponses: [true, true],
+      selectResponses: ['use-file'],
+      confirmResponses: [true, false], // overwrite, keep=NO
     })
-
-    try {
-      const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
-        runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<{ mode: string }>
-      }
-      await runSetup({ configPath, prompter, probeModule: probeStub })
-      const written = JSON.parse(readFileSync(configPath, 'utf8')) as {
-        channels?: { trueconf?: { caPath?: string } }
-      }
-      expect(written.channels?.trueconf?.caPath).toBe(validCa)
-      const expected = readFileSync(validCa)
-      expect(Buffer.from(lastOAuthCall!.ca as Uint8Array).equals(expected)).toBe(true)
-    } finally {
-      await (stopFakeServer as (f: unknown) => Promise<void>)(fake)
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<{ mode: string }>
     }
+    await runSetup({ configPath, prompter, probeModule: probeStub })
+    const written = JSON.parse(readFileSync(configPath, 'utf8')) as { channels?: { trueconf?: { caPath?: string } } }
+    expect(written.channels?.trueconf?.caPath).toBe(validCa)
+    expect(validate).toHaveBeenCalled()
+    expect(dl).not.toHaveBeenCalled()
+  })
+
+  it('re-run: gate → change → insecure → tlsVerify:false, no caPath', async () => {
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const validCa = join(process.cwd(), 'tests', '__fixtures__', 'ca-valid.pem')
+    writeFileSync(configPath, JSON.stringify({
+      channels: { trueconf: { serverUrl: 'srv.example.com', username: 'bot', useTls: true, port: 8443, caPath: validCa, setupLocale: 'en' } },
+    }, null, 2))
+    let lastOAuthCall: { ca?: unknown; tlsVerify?: unknown } | null = null
+    const dl = vi.fn(async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }))
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: 8443, caUntrusted: false }),
+      downloadCAChain: dl,
+      parseCertFromPem: () => ({ subject: 'localhost', issuerCN: 'localhost' }),
+      validateCaAgainstServer: async ({ caBytes }: { caBytes: Buffer }) => ({ ok: true, caBytes }),
+      validateOAuthCredentials: async (opts: { ca?: unknown; tlsVerify?: unknown }) => { lastOAuthCall = opts; return { ok: true } },
+    }
+    const prompter = makeFakePrompter({
+      passwordResponses: ['secret'],
+      selectResponses: ['insecure'],
+      confirmResponses: [true, false, true], // overwrite, keep=NO, insecure-warn=YES
+    })
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<{ mode: string }>
+    }
+    await runSetup({ configPath, prompter, probeModule: probeStub })
+    const written = JSON.parse(readFileSync(configPath, 'utf8')) as { channels?: { trueconf?: { caPath?: string; tlsVerify?: boolean } } }
+    expect(written.channels?.trueconf?.tlsVerify).toBe(false)
+    expect(written.channels?.trueconf?.caPath).toBeUndefined()
+    expect(lastOAuthCall?.tlsVerify).toBe(false)
+    expect(lastOAuthCall?.ca).toBeUndefined()
+    expect(dl).not.toHaveBeenCalled()
+  })
+
+  it('re-run §1.1: insecure account → gate → keep preserves tlsVerify:false', async () => {
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    writeFileSync(configPath, JSON.stringify({
+      channels: { trueconf: { serverUrl: 'srv.example.com', username: 'bot', useTls: true, port: 8443, tlsVerify: false, setupLocale: 'en' } },
+    }, null, 2))
+    let lastOAuthCall: { ca?: unknown; tlsVerify?: unknown } | null = null
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: 8443, caUntrusted: false }),
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
+      validateCaAgainstServer: async () => ({ ok: true, caBytes: Buffer.from('x') }),
+      validateOAuthCredentials: async (opts: { ca?: unknown; tlsVerify?: unknown }) => { lastOAuthCall = opts; return { ok: true } },
+    }
+    const prompter = makeFakePrompter({ passwordResponses: ['secret'], confirmResponses: [true, true] }) // overwrite, keep
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<{ mode: string }>
+    }
+    await runSetup({ configPath, prompter, probeModule: probeStub })
+    const written = JSON.parse(readFileSync(configPath, 'utf8')) as { channels?: { trueconf?: { tlsVerify?: boolean } } }
+    expect(written.channels?.trueconf?.tlsVerify).toBe(false)
+    expect(lastOAuthCall?.tlsVerify).toBe(false)
+  })
+
+  it('re-run: stored caPath missing → change menu → abort rejects with unreadable note', async () => {
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    writeFileSync(configPath, JSON.stringify({
+      channels: { trueconf: { serverUrl: 'srv.example.com', username: 'bot', useTls: true, port: 8443, caPath: '/nope-bin-test.pem', setupLocale: 'en' } },
+    }, null, 2))
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: 8443, caUntrusted: false }),
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
+      parseCertFromPem: () => ({ subject: 'localhost', issuerCN: 'localhost' }),
+      validateCaAgainstServer: async ({ caBytes }: { caBytes: Buffer }) => ({ ok: true, caBytes }),
+      validateOAuthCredentials: async () => ({ ok: true }),
+    }
+    const prompter = makeFakePrompter({ passwordResponses: ['secret'], selectResponses: ['abort'], confirmResponses: [true] }) // overwrite; gate → changeMenu → abort
+    const notes = captureNotes(prompter)
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<unknown>
+    }
+    await expect(runSetup({ configPath, prompter, probeModule: probeStub })).rejects.toThrow(/cancelled/)
+    expect(notes.join('\n')).toMatch(/missing or unreadable/)
+  })
+
+  it('re-run §6: unreachable-kept un-revalidated CA still fails OAuth closed', async () => {
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const tamperedCa = join(tmpDir, 'tampered-ca.pem')
+    writeFileSync(tamperedCa, 'TAMPERED-CA-BYTES')
+    writeFileSync(configPath, JSON.stringify({
+      channels: { trueconf: { serverUrl: 'srv.example.com', username: 'bot', useTls: true, port: 8443, caPath: tamperedCa, setupLocale: 'en' } },
+    }, null, 2))
+    let lastOAuthCall: { ca?: unknown } | null = null
+    const validate = vi.fn(async () => ({ ok: false, kind: 'unreachable', error: 'ECONNREFUSED' }))
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: 8443, caUntrusted: false }),
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
+      parseCertFromPem: () => ({ subject: 'localhost', issuerCN: 'localhost' }),
+      validateCaAgainstServer: validate,
+      validateOAuthCredentials: async (opts: { ca?: unknown }) => { lastOAuthCall = opts; return { ok: false, category: 'tls', error: 'self-signed cert in chain' } },
+    }
+    // overwrite, then decline the save-anyway prompt (category 'tls' defaults to false)
+    const prompter = makeFakePrompter({ passwordResponses: ['secret'], confirmResponses: [true, false] })
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<unknown>
+    }
+    await expect(runSetup({ configPath, prompter, probeModule: probeStub })).rejects.toThrow(/tls/)
+    expect(validate).toHaveBeenCalled() // went through lenient re-validation (unreachable), not blind reuse
+    expect(Buffer.from(lastOAuthCall!.ca as Uint8Array).toString()).toBe('TAMPERED-CA-BYTES')
   })
 
   it('use-file happy: valid CA path saved into channels.trueconf.caPath', async () => {

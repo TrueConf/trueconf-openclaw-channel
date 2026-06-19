@@ -6,7 +6,7 @@ import {
 } from 'openclaw/plugin-sdk/setup'
 import { parseCertFromPem, probeTls, downloadCAChain, validateOAuthCredentials, validateCaAgainstServer } from './probe.mjs'
 import type { CertSummary, ValidatedCaBytes } from './probe.d.mts'
-import { resolveAbsPath, shortFp } from './setup-trust'
+import { resolveAbsPath, readCaFileInteractive, promptInsecureConfirm } from './setup-trust'
 import { resolveSecret } from './config'
 import type { Locale } from './i18n'
 import { DEFAULT_LOCALE, t } from './i18n'
@@ -348,87 +348,6 @@ async function loadAndValidateEnvCa(args: {
   return { abs, caBytes: v.caBytes }
 }
 
-const MAX_CA_FILE_ATTEMPTS = 3
-
-async function readCaFileInteractive(args: {
-  prompter: WizardPrompter
-  host: string
-  port: number
-  locale: Locale
-}): Promise<{ nextCaPath: string; nextCaBytes: ValidatedCaBytes }> {
-  const { prompter, host, port, locale } = args
-  const reasons: string[] = []
-  // Render the CA-path hint banner once before entering the retry loop. The
-  // hint explains where TrueConf admins typically find the cert (*.crt under
-  // HTTPS panel) and that it can be renamed to *.pem if already in PEM. Lives
-  // here so all callers (fresh-untrusted, missing-file, mismatch) see the
-  // same guidance the moment they pick "use a file".
-  const hint = [
-    t('tls.cafile.hint.intro', locale),
-    t('tls.cafile.hint.format', locale),
-    t('tls.cafile.hint.location', locale),
-  ].join('\n\n')
-  await prompter.note(hint, t('cafile.title', locale))
-  for (let attempt = 0; attempt < MAX_CA_FILE_ATTEMPTS; attempt++) {
-    const rawPath = String(await prompter.text({
-      message: t('cafile.prompt', locale),
-    }))
-    // Empty input = the user cancelled the prompt (Ctrl+C in real prompters,
-    // drained script queue in test prompters). Bail out fast with an
-    // explicit cause instead of burning the remaining attempts on cwd reads.
-    if (!rawPath.trim()) {
-      throw new Error('CA file input cancelled — empty path received from prompter')
-    }
-    const abs = resolveAbsPath(rawPath)
-    let bytes: Buffer
-    try {
-      bytes = readFileSync(abs)
-    } catch (err) {
-      const reason = t('tls.cafile.unreadable', locale, { path: abs, reason: (err as Error).message })
-      reasons.push(reason)
-      await prompter.note(reason, t('cafile.title', locale))
-      continue
-    }
-    const cert = parseCertFromPem(bytes)
-    if (!cert) {
-      const reason = `${abs}: не PEM`
-      reasons.push(reason)
-      await prompter.note(
-        t('cafile.notPem', locale),
-        t('cafile.title', locale),
-      )
-      continue
-    }
-    const v = await validateCaAgainstServer({ caBytes: bytes, host, port })
-    if (!v.ok) {
-      if (v.kind === 'unreachable') {
-        reasons.push(`${abs}: server unreachable (${v.error})`)
-        await prompter.note(
-          t('cafile.unreachable', locale, { host, port, error: v.error }),
-          t('cafile.title', locale),
-        )
-      } else {
-        reasons.push(`${abs}: chain mismatch (${v.error})`)
-        await prompter.note(
-          t('cafile.chainMismatch', locale, {
-            fileIssuer: cert.issuerCN ?? cert.subject ?? '?',
-            fileFp: shortFp(cert.fingerprint),
-            serverIssuer: v.serverCert?.issuerCN ?? v.serverCert?.subject ?? '?',
-            serverFp: shortFp(v.serverCert?.fingerprint),
-            error: v.error,
-          }),
-          t('cafile.title', locale),
-        )
-      }
-      continue
-    }
-    return { nextCaPath: abs, nextCaBytes: v.caBytes }
-  }
-  throw new Error(
-    `CA file input failed ${MAX_CA_FILE_ATTEMPTS} times. Attempts: ${reasons.join('; ')}`,
-  )
-}
-
 // Downloads the server's current cert chain as the new trust anchor and
 // writes an audit line to stderr naming the host, port, subject, and
 // fingerprint we just pinned. Centralizes the audit trail so every TOFU
@@ -548,7 +467,7 @@ async function handleUntrustedCert(args: {
           locale,
         })
       }
-      return await readCaFileInteractive({ prompter, host, port, locale })
+      return await readCaFileInteractive({ prompter, probe: { probeTls, parseCertFromPem, validateCaAgainstServer }, host, port, locale })
     }
 
     const v = await validateCaAgainstServer({ caBytes: storedBytes, host, port })
@@ -589,7 +508,7 @@ async function handleUntrustedCert(args: {
         locale,
       })
     }
-    return await readCaFileInteractive({ prompter, host, port, locale })
+    return await readCaFileInteractive({ prompter, probe: { probeTls, parseCertFromPem, validateCaAgainstServer }, host, port, locale })
   }
 
   // Fresh untrusted cert (no prior caPath). Two safe paths only: pin a CA file
@@ -614,17 +533,13 @@ async function handleUntrustedCert(args: {
     throw new Error(`User aborted: untrusted cert on ${host}`)
   }
   if (choice === 'insecure') {
-    await prompter.note(t('tls.insecure.warning', locale), t('tls.untrusted.title', locale))
-    const confirmed = await prompter.confirm({
-      message: t('tls.insecure.confirm', locale),
-      initialValue: false,
-    })
+    const confirmed = await promptInsecureConfirm({ prompter, locale })
     if (!confirmed) {
       throw new Error(`User declined to disable TLS verification on ${host}`)
     }
     return { tlsVerify: false }
   }
-  return await readCaFileInteractive({ prompter, host, port, locale })
+  return await readCaFileInteractive({ prompter, probe: { probeTls, parseCertFromPem, validateCaAgainstServer }, host, port, locale })
 }
 
 export async function interactiveFinalize(params: {

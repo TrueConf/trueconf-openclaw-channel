@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { homedir } from 'node:os'
 import { resolve as pathResolve } from 'node:path'
-import { resolveAbsPath, shortFp } from '../../src/setup-trust'
+import { resolveAbsPath, shortFp, promptInsecureConfirm } from '../../src/setup-trust'
 
 // Global-Constraints rule 7: wipe TRUECONF_* so a leaked env can't perturb a test.
 beforeEach(() => { for (const k of Object.keys(process.env)) if (k.startsWith('TRUECONF_')) delete process.env[k] })
@@ -36,5 +36,16 @@ describe('setup-trust primitives', () => {
   it('shortFp truncates long fingerprints', () => {
     expect(shortFp(null)).toBe('?')
     expect(shortFp('a'.repeat(40))).toMatch(/…$/)
+  })
+
+  it('promptInsecureConfirm shows the warning note and returns the confirm', async () => {
+    const notes: string[] = []
+    const prompter: any = {
+      note: async (b: string) => { notes.push(b) },
+      confirm: async () => true,
+    }
+    const ok = await promptInsecureConfirm({ prompter, locale: 'en' })
+    expect(ok).toBe(true)
+    expect(notes.join('\n')).toMatch(/without TLS certificate verification/i)
   })
 })

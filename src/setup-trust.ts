@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve as pathResolve } from 'node:path'
 import { homedir } from 'node:os'
 import type { WizardPrompter } from 'openclaw/plugin-sdk/setup'
-import type { CertSummary, ValidatedCaBytes, ValidateCaAgainstServerParams, ValidateCaAgainstServerResult } from './probe.d.mts'
+import type { CertSummary, ValidatedCaBytes, ValidateCaAgainstServerParams, ValidateCaAgainstServerResult, ProbeTlsParams, ProbeTlsResult } from './probe.d.mts'
 import type { Locale } from './i18n'
 import { t } from './i18n'
 
@@ -18,11 +18,20 @@ export function shortFp(fp: string | null | undefined): string {
   return fp.length > 29 ? `${fp.slice(0, 29)}…` : fp
 }
 
+// Exhaustiveness guard for the TrustDecision branches at the call sites: a
+// future variant added to the union becomes a compile error here instead of
+// silently folding into a residual branch.
+export function assertNever(x: never): never {
+  throw new Error(`Unhandled TrustDecision variant: ${JSON.stringify(x)}`)
+}
+
 // Probe primitives injected so the module stays decoupled from probe.mjs's
 // static binding (avoids a setup-trust ↔ channel-setup import cycle and lets
 // the CLI pass its own probeModule). Onboard passes the probe.mjs namespace.
+// probeTls uses probe.mjs's canonical types so a signature change surfaces here
+// at compile time (parity with setup-shared's ProbeModule).
 export interface ProbeModule {
-  probeTls: (p: { host: string; port?: number }) => Promise<{ reachable: boolean; useTls: boolean; port: number; caUntrusted?: boolean; cert?: CertSummary; error?: string }>
+  probeTls: (params: ProbeTlsParams) => Promise<ProbeTlsResult>
   parseCertFromPem: (b: Buffer | Uint8Array) => CertSummary | null
   validateCaAgainstServer: (p: ValidateCaAgainstServerParams) => Promise<ValidateCaAgainstServerResult>
 }

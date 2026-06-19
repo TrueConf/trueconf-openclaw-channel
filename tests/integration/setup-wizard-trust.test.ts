@@ -13,7 +13,8 @@ const FIXTURES = join(process.cwd(), 'tests', '__fixtures__')
 vi.mock('../../src/probe.mjs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/probe.mjs')>()
   return {
-    ...actual,                          // keep real parseCertFromPem, probeTls
+    ...actual,                          // keep real parseCertFromPem
+    probeTls: vi.fn(actual.probeTls),   // real by default; per-test mockImplementationOnce drives re-probe outcomes
     validateCaAgainstServer: vi.fn(actual.validateCaAgainstServer), // real by default; per-test mockImplementationOnce drives the unreachable branch
     validateOAuthCredentials: vi.fn(),  // capture OAuth args incl. `ca`
     downloadCAChain: vi.fn(),           // stubbed to a tmpdir path per-test
@@ -267,6 +268,29 @@ describe('interactiveFinalize — mismatch vs silent happy', () => {
     expect(args.ca).toBeTruthy()
     expect(Buffer.from(args.ca!).equals(readFileSync(join(FIXTURES, 'ca-valid.pem')))).toBe(true)
     expect(download()).not.toHaveBeenCalled()
+  })
+
+  it('re-run: valid CA → gate → change → re-probe → server now system-trusted → caPath cleared', async () => {
+    const cfg = makeCfg({ port: server.port, useTls: true, caPath: join(FIXTURES, 'ca-valid.pem') })
+    const prompter = makeFakePrompter({ confirmResponses: [false], selectResponses: ['re-probe'] })
+    // 1st probe (STEP 2) sees the self-signed cert → routes into the gate; the
+    // re-probe then reports the server as system-trusted (caUntrusted:false).
+    // mockClear: probeTls is a shared vi.fn not reset per-test, so clear its
+    // call history first to make toHaveBeenCalledTimes below count only this test.
+    vi.mocked(probe.probeTls).mockClear()
+    vi.mocked(probe.probeTls)
+      .mockImplementationOnce(async () => ({ reachable: true, useTls: true, port: server.port, caUntrusted: true, error: 'self-signed' }))
+      .mockImplementationOnce(async () => ({ reachable: true, useTls: true, port: server.port, caUntrusted: false }))
+    const result = await interactiveFinalize({
+      cfg, prompter, credentialValues: { password: 'x' },
+      accountId: 'default', forceAllowFrom: false,
+    })
+    expect((result.cfg as any).channels.trueconf.caPath).toBeUndefined() // system trust clears the stale pin
+    expect((result.cfg as any).channels.trueconf.tlsVerify).toBeUndefined()
+    const args = oauth().mock.calls[0][0]
+    expect(args.ca).toBeUndefined()
+    expect(download()).not.toHaveBeenCalled()
+    expect(vi.mocked(probe.probeTls)).toHaveBeenCalledTimes(2)
   })
 
   it('mismatch: stored CA does not validate → banner → accept-new → chain rewritten', async () => {

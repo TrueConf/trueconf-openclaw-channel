@@ -935,6 +935,31 @@ describe('bin/trueconf-setup.mjs runSetup', () => {
     expect(Buffer.from(lastOAuthCall!.ca as Uint8Array).toString()).toBe('TAMPERED-CA-BYTES')
   })
 
+  it('re-run: gate → change → re-probe → server now system-trusted → caPath cleared from saved cfg', async () => {
+    const { makeFakePrompter } = await import('../smoke/fake-prompter')
+    const validCa = join(process.cwd(), 'tests', '__fixtures__', 'ca-valid.pem')
+    writeFileSync(configPath, JSON.stringify({
+      channels: { trueconf: { serverUrl: 'srv.example.com', username: 'bot', useTls: true, port: 8443, caPath: validCa, setupLocale: 'en' } },
+    }, null, 2))
+    let lastOAuthCall: { ca?: unknown } | null = null
+    const probeStub = {
+      probeTls: async () => ({ reachable: true, useTls: true, port: 8443, caUntrusted: false }), // re-probe: now system-trusted
+      downloadCAChain: async () => ({ path: '/tmp/fake-ca.pem', bytes: Buffer.from('') }),
+      parseCertFromPem: () => ({ subject: 'localhost', issuerCN: 'localhost' }),
+      validateCaAgainstServer: async ({ caBytes }: { caBytes: Buffer }) => ({ ok: true, caBytes }), // stored CA still validates → gate shows keep
+      validateOAuthCredentials: async (opts: { ca?: unknown }) => { lastOAuthCall = opts; return { ok: true } },
+    }
+    // overwrite, keep=NO; then re-probe option
+    const prompter = makeFakePrompter({ passwordResponses: ['secret'], selectResponses: ['re-probe'], confirmResponses: [true, false] })
+    const { runSetup } = await import('../../bin/trueconf-setup.mjs') as {
+      runSetup: (opts: { configPath: string; prompter?: unknown; probeModule?: unknown }) => Promise<{ mode: string }>
+    }
+    await runSetup({ configPath, prompter, probeModule: probeStub })
+    const written = JSON.parse(readFileSync(configPath, 'utf8')) as { channels?: { trueconf?: { caPath?: string; tlsVerify?: boolean } } }
+    expect(written.channels?.trueconf?.caPath).toBeUndefined()
+    expect(lastOAuthCall?.ca).toBeUndefined()
+  })
+
   it('use-file happy: valid CA path saved into channels.trueconf.caPath', async () => {
     const { startFakeServer, stopFakeServer } = await import('../smoke/fake-server') as never
     const { makeFakePrompter } = await import('../smoke/fake-prompter')

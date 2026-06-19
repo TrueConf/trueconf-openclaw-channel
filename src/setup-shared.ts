@@ -27,7 +27,7 @@ import type {
   ValidatedCaBytes,
 } from './probe.d.mts'
 import type { Locale } from './i18n'
-import { resolveAbsPath, reviewExistingTrust } from './setup-trust'
+import { resolveAbsPath, reviewExistingTrust, assertNever } from './setup-trust'
 
 // Bin and the inline-wizard runtime both extend WizardPrompter with a
 // `password` method (the SDK's WizardPrompter does NOT include it). The
@@ -165,8 +165,9 @@ export async function promptProbePreview(
     // back to a lenient keep, gated downstream by OAuth's rejectUnauthorized.
     const hasTrust = currentCaPath !== undefined || currentTlsVerify === false
     if (currentUseTls !== false && hasTrust) {
-      // setup-shared's ProbeModule is a superset of setup-trust's (it adds
-      // validateOAuthCredentials) → assigns without a cast.
+      // probeModule structurally satisfies setup-trust's narrower ProbeModule
+      // (same probeTls/parseCertFromPem/validateCaAgainstServer signatures via
+      // probe.d.mts; the extra validateOAuthCredentials is ignored here) → no cast.
       const decision = await reviewExistingTrust({
         prompter,
         probe: probeModule,
@@ -181,12 +182,15 @@ export async function promptProbePreview(
       if (decision.kind === 'insecure') {
         return { useTls: true, port: currentPort, caPath: undefined, caBytes: undefined, tlsVerify: false }
       }
-      return { useTls: true, port: currentPort, caPath: undefined, caBytes: undefined, tlsVerify: undefined } // system trust
+      if (decision.kind === 'system') {
+        return { useTls: true, port: currentPort, caPath: undefined, caBytes: undefined, tlsVerify: undefined }
+      }
+      return assertNever(decision)
     }
     // No trust config to review (plain useTls+port pin, or useTls:false): keep
     // the existing probe-free reuse. Throws loud on read failure — silent
-    // fallback would downgrade pinned-CA trust to system trust (AGENTS.md
-    // "no silent fallbacks on readFileSync(caPath)" invariant).
+    // fallback would downgrade pinned-CA trust to system trust (spec §6:
+    // never silently downgrade a pinned CA to the system trust store).
     const effectiveCaPath = currentUseTls === false ? undefined : currentCaPath
     let caBytes: Buffer | Uint8Array | undefined
     if (effectiveCaPath) {

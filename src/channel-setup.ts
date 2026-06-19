@@ -6,7 +6,7 @@ import {
 } from 'openclaw/plugin-sdk/setup'
 import { parseCertFromPem, probeTls, downloadCAChain, validateOAuthCredentials, validateCaAgainstServer } from './probe.mjs'
 import type { CertSummary, ValidatedCaBytes } from './probe.d.mts'
-import { resolveAbsPath, readCaFileInteractive, promptInsecureConfirm, reviewExistingTrust } from './setup-trust'
+import { resolveAbsPath, readCaFileInteractive, promptInsecureConfirm, reviewExistingTrust, assertNever } from './setup-trust'
 import { resolveSecret } from './config'
 import type { Locale } from './i18n'
 import { DEFAULT_LOCALE, t } from './i18n'
@@ -485,7 +485,8 @@ async function handleUntrustedCert(args: {
       })
       if (decision.kind === 'pinned') return { nextCaPath: decision.caPath, nextCaBytes: decision.caBytes }
       if (decision.kind === 'insecure') return { tlsVerify: false }
-      return {} // system trust → caller clears caPath
+      if (decision.kind === 'system') return {} // system trust → caller clears caPath
+      return assertNever(decision)
     }
 
     // Unreachable is NOT a trust mismatch — avoid shoving the user into an
@@ -638,8 +639,11 @@ export async function interactiveFinalize(params: {
     } else if (decision.kind === 'pinned') {
       caPath = decision.caPath
       caBytes = decision.caBytes
+    } else if (decision.kind === 'system') {
+      // leave caPath/caBytes/tlsVerify unset; the clearFields block below drops a stale caPath
+    } else {
+      assertNever(decision)
     }
-    // decision.kind === 'system' → leave caPath/caBytes/tlsVerify unset
   } else if (useTls !== false) {
     // STEP 2 — probe every run. A fresh probe is what makes re-validation work:
     // on re-setup with a stored caPath, `probe.caUntrusted` fires when the

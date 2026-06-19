@@ -114,3 +114,39 @@ export async function readCaFileInteractive(args: {
     `CA file input failed ${MAX_CA_FILE_ATTEMPTS} times. Attempts: ${reasons.join('; ')}`,
   )
 }
+
+// Discriminated union — caPath and caBytes are CO-REQUIRED (TOCTOU); the three
+// terminal outcomes are explicit so callers map clearFields correctly. Abort throws.
+export type TrustDecision =
+  | { kind: 'pinned'; caPath: string; caBytes: ValidatedCaBytes }
+  | { kind: 'insecure' }
+  | { kind: 'system' }
+
+export interface ReviewExistingTrustArgs {
+  prompter: WizardPrompter
+  probe: ProbeModule
+  host: string
+  port: number
+  current: { caPath?: string; tlsVerify?: boolean }
+  alreadyValidated?: { caBytes: ValidatedCaBytes }
+  locale: Locale
+}
+
+// Interactive keep/change trust gate shown on a wizard re-run. Onboard passes
+// pre-validated bytes via `alreadyValidated` (skip re-validation); the CLI omits
+// it so this re-reads + re-validates internally (Task 6 branch).
+export async function reviewExistingTrust(args: ReviewExistingTrustArgs): Promise<TrustDecision> {
+  const { prompter, current, alreadyValidated, locale } = args
+  if (current.caPath && alreadyValidated) {
+    const resolved = resolveAbsPath(current.caPath)
+    await prompter.note(t('trust.review.currentCaFile', locale, { path: resolved }), t('trust.review.keepTitle', locale))
+    const keep = await prompter.confirm({ message: t('trust.review.keep', locale), initialValue: true })
+    if (keep) return { kind: 'pinned', caPath: resolved, caBytes: alreadyValidated.caBytes }
+    return changeMenu(args)
+  }
+  throw new Error('reviewExistingTrust: branch not implemented (Task 5/6)')
+}
+
+async function changeMenu(_args: ReviewExistingTrustArgs): Promise<TrustDecision> {
+  throw new Error('changeMenu not implemented (Task 5)')
+}

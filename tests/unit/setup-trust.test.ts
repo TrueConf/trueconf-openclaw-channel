@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { homedir } from 'node:os'
 import { resolve as pathResolve } from 'node:path'
-import { resolveAbsPath, shortFp, promptInsecureConfirm } from '../../src/setup-trust'
+import { resolveAbsPath, shortFp, promptInsecureConfirm, reviewExistingTrust } from '../../src/setup-trust'
 
 // Global-Constraints rule 7: wipe TRUECONF_* so a leaked env can't perturb a test.
 beforeEach(() => { for (const k of Object.keys(process.env)) if (k.startsWith('TRUECONF_')) delete process.env[k] })
@@ -47,5 +47,17 @@ describe('setup-trust primitives', () => {
     const ok = await promptInsecureConfirm({ prompter, locale: 'en' })
     expect(ok).toBe(true)
     expect(notes.join('\n')).toMatch(/without TLS certificate verification/i)
+  })
+})
+
+describe('reviewExistingTrust', () => {
+  it('alreadyValidated + keep → pinned, gate note shown', async () => {
+    const prompter = mkPrompter({ confirm: [true] })   // keep
+    const d = await reviewExistingTrust({
+      prompter, probe: {} as any, host: 'h', port: 443,
+      current: { caPath: '/ca.pem' }, alreadyValidated: { caBytes: BYTES }, locale: 'en',
+    })
+    expect(d).toEqual({ kind: 'pinned', caPath: expect.stringContaining('ca.pem'), caBytes: BYTES })
+    expect(prompter.notes.join('\n')).toMatch(/Verification by CA file/)
   })
 })

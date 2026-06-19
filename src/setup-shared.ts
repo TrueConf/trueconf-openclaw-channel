@@ -8,8 +8,6 @@
 // by the bin's interactive runSetup body). Keeps CLI/SDK in parity — no
 // behavior drift across entry points.
 
-import { homedir } from 'node:os'
-import { resolve as pathResolve } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { createPatchedAccountSetupAdapter } from 'openclaw/plugin-sdk/setup'
 import type {
@@ -29,6 +27,7 @@ import type {
   ValidatedCaBytes,
 } from './probe.d.mts'
 import type { Locale } from './i18n'
+import { resolveAbsPath, reviewExistingTrust, assertNever } from './setup-trust'
 
 // Bin and the inline-wizard runtime both extend WizardPrompter with a
 // `password` method (the SDK's WizardPrompter does NOT include it). The
@@ -146,6 +145,7 @@ export async function promptProbePreview(
   currentUseTls: boolean | undefined,
   currentPort: number | undefined,
   currentCaPath: string | undefined,
+  currentTlsVerify: boolean | undefined,
   t: TFn,
   locale: Locale,
 ): Promise<{
@@ -159,11 +159,39 @@ export async function promptProbePreview(
   // useTls=false renders caPath moot (mutually exclusive trust modes), so
   // clear it in that case.
   if (currentUseTls !== undefined && currentPort !== undefined) {
+    // Re-run trust gate: when an explicit trust config exists (pinned CA or
+    // insecure) and TLS is on, offer keep/change instead of blind reuse. The
+    // gate re-validates internally (no alreadyValidated) — unreachable falls
+    // back to a lenient keep, gated downstream by OAuth's rejectUnauthorized.
+    const hasTrust = currentCaPath !== undefined || currentTlsVerify === false
+    if (currentUseTls !== false && hasTrust) {
+      // probeModule structurally satisfies setup-trust's narrower ProbeModule
+      // (same probeTls/parseCertFromPem/validateCaAgainstServer signatures via
+      // probe.d.mts; the extra validateOAuthCredentials is ignored here) → no cast.
+      const decision = await reviewExistingTrust({
+        prompter,
+        probe: probeModule,
+        host: serverUrl,
+        port: currentPort,
+        current: { caPath: currentCaPath, tlsVerify: currentTlsVerify },
+        locale,
+      })
+      if (decision.kind === 'pinned') {
+        return { useTls: true, port: currentPort, caPath: decision.caPath, caBytes: decision.caBytes, tlsVerify: undefined }
+      }
+      if (decision.kind === 'insecure') {
+        return { useTls: true, port: currentPort, caPath: undefined, caBytes: undefined, tlsVerify: false }
+      }
+      if (decision.kind === 'system') {
+        return { useTls: true, port: currentPort, caPath: undefined, caBytes: undefined, tlsVerify: undefined }
+      }
+      return assertNever(decision)
+    }
+    // No trust config to review (plain useTls+port pin, or useTls:false): keep
+    // the existing probe-free reuse. Throws loud on read failure — silent
+    // fallback would downgrade pinned-CA trust to system trust (spec §6:
+    // never silently downgrade a pinned CA to the system trust store).
     const effectiveCaPath = currentUseTls === false ? undefined : currentCaPath
-    // Load caBytes here so the OAuth retry loop downstream can pin trust to
-    // the operator's stored CA. Throws loud on read failure — silent fallback
-    // would downgrade pinned-CA trust to system trust without indication
-    // (AGENTS.md "no silent fallbacks on readFileSync(caPath)" invariant).
     let caBytes: Buffer | Uint8Array | undefined
     if (effectiveCaPath) {
       try {
@@ -217,8 +245,7 @@ export async function promptProbePreview(
         if (typeof raw !== 'string' || raw.trim() === '') {
           throw new Error(`User aborted: empty CA path`)
         }
-        const expanded = raw.startsWith('~/') || raw === '~' ? raw.replace(/^~/, homedir()) : raw
-        const abs = pathResolve(expanded)
+        const abs = resolveAbsPath(raw)
         let bytes: Buffer
         try {
           bytes = readFileSync(abs)
@@ -433,6 +460,7 @@ export async function runWizardAndFinalize(args: RunWizardAndFinalizeArgs): Prom
     useTls?: boolean
     port?: number
     caPath?: string
+    tlsVerify?: boolean
   }
   const serverUrl = tcFields.serverUrl
   const username = tcFields.username
@@ -442,7 +470,7 @@ export async function runWizardAndFinalize(args: RunWizardAndFinalizeArgs): Prom
   }
 
   const { useTls, port, caPath, caBytes, tlsVerify } = await promptProbePreview(
-    prompter, probeModule, serverUrl, tcFields.useTls, tcFields.port, tcFields.caPath, t, locale,
+    prompter, probeModule, serverUrl, tcFields.useTls, tcFields.port, tcFields.caPath, tcFields.tlsVerify, t, locale,
   )
 
   let oauthOk = false

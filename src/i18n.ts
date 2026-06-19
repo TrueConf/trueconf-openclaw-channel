@@ -104,6 +104,18 @@ const TRANSLATIONS = {
   'tls.banner.missing.reasonAbsent':   { en: 'file is missing', ru: 'файл отсутствует' },
   'tls.banner.missing.reasonReadErr':  { en: 'read error: {{message}}', ru: 'ошибка чтения: {{message}}' },
 
+  // Re-run trust review (keep/change gate + change menu)
+  'trust.review.keepTitle':       { en: 'Current TLS / certificate setup', ru: 'Текущая настройка TLS / сертификата' },
+  'trust.review.currentCaFile':   { en: 'Verification by CA file: {{path}}', ru: 'Проверка по CA-файлу: {{path}}' },
+  'trust.review.currentInsecure': { en: 'TLS verification is disabled (insecure)', ru: 'Проверка TLS отключена (insecure)' },
+  'trust.review.keep':            { en: 'Keep the current TLS / certificate setup?', ru: 'Оставить текущую настройку TLS / сертификата?' },
+  'trust.review.changePrompt':    { en: 'How should TLS be verified?', ru: 'Как проверять TLS-сертификат?' },
+  'trust.review.optionCaFile':    { en: 'Specify a different CA file', ru: 'Указать другой CA-файл' },
+  'trust.review.optionReprobe':   { en: 'Re-detect from the server (re-probe)', ru: 'Перепроверить с сервера (re-probe)' },
+  'trust.review.keepUnreachable': { en: 'Server unreachable — keeping the stored CA WITHOUT re-validation. This may be a network failure or an attacker blocking the check; the login below still verifies against this CA and fails closed. ({{error}})', ru: 'Сервер недоступен — оставляю сохранённый CA БЕЗ повторной проверки. Это может быть сбой сети или атакующий, блокирующий проверку; вход ниже всё равно проверяется по этому CA и упадёт при подмене. ({{error}})' },
+  'trust.review.mismatchWarn':    { en: 'The stored CA file no longer validates this server ({{error}}). The certificate may have rotated, or this could be a MITM — verify with the admin before trusting a new one.', ru: 'Сохранённый CA-файл больше не валидирует этот сервер ({{error}}). Сертификат мог смениться, либо это MITM — сверьте с админом перед доверием новому.' },
+  'trust.review.fileUnreadable':  { en: 'Stored CA file is missing or unreadable: {{path}} ({{reason}})', ru: 'Сохранённый CA-файл отсутствует или не читается: {{path}} ({{reason}})' },
+
   // Probe preview (bin standalone CLI)
   'probe.preview.title':               { en: 'Connecting as', ru: 'Подключусь как' },
   'probe.preview.accept':              { en: 'Accept?', ru: 'Принять?' },

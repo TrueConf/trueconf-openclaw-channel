@@ -1,6 +1,4 @@
 import { readFileSync } from 'node:fs'
-import { resolve as pathResolve } from 'node:path'
-import { homedir } from 'node:os'
 import type { ChannelSetupWizard, OpenClawConfig, WizardPrompter } from 'openclaw/plugin-sdk/setup'
 import {
   patchTopLevelChannelConfigSection,
@@ -8,6 +6,7 @@ import {
 } from 'openclaw/plugin-sdk/setup'
 import { parseCertFromPem, probeTls, downloadCAChain, validateOAuthCredentials, validateCaAgainstServer } from './probe.mjs'
 import type { CertSummary, ValidatedCaBytes } from './probe.d.mts'
+import { resolveAbsPath, shortFp } from './setup-trust'
 import { resolveSecret } from './config'
 import type { Locale } from './i18n'
 import { DEFAULT_LOCALE, t } from './i18n'
@@ -307,13 +306,6 @@ export function buildSetupWizardDescriptor(
 // locale is 'en' per i18n.ts.
 export const trueconfSetupWizard: ChannelSetupWizard = buildSetupWizardDescriptor(t, DEFAULT_LOCALE)
 
-function resolveAbsPath(raw: string): string {
-  const expanded = raw.startsWith('~/') || raw === '~'
-    ? raw.replace(/^~/, homedir())
-    : raw
-  return pathResolve(expanded)
-}
-
 // Shared env-CA validation for interactive and headless finalize paths.
 // Both need the same sequence (read → parse → validate-against-server) with
 // the same error copy — keeping this in one place prevents the two throws
@@ -354,11 +346,6 @@ async function loadAndValidateEnvCa(args: {
     }))
   }
   return { abs, caBytes: v.caBytes }
-}
-
-function shortFp(fp: string | null | undefined): string {
-  if (!fp) return '?'
-  return fp.length > 29 ? `${fp.slice(0, 29)}…` : fp
 }
 
 const MAX_CA_FILE_ATTEMPTS = 3

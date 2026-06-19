@@ -162,4 +162,47 @@ describe('reviewExistingTrust', () => {
       current: { caPath: '/ca.pem' }, alreadyValidated: { caBytes: BYTES }, locale: 'en',
     })).rejects.toThrow(/Trust change cancelled/)
   })
+
+  it('CLI valid → keep → kind:pinned with validated bytes', async () => {
+    const caFile = mkTmpPem('ca.pem')
+    const prompter = mkPrompter({ confirm: [true] })
+    const probe = mkProbe({ validateCaAgainstServer: async () => ({ ok: true, caBytes: BYTES }) })
+    const d = await reviewExistingTrust({ prompter, probe, host: 'h', port: 443, current: { caPath: caFile }, locale: 'en' })
+    expect(d).toEqual({ kind: 'pinned', caPath: expect.stringContaining('ca.pem'), caBytes: BYTES })
+    expect(prompter.notes.join('\n')).toMatch(/Verification by CA file/)
+  })
+
+  it('CLI mismatch → change menu → use-file → kind:pinned', async () => {
+    const caFile = mkTmpPem('ca.pem')
+    const newPem = mkTmpPem('new.pem')
+    // untrusted on the FIRST call (re-validate stored CA); ok afterwards so the
+    // use-file recovery's own validateCaAgainstServer succeeds.
+    const validateCaAgainstServer = vi.fn()
+      .mockResolvedValueOnce({ ok: false, kind: 'untrusted', error: 'e', serverCert: { issuerCN: 'x' } })
+      .mockResolvedValue({ ok: true, caBytes: Buffer.from('NEWCA') })
+    const prompter = mkPrompter({ select: ['use-file'], text: [newPem] })
+    const probe = mkProbe({ validateCaAgainstServer })
+    const d = await reviewExistingTrust({ prompter, probe, host: 'h', port: 443, current: { caPath: caFile }, locale: 'en' })
+    expect(d).toEqual({ kind: 'pinned', caPath: expect.stringContaining('new.pem'), caBytes: Buffer.from('NEWCA') })
+    expect(prompter.notes.join('\n')).toMatch(/no longer validates/)
+  })
+
+  it('CLI unreadable → change menu → use-file → kind:pinned', async () => {
+    const newPem = mkTmpPem('new.pem')
+    const prompter = mkPrompter({ select: ['use-file'], text: [newPem] })
+    const probe = mkProbe()
+    const d = await reviewExistingTrust({ prompter, probe, host: 'h', port: 443, current: { caPath: '/definitely-missing.pem' }, locale: 'en' })
+    expect(d).toEqual({ kind: 'pinned', caPath: expect.stringContaining('new.pem'), caBytes: Buffer.from('NEWCA') })
+    expect(prompter.notes.join('\n')).toMatch(/missing or unreadable/)
+  })
+
+  it('CLI unreachable during re-validation → lenient keep with warning', async () => {
+    const tmp = mkTmpPem('ca.pem')
+    const prompter = mkPrompter({})  // unreachable branch consumes no confirm/select
+    const probe = mkProbe({ validateCaAgainstServer: async () => ({ ok: false, kind: 'unreachable', error: 'ECONNREFUSED' }) })
+    const d = await reviewExistingTrust({ prompter, probe, host: 'h', port: 443, current: { caPath: tmp }, locale: 'en' })
+    expect(d.kind).toBe('pinned')
+    expect(Buffer.from((d as any).caBytes).toString()).toBe('PEMBYTES')
+    expect(prompter.notes.join('\n')).toMatch(/WITHOUT re-validation/)
+  })
 })

@@ -136,7 +136,7 @@ export interface ReviewExistingTrustArgs {
 // pre-validated bytes via `alreadyValidated` (skip re-validation); the CLI omits
 // it so this re-reads + re-validates internally (Task 6 branch).
 export async function reviewExistingTrust(args: ReviewExistingTrustArgs): Promise<TrustDecision> {
-  const { prompter, current, alreadyValidated, locale } = args
+  const { prompter, probe, host, port, current, alreadyValidated, locale } = args
   if (current.caPath && alreadyValidated) {
     const resolved = resolveAbsPath(current.caPath)
     await prompter.note(t('trust.review.currentCaFile', locale, { path: resolved }), t('trust.review.keepTitle', locale))
@@ -150,7 +150,33 @@ export async function reviewExistingTrust(args: ReviewExistingTrustArgs): Promis
     if (keep) return { kind: 'insecure' }
     return changeMenu(args)
   }
-  throw new Error('reviewExistingTrust: branch not implemented (Task 5/6)')
+  // CLI path: no pre-validated bytes — re-read + re-validate the stored CA here.
+  if (current.caPath && !alreadyValidated) {
+    const resolved = resolveAbsPath(current.caPath)
+    let bytes: Buffer
+    try {
+      bytes = readFileSync(resolved)
+    } catch (err) {
+      await prompter.note(t('trust.review.fileUnreadable', locale, { path: resolved, reason: (err as Error).message }), t('trust.review.keepTitle', locale))
+      return changeMenu(args)
+    }
+    const v = await probe.validateCaAgainstServer({ caBytes: bytes, host, port })
+    if (v.ok) {
+      await prompter.note(t('trust.review.currentCaFile', locale, { path: resolved }), t('trust.review.keepTitle', locale))
+      const keep = await prompter.confirm({ message: t('trust.review.keep', locale), initialValue: true })
+      if (keep) return { kind: 'pinned', caPath: resolved, caBytes: v.caBytes }
+      return changeMenu(args)
+    }
+    if (v.kind === 'unreachable') {
+      await prompter.note(t('trust.review.keepUnreachable', locale, { error: v.error }), t('trust.review.keepTitle', locale))
+      // NOT markValidated: these bytes were not server-validated this run; OAuth's
+      // rejectUnauthorized:true is the sole gate (see spec §6).
+      return { kind: 'pinned', caPath: resolved, caBytes: bytes as unknown as ValidatedCaBytes }
+    }
+    await prompter.note(t('trust.review.mismatchWarn', locale, { error: v.error }), t('trust.review.keepTitle', locale))
+    return changeMenu(args)
+  }
+  throw new Error('reviewExistingTrust: no explicit trust config to review')
 }
 
 async function changeMenu(args: ReviewExistingTrustArgs): Promise<TrustDecision> {

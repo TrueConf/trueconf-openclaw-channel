@@ -34,8 +34,6 @@ import {
   sendTextToChat,
   handleOutboundAttachment,
   handleOutboundAttachmentToChat,
-  sanitizeMarkdown,
-  sanitizeMarkdownPreservingParagraphs,
   type DirectChatStore,
   type OutboundAttachmentDeps,
   type OutboundAttachmentToChatDeps,
@@ -128,28 +126,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks()
-})
-
-describe('sanitizeMarkdownPreservingParagraphs', () => {
-  it('preserves single \\n\\n paragraph break', () => {
-    const out = sanitizeMarkdownPreservingParagraphs('para1\n\npara2')
-    expect(out).toBe('para1\n\npara2')
-  })
-
-  it('collapses 3+ consecutive newlines down to \\n\\n', () => {
-    const out = sanitizeMarkdownPreservingParagraphs('a\n\n\n\nb')
-    expect(out).toBe('a\n\nb')
-  })
-
-  it('keeps single newlines untouched', () => {
-    const out = sanitizeMarkdownPreservingParagraphs('line1\nline2')
-    expect(out).toBe('line1\nline2')
-  })
-
-  it('still strips inline emphasis like sanitizeMarkdown', () => {
-    const out = sanitizeMarkdownPreservingParagraphs('**bold** text')
-    expect(out).toBe('bold text')
-  })
 })
 
 describe('sendMessageRequest auto-split + sendQueue', () => {
@@ -245,6 +221,21 @@ describe('buildSendFilePayload omits replyMessageId:null', () => {
     const payload = __test__buildSendFilePayload('chat-X', upload)
     expect(Object.keys(payload).includes('replyMessageId')).toBe(false)
     expect(payload.chatId).toBe('chat-X')
+  })
+
+  it('renders the markdown caption as TrueConf html', () => {
+    const upload = {
+      temporalFileId: 'tfid-1',
+      inlineCaption: '**Отчёт**\nверсия < 2' as string | null,
+      kind: 'document' as const,
+      bytes: 100,
+      replyMessageId: null as string | null,
+    }
+    const payload = __test__buildSendFilePayload('chat-X', upload)
+    expect(payload.content).toEqual({
+      temporalFileId: 'tfid-1',
+      caption: { text: '<b>Отчёт</b><br>версия &lt; 2', parseMode: 'html' },
+    })
   })
 
   it('includes replyMessageId when non-null', () => {
@@ -418,15 +409,6 @@ describe('handleOutboundAttachment caption flow', () => {
     } finally {
       globalThis.fetch = origFetch
     }
-  })
-})
-
-// Smoke that previously-existing sanitizeMarkdown still collapses paragraph breaks
-// (so caption path keeps the historical behavior).
-describe('sanitizeMarkdown unchanged for caption use', () => {
-  it('collapses \\n\\n into single newline (legacy caption behavior)', () => {
-    const out = sanitizeMarkdown('para1\n\npara2')
-    expect(out).toBe('para1\npara2')
   })
 })
 

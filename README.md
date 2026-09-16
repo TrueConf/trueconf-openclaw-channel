@@ -378,7 +378,7 @@ This channel is wire-compatible with [python-trueconf-bot](https://github.com/tr
 
 | Behavior | This channel | python-trueconf-bot | Why |
 |----------|--------------|---------------------|-----|
-| Default text rendering | `parseMode: 'markdown'` | `ParseMode.TEXT` | LLMs emit markdown by default; rendering it in TrueConf gives the user formatted output without extra configuration. |
+| Default text rendering | Agent markdown is converted to TrueConf HTML (`parseMode: 'html'`): bold, italic, strikethrough, links, headings, lists, and tables; line breaks travel as `<br>` | `ParseMode.TEXT` | LLMs emit markdown by default. TrueConf HTML mode renders only `<b>`, `<i>`, `<u>`, `<s>`, `<a>` and collapses raw newlines. |
 | Long text (> 4096 chars) | Auto-split into chunks (paragraph → sentence → hard cut), order preserved by a per-chat queue | Truncated server-side | LLM responses regularly exceed the limit; paragraph-first splitting is gentler on markdown. |
 | Long captions (> 4096 chars) | Sent as a separate message before the file; file is then sent without caption | Same input is truncated server-side | Best-effort: if `sendFile` fails after the caption was delivered, the channel logs the orphan-text condition explicitly. |
 | DNS failures (`ENOTFOUND`, `EAI_AGAIN`, …) | 5 retries (≈ 31 s) then fail-fast | Retried indefinitely | Inside an OpenClaw runtime, an unresolvable hostname is almost always a typo in `serverUrl`; surfacing it loudly is more useful than retrying forever. |

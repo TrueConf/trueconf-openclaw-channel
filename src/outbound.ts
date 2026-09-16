@@ -9,9 +9,9 @@ import {
   CAPTION_LIMIT,
   bytesToMB,
   checkTextLength,
-  splitTextForSending,
   type FileUploadLimits,
 } from './limits'
+import { markdownToTrueconfHtml, renderForSending } from './format'
 import type { PerChatSendQueue } from './send-queue'
 import type { OutboundQueue } from './outbound-queue'
 import { basename } from 'node:path'
@@ -121,45 +121,6 @@ async function resolveDirectChat(
   return { stableUserId, chatId }
 }
 
-// Core TrueConf markdown→plaintext stripping. TrueConf markdown is unreliable
-// inside list items and after emoji, so strip emphasis markers and render links
-// as "text (url)" rather than leaking raw syntax to the user. The two public
-// variants differ only in how blank lines collapse, so that one step is injected.
-function sanitizeMarkdownCore(text: string, collapseBlankLines: (s: string) => string): string {
-  let r = text.replace(/\r\n?/g, '\n')
-  r = r.replace(/&lt;\s*\/?\s*br\s*\/?\s*&gt;/gi, '\n')
-  r = r.replace(/<\s*\/?\s*br\s*\/?\s*>/gi, '\n')
-  r = collapseBlankLines(r)
-  r = r.replace(/<\/?[^>]+(>|$)/g, '')
-  r = r.replace(/^#{1,6}\s+(.+)$/gm, '$1')
-  r = r.replace(/```[\s\S]*?```/g, (m) => m.replace(/```\w*\n?/g, '').replace(/```/g, '').trim())
-  r = r.replace(/`([^`]+)`/g, '$1')
-  r = r.replace(/^[\s]*[*+-]\s+/gm, '- ')
-  r = r.replace(/^[\s]*(\d+)\.\s+/gm, '$1. ')
-  r = r.replace(/^>\s?/gm, '')
-  r = r.replace(/^[-*_]{3,}$/gm, '---')
-  r = r.replace(/\*\*([\s\S]+?)\*\*/g, '$1')
-  r = r.replace(/(?<![A-Za-z0-9_*])\*([^\s*][^*\n]*?[^\s*])\*(?![A-Za-z0-9_*])/g, '$1')
-  r = r.replace(/~~([\s\S]+?)~~/g, '$1')
-  r = r.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
-  return r.trim()
-}
-
-// Used for short captions where paragraph breaks aren't meaningful — collapses
-// `\n{2,}` to a single newline.
-export function sanitizeMarkdown(text: string): string {
-  return sanitizeMarkdownCore(text, (r) => r.replace(/\n{2,}/g, '\n'))
-}
-
-// Same as `sanitizeMarkdown` but preserves single blank lines between
-// paragraphs. Long agent replies often arrive with deliberate paragraph breaks;
-// collapsing them to a single newline (the caption-style behavior) destroys
-// readability when chunks are auto-split by `splitTextForSending`. We only
-// collapse runs of 3+ consecutive newlines down to `\n\n`.
-export function sanitizeMarkdownPreservingParagraphs(text: string): string {
-  return sanitizeMarkdownCore(text, (r) => r.replace(/\n{3,}/g, '\n\n'))
-}
-
 // Auto-split + per-chat queue. Each chunk is a separate `sendMessage` request
 // and the loop halts on the first non-zero errorCode, returning the responses
 // gathered so far. The whole chunked send runs inside a single
@@ -174,7 +135,7 @@ async function sendMessageRequest(
   sendQueue: PerChatSendQueue,
 ): Promise<TrueConfResponse[]> {
   return sendQueue.enqueue(chatId, async () => {
-    const chunks = splitTextForSending(text)
+    const chunks = renderForSending(text)
     const responses: TrueConfResponse[] = []
     for (const chunk of chunks) {
       const resp = await outboundQueue.submit('sendMessage', {
@@ -217,7 +178,7 @@ export type SendTextResult =
 
 // Picks the last response from a multi-chunk send for caller error-check and
 // messageId extraction. Returns `undefined` if the loop never produced a
-// response (e.g., empty chunk list — `splitTextForSending` always returns at
+// response (e.g., empty chunk list — `renderForSending` always returns at
 // least one element so this is defensive).
 function lastResponse(responses: TrueConfResponse[]): TrueConfResponse | undefined {
   return responses.length > 0 ? responses[responses.length - 1] : undefined
@@ -233,9 +194,8 @@ export async function sendTextToChat(
   sendQueue: PerChatSendQueue,
 ): Promise<SendTextResult> {
   try {
-    const cleanText = sanitizeMarkdownPreservingParagraphs(text)
     const safeChatId = normalizeChatId(chatId)
-    const responses = await sendMessageRequest(outboundQueue, safeChatId, cleanText, sendQueue)
+    const responses = await sendMessageRequest(outboundQueue, safeChatId, text, sendQueue)
     const last = lastResponse(responses)
     if (!last) {
       logger.error(`[trueconf] sendTextToChat: no responses returned (chatId=${safeChatId})`)
@@ -263,7 +223,6 @@ export async function sendText(
   options: SendTextOptions,
 ): Promise<SendTextResult> {
   try {
-    const cleanText = sanitizeMarkdownPreservingParagraphs(text)
     const accountId = normalizeAccountId(options.accountId ?? 'default')
     if (!options.accountId) {
       logger.warn('[trueconf] sendText: accountId missing, falling back to "default"')
@@ -273,7 +232,7 @@ export async function sendText(
       accountId,
     })
     let activeChatId = resolved.chatId
-    let responses = await sendMessageRequest(options.outboundQueue, activeChatId, cleanText, options.sendQueue)
+    let responses = await sendMessageRequest(options.outboundQueue, activeChatId, text, options.sendQueue)
     let last = lastResponse(responses)
     let errorCode = last ? responseErrorCode(last) : undefined
     let repaired = false
@@ -284,7 +243,7 @@ export async function sendText(
       )
       repaired = true
       activeChatId = await recreateChat(options.outboundQueue, options.directChatStore, accountId, resolved.stableUserId)
-      responses = await sendMessageRequest(options.outboundQueue, activeChatId, cleanText, options.sendQueue)
+      responses = await sendMessageRequest(options.outboundQueue, activeChatId, text, options.sendQueue)
       last = lastResponse(responses)
       errorCode = last ? responseErrorCode(last) : undefined
     }
@@ -538,7 +497,7 @@ async function prepareAttachmentUpload(
   const temporalFileId = uploadResult.temporalFileId
   logger.info(`[trueconf] sendMedia step 2/3 OK temporalFileId=${temporalFileId} bytes=${fileSize}`)
 
-  const caption = sanitizeMarkdown(ctx.text ?? '').trim()
+  const caption = (ctx.text ?? '').trim()
   const inlineCaption = caption.length > 0 ? caption : null
   const kind: MediaKind = kindFromMime(mimeType) ?? 'document'
 
@@ -547,7 +506,7 @@ async function prepareAttachmentUpload(
 
 function buildSendFilePayload(chatId: string, upload: PreparedUpload): Record<string, unknown> {
   const content: Record<string, unknown> = { temporalFileId: upload.temporalFileId }
-  if (upload.inlineCaption !== null) content.caption = { text: upload.inlineCaption, parseMode: 'html' }
+  if (upload.inlineCaption !== null) content.caption = { text: markdownToTrueconfHtml(upload.inlineCaption), parseMode: 'html' }
   const payload: Record<string, unknown> = { chatId, content }
   if (upload.replyMessageId != null) payload.replyMessageId = upload.replyMessageId
   return payload
@@ -572,7 +531,7 @@ async function maybeSendCaptionSeparately(
   const captionText = upload.inlineCaption
   if (captionText === null) return { ok: true, upload, captionSentSeparately: false }
 
-  const captionCheck = checkTextLength(captionText, CAPTION_LIMIT)
+  const captionCheck = checkTextLength(markdownToTrueconfHtml(captionText), CAPTION_LIMIT)
   if (captionCheck.ok) return { ok: true, upload, captionSentSeparately: false }
 
   logger.warn(

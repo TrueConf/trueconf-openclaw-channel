@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Agent replies keep their line breaks and formatting in TrueConf. The outbound path stripped markdown to plain text and sent it with `parseMode: 'html'`, and TrueConf HTML mode collapses raw newlines, so every reply arrived as one run-on paragraph without bold, links, or lists. Text and file captions now pass through a markdown-to-TrueConf-HTML converter: `**bold**` and headings become `<b>`, `*italic*` becomes `<i>`, `~~strike~~` becomes `<s>`, `[text](url)` becomes `<a href>`, lists get `•` bullets, tables become one line per row, and every line break is sent as `<br>`.
+- A literal `<` in a reply no longer deletes the rest of the message. The old tag-stripping regex matched from `<` to the end of the text when no `>` followed, so `if x < 5 …` arrived as `if x`. Text is now HTML-escaped, and only `<b>`, `<i>`, `<u>`, `<s>` written by the agent pass through as tags.
+
+### Changed
+- Long replies are split on markdown before conversion, so a chunk boundary never cuts through a tag. A chunk whose HTML outgrows the 4096-character limit is split again.
+- `sanitizeMarkdown` and `sanitizeMarkdownPreservingParagraphs` are removed; `src/format.ts` exports `markdownToTrueconfHtml` and `renderForSending` instead.
+
 ## [1.2.9] - 2026-06-10
 
 ### Fixed

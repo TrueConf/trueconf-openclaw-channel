@@ -13,7 +13,6 @@ import { Agent as UndiciAgent, type Dispatcher } from 'undici'
 import {
   sendText,
   sendTextToChat,
-  sanitizeMarkdown,
   handleOutboundAttachment,
   handleOutboundAttachmentToChat,
   responseErrorCode,
@@ -360,7 +359,6 @@ export const channelPlugin = {
       // inbounds we route through sendTextToChat (no P2P resolution) so the
       // reply lands in the group chat — not in a stale DM peer.
       const botUserId = entry.wsClient.botUserId
-      const cleanText = sanitizeMarkdown(ctx.text)
       if (botUserId && normalizeForCompare(botUserId) === normalizeForCompare(to)) {
         const route = store.lastInboundRouteByAccount.get(accountId ?? '')
         if (!route) {
@@ -373,7 +371,7 @@ export const channelPlugin = {
           logger.info(
             `[trueconf] sendText: target=${to} is bot identity; redirecting to last inbound group ${route.chatId}`,
           )
-          const groupResult = await sendTextToChat(entry.outboundQueue, route.chatId, cleanText, logger, entry.sendQueue)
+          const groupResult = await sendTextToChat(entry.outboundQueue, route.chatId, ctx.text, logger, entry.sendQueue)
           if (groupResult.ok && groupResult.messageId) {
             rememberBotMessage(store.recentBotMsgIdsByChat, groupResult.chatId, groupResult.messageId)
           }
@@ -382,7 +380,7 @@ export const channelPlugin = {
         logger.info(
           `[trueconf] sendText: target=${to} is bot identity; redirecting to last inbound peer ${route.userId}`,
         )
-        const directResult = await sendText(route.userId, cleanText, logger, {
+        const directResult = await sendText(route.userId, ctx.text, logger, {
           fallbackUserId: route.userId,
           directChatStore: store,
           accountId,
@@ -395,7 +393,7 @@ export const channelPlugin = {
         return { channel: 'trueconf', messageId: directResult.ok ? (directResult.messageId ?? '') : '' }
       }
 
-      const result = await sendText(to, cleanText, logger, {
+      const result = await sendText(to, ctx.text, logger, {
         fallbackUserId: to,
         directChatStore: store,
         accountId,

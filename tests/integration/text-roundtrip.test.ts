@@ -84,14 +84,18 @@ describe('integration: text roundtrip', () => {
     expect(server.clientAcks).toContain(10_000)
   })
 
-  it('outbound sendText delivers sanitized markdown to the server', async () => {
+  it('outbound sendText delivers markdown as TrueConf html with line breaks', async () => {
     harness = await bootPlugin(server)
 
     const sendText = channelPlugin.outbound.sendText as (
       ctx: { to: string; text: string; accountId: string },
     ) => Promise<{ channel: string; messageId: string }>
 
-    const reply = await sendText({ to: 'alice@srv', text: '**bold** and *italic*', accountId: 'default' })
+    const reply = await sendText({
+      to: 'alice@srv',
+      text: '## Итог\n\n**bold** and *italic*\n- if x < 5\n- see [docs](https://example.com/a_b)',
+      accountId: 'default',
+    })
     expect(reply.channel).toBe('trueconf')
     expect(reply.messageId).toMatch(/^msg_/)
 
@@ -101,7 +105,12 @@ describe('integration: text roundtrip', () => {
       content: { text: string; parseMode: string }
     }
     expect(payload.chatId).toBe('chat_alice@srv')
-    expect(payload.content.text).toBe('bold and italic')
+    expect(payload.content).toEqual({
+      text:
+        '<b>Итог</b><br><br><b>bold</b> and <i>italic</i><br>• if x &lt; 5<br>' +
+        '• see <a href="https://example.com/a_b">docs</a>',
+      parseMode: 'html',
+    })
   })
 
   it('deliver callback invoked with dispatch payload produces a reply on the wire', async () => {

@@ -533,7 +533,7 @@ MIT
 
 # Changelog
 
-## [Unreleased]
+## [1.2.11] - 2026-09-16
 
 ### Fixed
 - Agent replies keep their line breaks and formatting in TrueConf. The outbound path stripped markdown to plain text and sent it with `parseMode: 'html'`, and TrueConf HTML mode collapses raw newlines, so every reply arrived as one run-on paragraph without bold, links, or lists. Text and file captions now pass through a markdown-to-TrueConf-HTML converter: `**bold**` and headings become `<b>`, `*italic*` becomes `<i>`, `~~strike~~` becomes `<s>`, `[text](url)` becomes `<a href>`, lists get `•` bullets, tables become one line per row, and every line break is sent as `<br>`.

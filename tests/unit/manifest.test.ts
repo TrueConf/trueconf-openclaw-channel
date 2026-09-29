@@ -20,6 +20,11 @@ function getAccountsItemSchema(): Record<string, unknown> {
 }
 
 describe('openclaw.plugin.json', () => {
+  it('carries the same version as package.json', () => {
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }
+    expect(loadManifest().version).toBe(pkg.version)
+  })
+
   it('declares channel config metadata for TrueConf', () => {
     const manifest = loadManifest()
     const channelConfigs = manifest.channelConfigs as Record<string, unknown> | undefined

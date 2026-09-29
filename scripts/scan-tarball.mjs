@@ -53,36 +53,41 @@ function walkScannable(dirAbs) {
   return out
 }
 
-// The openclaw scanner ships as a minified chunk at
-// node_modules/openclaw/dist/skill-scanner-{8 chars}.js exposing only `t`.
-// Hash rotates per release, so glob-find it.
+// The openclaw scanner is a hashed chunk under node_modules/openclaw/dist and
+// the hash rotates per release, so glob-find it. Through 2026.8 it is
+// skill-scanner-{8 chars}.js exposing the scan function as minified `t`; from
+// 2026.9 it is a scanner-{8 chars}.mjs re-export chunk with named exports.
+const SCANNER_CHUNKS = [
+  { pattern: /^skill-scanner-[A-Za-z0-9_-]{8}\.js$/, exportName: 't' },
+  { pattern: /^scanner-[A-Za-z0-9_-]{8}\.mjs$/, exportName: 'scanDirectoryWithSummary' },
+]
+
 export async function resolveScannerModule() {
   const distDir = resolve(REPO_ROOT, 'node_modules', 'openclaw', 'dist')
-  let hashedFile
+  let entries
   try {
-    const entries = readdirSync(distDir)
-    hashedFile = entries.find((f) => /^skill-scanner-[A-Za-z0-9_-]{8}\.js$/.test(f))
+    entries = readdirSync(distDir)
   } catch (err) {
     throw new Error(
       `scan-tarball: could not read ${distDir} (${err.message}). ` +
       `Is openclaw installed? Run \`npm ci\`.`,
     )
   }
-  if (!hashedFile) {
-    throw new Error(
-      `scan-tarball: no skill-scanner-*.js found in ${distDir}. ` +
-      `openclaw may have moved the scanner — update scripts/scan-tarball.mjs.`,
-    )
+  const seen = []
+  for (const { pattern, exportName } of SCANNER_CHUNKS) {
+    for (const file of entries.filter((f) => pattern.test(f))) {
+      const mod = await import(pathToFileURL(join(distDir, file)).href)
+      if (typeof mod[exportName] === 'function') {
+        return { scanDirectoryWithSummary: mod[exportName], source: `${exportName}:${file}` }
+      }
+      seen.push(`${file} exports ${Object.keys(mod).join(', ') || '(nothing)'}`)
+    }
   }
-  const hashedPath = join(distDir, hashedFile)
-  const mod = await import(pathToFileURL(hashedPath).href)
-  if (typeof mod.t !== 'function') {
-    throw new Error(
-      `scan-tarball: ${hashedPath} exports ${Object.keys(mod).join(', ') || '(nothing)'}; ` +
-      `expected minified \`t\` function. Update scripts/scan-tarball.mjs.`,
-    )
-  }
-  return { scanDirectoryWithSummary: mod.t, source: `hashed-t:${hashedFile}` }
+  throw new Error(
+    `scan-tarball: no openclaw scanner chunk exposing a scan function in ${distDir}` +
+    `${seen.length ? ` (${seen.join('; ')})` : ''}. ` +
+    `openclaw may have moved the scanner — update scripts/scan-tarball.mjs.`,
+  )
 }
 
 // Setting maxFiles to filesAbs.length short-circuits the upstream walker

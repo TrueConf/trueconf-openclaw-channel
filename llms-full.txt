@@ -533,6 +533,15 @@ MIT
 
 # Changelog
 
+## [1.2.12] - 2026-09-29
+
+### Fixed
+- The plugin type-checks and passes its release scan on OpenClaw 2026.9 (the 2.0 line). `OpenClawPluginApi` is imported from `openclaw/plugin-sdk/core` because the root `openclaw/plugin-sdk` entry was removed in 2026.8, the default export of `index.ts` has an explicit type (declaration emit failed with TS2742 on 2026.9 because the SDK return type names a private chunk), and the tarball scan finds the OpenClaw scanner under its 2026.9 name. No runtime change: 1.2.11 already loads and connects on OpenClaw 2026.9.4.
+- `openclaw.plugin.json` reported version 1.2.9, so `openclaw plugins inspect` showed the wrong plugin version. It now matches `package.json`, and a test keeps the two equal.
+
+### Changed
+- CI runs typecheck, lint and tests on every pull request and push to `main`, against the locked OpenClaw and against `openclaw@latest`.
+
 ## [1.2.11] - 2026-09-16
 
 ### Fixed

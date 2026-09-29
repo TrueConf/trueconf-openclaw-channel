@@ -1,4 +1,4 @@
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk"
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core"
 import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound"
 import {
   deliverTextOrMediaReply,

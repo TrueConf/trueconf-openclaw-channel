@@ -9,13 +9,25 @@
  *
  * @see src/channel.ts for channelPlugin, registerFull, createRuntimeStore
  */
-import { defineChannelPluginEntry } from "openclaw/plugin-sdk/core"
+import { defineChannelPluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/core"
 import { channelPlugin, registerFull } from "./src/channel"
 
-export default defineChannelPluginEntry({
+// Explicit type: the SDK's return type differs between openclaw releases and,
+// since 2026.9, mentions configSchema from a private chunk that declaration
+// emit cannot name (TS2742). The host reads the runtime object, not this type.
+interface TrueconfPluginEntry {
+  id: string
+  name: string
+  description: string
+  register: (api: OpenClawPluginApi) => void | Promise<void>
+}
+
+const entry: TrueconfPluginEntry = defineChannelPluginEntry({
   id: "trueconf",
   name: "TrueConf Channel",
   description: "Connect OpenClaw to TrueConf Server corporate messenger.",
   plugin: channelPlugin,
   registerFull,
 })
+
+export default entry

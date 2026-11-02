@@ -104,6 +104,7 @@
     "build": "tsc && tsc-alias && node scripts/copy-runtime-assets.mjs",
     "setup": "node ./bin/trueconf-setup.mjs",
     "build:llms": "node scripts/build-llms-full.mjs",
-    "prepack": "node scripts/build-llms-full.mjs && node scripts/scan-tarball.mjs"
+    "prepack": "node scripts/build-llms-full.mjs && node scripts/scan-tarball.mjs",
+    "scan:clawhub": "node scripts/clawhub-scan.mjs"
   }
 }

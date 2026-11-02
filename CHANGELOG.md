@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- `npm run scan:clawhub` runs ClawHub's static scan and LLM review on the package before a release (`scripts/clawhub-scan.mjs`). It packs the working tree, or takes a `.tgz`, and scans it with ClawHub's own code at a pinned commit, so the static findings match the site. The LLM review runs when `CLAWSCAN_API_KEY` is set; it calls any OpenAI Responses API endpoint (`CLAWSCAN_BASE_URL`, OpenRouter by default) with ClawHub's model `openai/gpt-6.1-sol` (`CLAWSCAN_MODEL`). The first run downloads ClawHub and its dependencies (about 1.3 GB) into `node_modules/.cache/clawhub`.
+- `clawhub-publish.yml` runs the `clawhub` CLI directly under Node 24 instead of ClawHub's reusable workflow, which runs `package validate` under Bun and now fails.
+
 ## [1.2.15] - 2026-11-02
 
 ### Security

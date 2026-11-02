@@ -1,5 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core"
-import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound"
+import { dispatchInboundDirectDm } from "openclaw/plugin-sdk/channel-inbound"
 import {
   deliverTextOrMediaReply,
   resolveSendableOutboundReplyParts,
@@ -830,9 +830,8 @@ export const channelPlugin = {
         }
 
         try {
-          await dispatchInboundDirectDmWithRuntime({
-            cfg: store.fullConfig as Parameters<typeof dispatchInboundDirectDmWithRuntime>[0]['cfg'],
-            runtime: store.runtime as Parameters<typeof dispatchInboundDirectDmWithRuntime>[0]['runtime'],
+          await dispatchInboundDirectDm({
+            cfg: store.fullConfig as Parameters<typeof dispatchInboundDirectDm>[0]['cfg'],
             channel: 'trueconf',
             channelLabel: 'TrueConf',
             accountId,

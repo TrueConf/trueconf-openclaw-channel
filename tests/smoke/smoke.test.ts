@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
-  dispatchInboundDirectDmWithRuntime: vi.fn().mockResolvedValue({}),
+  dispatchInboundDirectDm: vi.fn().mockResolvedValue({}),
 }))
 
-import { dispatchInboundDirectDmWithRuntime } from 'openclaw/plugin-sdk/channel-inbound'
+import { dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
 import {
   __resetForTesting,
   channelPlugin,
@@ -12,7 +12,7 @@ import {
 } from '../../src/channel'
 import { startFakeServer, waitFor, type FakeServer } from './fake-server'
 
-const dispatchMock = vi.mocked(dispatchInboundDirectDmWithRuntime)
+const dispatchMock = vi.mocked(dispatchInboundDirectDm)
 
 interface Harness {
   abort: () => void

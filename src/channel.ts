@@ -24,7 +24,7 @@ import { PerChatSendQueue } from './send-queue'
 import { BoundedSeen, handleSdkPushEvent } from './push-events'
 import type { InboundContext } from './inbound'
 import { createNicknameStore, type NicknameStore } from './nickname-store'
-import { createNicknameTools } from './nickname-tools'
+import { canEditNicknames, createNicknameTools, NICKNAME_TOOL_NAMES, type NicknameToolContext } from './nickname-tools'
 import type { ResolvedChatKind } from './types'
 import {
   listAccountIds as listAccountIdsImpl,
@@ -981,8 +981,13 @@ export function registerFull(api: OpenClawPluginApi): void {
     process.env.OPENCLAW_CONFIG_DIR || process.env.OPENCLAW_STATE_DIR || join(homedir(), '.openclaw'),
     'trueconf-nicknames.json',
   )
-  store.nicknameStore = createNicknameStore(nicknameFile, logger)
-  for (const tool of createNicknameTools(store.nicknameStore)) api.registerTool(tool)
+  const nicknameStore = createNicknameStore(nicknameFile, logger)
+  store.nicknameStore = nicknameStore
+  // A factory, so each run gets tools bound to its own trusted requester.
+  api.registerTool(
+    (ctx: NicknameToolContext) => createNicknameTools(nicknameStore, canEditNicknames(ctx)),
+    { names: NICKNAME_TOOL_NAMES },
+  )
 
   api.on('gateway_stop', async () => {
     logger.info(`[trueconf] Shutting down ${store.accounts.size} connection(s)`)

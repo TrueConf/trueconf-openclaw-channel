@@ -1,10 +1,14 @@
-import { readFileSync, statSync } from 'node:fs'
+import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { saveJsonFile } from 'openclaw/plugin-sdk/json-store'
 import type { Logger } from './types'
 import { matchesAnyNickname, normalizeNickname } from './nickname-match'
 
 const MIN_LEN = 3
 const MAX = 50
+const LOCK_STALE_MS = 10_000
+const LOCK_ATTEMPTS = 100
+const LOCK_RETRY_MS = 20
 
 // Ultra-generic words a single group member could otherwise weaponize into a
 // global activation trigger (the store is global — any group can add, every
@@ -27,6 +31,7 @@ export type NicknameAddResult =
   | { status: 'reserved' }
   | { status: 'cap' }
   | { status: 'persist_failed' }
+  | { status: 'busy' }
 
 // Closed outcome of remove(): mirrors add() so the tool layer can tell the user
 // the truth — including 'persist_failed', when the name was dropped from the
@@ -35,6 +40,7 @@ export type NicknameRemoveResult =
   | { status: 'removed' }
   | { status: 'not_found' }
   | { status: 'persist_failed' }
+  | { status: 'busy' }
 
 export interface NicknameStore {
   list(): string[]
@@ -60,8 +66,7 @@ export function createNicknameStore(filePath: string, logger: Logger | null = nu
   // context (the inbound gate and the agent tools each hold their own store),
   // and disk is the only shared state. Reload when the file's mtime moved so a
   // nickname registered through a tool is seen live by the gate — not only after
-  // a restart. Called before every read and before every mutate (so add/remove
-  // merge with concurrent writes instead of clobbering them).
+  // a restart. Called before every read; mutate() always re-reads under its lock.
   const refreshIfChanged = (): void => {
     const m = mtimeMsOrZero(filePath)
     if (m !== lastMtimeMs) {
@@ -83,6 +88,25 @@ export function createNicknameStore(filePath: string, logger: Logger | null = nu
     }
   }
 
+  // Read-modify-write under a lock, so two processes adding names at once do
+  // not drop each other's write. The list is re-read inside the lock because
+  // an mtime check can miss a write made within the same timestamp tick.
+  // `change` returns an outcome when it leaves the list untouched, or null
+  // after a change that should be persisted and reported as `done`.
+  const mutate = <R extends { status: string }>(change: () => R | null, done: R): R | { status: 'busy' | 'persist_failed' } => {
+    const lock = acquireLock(filePath, logger)
+    if (!lock) return { status: 'busy' }
+    try {
+      names = loadNicknames(filePath, logger)
+      lastMtimeMs = mtimeMsOrZero(filePath)
+      const outcome = change()
+      if (outcome) return outcome
+      return persist() ? done : { status: 'persist_failed' }
+    } finally {
+      lock.release()
+    }
+  }
+
   return {
     list: () => {
       refreshIfChanged()
@@ -93,22 +117,24 @@ export function createNicknameStore(filePath: string, logger: Logger | null = nu
       return matchesAnyNickname(text, names)
     },
     add: (name) => {
-      refreshIfChanged()
       const n = normalizeNickname(name)
       if (n.length < MIN_LEN) return { status: 'too_short' }
       if (RESERVED.has(n)) return { status: 'reserved' }
-      if (names.includes(n)) return { status: 'exists' }
-      if (names.length >= MAX) return { status: 'cap' }
-      names = [...names, n]
-      return persist() ? { status: 'added' } : { status: 'persist_failed' }
+      return mutate((): NicknameAddResult | null => {
+        if (names.includes(n)) return { status: 'exists' }
+        if (names.length >= MAX) return { status: 'cap' }
+        names = [...names, n]
+        return null
+      }, { status: 'added' })
     },
     remove: (name) => {
-      refreshIfChanged()
       const n = normalizeNickname(name)
-      const i = names.indexOf(n)
-      if (i < 0) return { status: 'not_found' }
-      names = names.filter((_, j) => j !== i)
-      return persist() ? { status: 'removed' } : { status: 'persist_failed' }
+      return mutate((): NicknameRemoveResult | null => {
+        const i = names.indexOf(n)
+        if (i < 0) return { status: 'not_found' }
+        names = names.filter((_, j) => j !== i)
+        return null
+      }, { status: 'removed' })
     },
   }
 }
@@ -157,6 +183,42 @@ function loadNicknames(filePath: string, logger: Logger | null): string[] {
     if (names.length >= MAX) break
   }
   return names
+}
+
+// Cross-process lock: a sidecar file created with O_EXCL. A lock older than
+// LOCK_STALE_MS belongs to a process that died mid-write and is taken over.
+// Returns null when the lock stays busy for LOCK_ATTEMPTS * LOCK_RETRY_MS.
+function acquireLock(filePath: string, logger: Logger | null): { release: () => void } | null {
+  const lockPath = `${filePath}.lock`
+  // When the lock file cannot be created, persist() cannot write either and
+  // reports the failure, so the change goes ahead without a lock.
+  const unlocked = (err: unknown) => {
+    logger?.warn(`[trueconf] nickname store: cannot create ${lockPath}: ${err instanceof Error ? err.message : String(err)}`)
+    return { release: () => {} }
+  }
+  try {
+    mkdirSync(dirname(filePath), { recursive: true })
+  } catch (err) {
+    return unlocked(err)
+  }
+  const sleeper = new Int32Array(new SharedArrayBuffer(4))
+  for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt++) {
+    try {
+      closeSync(openSync(lockPath, 'wx'))
+      return { release: () => rmSync(lockPath, { force: true }) }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return unlocked(err)
+      const lockedAt = mtimeMsOrZero(lockPath)
+      if (lockedAt === 0) continue
+      if (Date.now() - lockedAt > LOCK_STALE_MS) {
+        rmSync(lockPath, { force: true })
+        continue
+      }
+      Atomics.wait(sleeper, 0, 0, LOCK_RETRY_MS)
+    }
+  }
+  logger?.warn(`[trueconf] nickname store: ${lockPath} stayed locked; change not applied`)
+  return null
 }
 
 // Modification time in ms, or 0 when the file is absent/unstattable — a cheap

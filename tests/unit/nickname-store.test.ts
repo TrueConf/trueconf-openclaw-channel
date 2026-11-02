@@ -1,12 +1,26 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { existsSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+const saveFails = vi.hoisted(() => ({ on: false }))
+vi.mock('openclaw/plugin-sdk/json-store', async (importOriginal) => {
+  const real = await importOriginal<typeof import('openclaw/plugin-sdk/json-store')>()
+  return {
+    ...real,
+    saveJsonFile: (...args: Parameters<typeof real.saveJsonFile>) => {
+      if (saveFails.on) throw new Error('disk full')
+      return real.saveJsonFile(...args)
+    },
+  }
+})
+
 import { createNicknameStore } from '../../src/nickname-store'
 
 let file: string
 beforeEach(() => {
   file = join(mkdtempSync(join(tmpdir(), 'nick-')), 'n.json')
+  saveFails.on = false
 })
 
 describe('global nickname store', () => {
@@ -46,15 +60,50 @@ describe('global nickname store', () => {
     expect(s.list()).toEqual([])
   })
 
-  it('remove surfaces persist_failed when the write throws', () => {
-    // Point the store at a path whose parent is a regular file, so the SDK's
-    // saveJsonFile cannot create the directory and persist() throws. The name
-    // still lands in memory on add, so remove finds it but the write fails.
+  it('add reports persist_failed when the write throws and keeps the name until restart', () => {
+    // A path whose parent is a regular file: neither the lock nor the JSON can
+    // be written there.
     const blocker = join(mkdtempSync(join(tmpdir(), 'nick-')), 'blocker')
     writeFileSync(blocker, 'x')
     const s = createNicknameStore(join(blocker, 'n.json'), { info() {}, warn() {}, error() {} })
     expect(s.add('Клешня').status).toBe('persist_failed')
+    expect(s.list()).toEqual(['клешня'])
+  })
+
+  it('remove reports persist_failed when the write throws', () => {
+    const s = createNicknameStore(file, { info() {}, warn() {}, error() {} })
+    s.add('Клешня')
+    saveFails.on = true
     expect(s.remove('Клешня').status).toBe('persist_failed')
+  })
+
+  it('two store instances on one file keep both names', () => {
+    const gate = createNicknameStore(file)
+    const tools = createNicknameStore(file)
+    expect(gate.add('Альфа').status).toBe('added')
+    expect(tools.add('Бета').status).toBe('added')
+    expect(createNicknameStore(file).list()).toEqual(['альфа', 'бета'])
+  })
+
+  it('leaves no lock file behind', () => {
+    createNicknameStore(file).add('Клешня')
+    expect(existsSync(`${file}.lock`)).toBe(false)
+  })
+
+  it('reports busy and changes nothing while another process holds the lock', () => {
+    const s = createNicknameStore(file, { info() {}, warn() {}, error() {} })
+    writeFileSync(`${file}.lock`, '')
+    expect(s.add('Клешня').status).toBe('busy')
+    expect(s.list()).toEqual([])
+  })
+
+  it('takes over a lock left by a process that died', () => {
+    const s = createNicknameStore(file)
+    writeFileSync(`${file}.lock`, '')
+    const old = new Date(Date.now() - 60_000)
+    utimesSync(`${file}.lock`, old, old)
+    expect(s.add('Клешня').status).toBe('added')
+    expect(existsSync(`${file}.lock`)).toBe(false)
   })
 
   it('matches whole-word', () => {

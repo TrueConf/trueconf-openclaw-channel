@@ -103,3 +103,19 @@ describe('openclaw.plugin.json', () => {
     expect(properties.setupLocale).toMatchObject({ type: 'string', enum: ['en', 'ru'] })
   })
 })
+
+// The README install commands name an exact version so `openclaw plugins
+// install` and `npx ... trueconf-setup` run the same, reviewed release. The
+// release commit bumps package.json; this keeps the READMEs in step.
+describe('README install commands', () => {
+  const version = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }).version
+
+  it.each(['README.md', 'README-ru.md'])('%s pins every install and setup command to package.json version', (file) => {
+    const commands = readFileSync(file, 'utf8').match(/(?:openclaw plugins install|npx -y -p)[^\n`]*/g) ?? []
+    const packageCommands = commands.filter((c) => c.includes('@trueconf-community/trueconf-openclaw-channel'))
+    expect(packageCommands.length).toBeGreaterThan(0)
+    for (const command of packageCommands) {
+      expect(command).toContain(`@trueconf-community/trueconf-openclaw-channel@${version}`)
+    }
+  })
+})

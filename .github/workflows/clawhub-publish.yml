@@ -2,9 +2,13 @@ name: Publish to ClawHub
 
 # publish.yml dispatches this after the npm publish, with --ref set to the
 # release tag. ClawHub mints a trusted-publish token only for workflow_dispatch
-# runs that call its official reusable workflow, so this cannot be a step of
-# the release-triggered npm job. The tarball is the one npm serves, so ClawHub
-# and npm ship identical bytes.
+# runs, so this cannot be a step of the release-triggered npm job. The tarball
+# is the one npm serves, so ClawHub and npm ship identical bytes.
+#
+# The clawhub CLI runs directly under Node instead of through ClawHub's
+# reusable package-publish.yml: that workflow runs `package validate` under
+# bun, which the CLI refuses since openclaw/clawhub 24f4d421 (2026-10-15), and
+# the CLI pinned in older revisions is refused a token by the current server.
 on:
   workflow_dispatch:
     inputs:
@@ -21,39 +25,85 @@ on:
 permissions: {}
 
 jobs:
-  pack:
+  publish:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
+    env:
+      PACKAGE: '@trueconf-community/trueconf-openclaw-channel'
+      CLAWHUB_CLI: clawhub@0.25.0
     steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Pack the release from npm
+        id: pack
         env:
           VERSION: ${{ inputs.version }}
         run: |
           VERSION="${VERSION:-${GITHUB_REF_NAME#v}}"
-          SPEC="@trueconf-community/trueconf-openclaw-channel@$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # Attribute the release to its tag even when run by hand from main.
+          TAG_SHA=$(git ls-remote "https://github.com/$GITHUB_REPOSITORY" "refs/tags/v$VERSION^{}" "refs/tags/v$VERSION" | head -n 1 | cut -f1)
+          if [ -n "$TAG_SHA" ]; then
+            echo "source_commit=$TAG_SHA" >> "$GITHUB_OUTPUT"
+            echo "source_ref=refs/tags/v$VERSION" >> "$GITHUB_OUTPUT"
+          else
+            echo "source_commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+            echo "source_ref=$GITHUB_REF" >> "$GITHUB_OUTPUT"
+          fi
           # npm can take a few minutes to serve a version it just accepted.
           for attempt in $(seq 1 20); do
-            if npm pack "$SPEC"; then exit 0; fi
-            echo "attempt $attempt: $SPEC not available yet"
+            if TARBALL=$(npm pack "$PACKAGE@$VERSION" | tail -n 1); then
+              echo "tarball=$PWD/$TARBALL" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "attempt $attempt: $PACKAGE@$VERSION not available yet"
             sleep 30
           done
-          echo "::error::$SPEC is not available on npm"
+          echo "::error::$PACKAGE@$VERSION is not available on npm"
           exit 1
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: clawhub-package
-          path: '*.tgz'
-          if-no-files-found: error
+      # The CLI swallows a refused token request and falls back to a login it
+      # does not have ("Not logged in"), so ask for a token here and print the
+      # server's answer. A minted token expires unused after 15 minutes.
+      - name: Check ClawHub trusted publishing
+        env:
+          VERSION: ${{ steps.pack.outputs.version }}
+        run: |
+          node --input-type=module <<'EOF'
+          const oidcUrl = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL)
+          oidcUrl.searchParams.set('audience', 'clawhub')
+          const oidc = await fetch(oidcUrl, {
+            headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` },
+          }).then((r) => r.json())
+          const res = await fetch('https://clawhub.ai/api/v1/publish/token/mint', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              packageName: process.env.PACKAGE,
+              version: process.env.VERSION,
+              githubOidcToken: oidc.value,
+            }),
+          })
+          const body = await res.text()
+          console.log(`ClawHub token mint: HTTP ${res.status}`)
+          if (!res.ok) {
+            console.log(body)
+            process.exit(1)
+          }
+          EOF
 
-  publish:
-    needs: pack
-    permissions:
-      actions: read
-      contents: read
-      id-token: write
-    uses: openclaw/clawhub/.github/workflows/package-publish.yml@911211fc6cc6384a2cdb3ca0eff6f9031afd25f0
-    with:
-      dry_run: ${{ inputs.dry_run }}
-      package_artifact_name: clawhub-package
+      - name: Publish to ClawHub
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          SOURCE_COMMIT: ${{ steps.pack.outputs.source_commit }}
+          SOURCE_REF: ${{ steps.pack.outputs.source_ref }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          args=(package publish "$TARBALL"
+            --source-repo "$GITHUB_REPOSITORY" --source-commit "$SOURCE_COMMIT" --source-ref "$SOURCE_REF")
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          npx --yes "$CLAWHUB_CLI" --no-input "${args[@]}"

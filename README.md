@@ -60,7 +60,7 @@ With this channel, OpenClaw can:
 
 ## Requirements
 
-- **OpenClaw** >= 2026.3.22
+- **OpenClaw** >= 2026.5.28
 - **TrueConf Server** >= 5.5.3 
 - **Bot account** on TrueConf Server 
 

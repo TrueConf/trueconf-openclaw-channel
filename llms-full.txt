@@ -63,7 +63,7 @@ With this channel, OpenClaw can:
 
 ## Requirements
 
-- **OpenClaw** >= 2026.3.22
+- **OpenClaw** >= 2026.5.28
 - **TrueConf Server** >= 5.5.3 
 - **Bot account** on TrueConf Server 
 
@@ -532,6 +532,16 @@ MIT
 
 
 # Changelog
+
+## [Unreleased]
+
+### Fixed
+- The plugin loads on OpenClaw 2026.10. `waitUntilAbort` is imported from `openclaw/plugin-sdk/channel-outbound`: 2026.10 removed `openclaw/plugin-sdk/channel-lifecycle`, and `channel-outbound` has exported the same function since 2026.5.28.
+- The plugin no longer fails to load on OpenClaw 2026.9.9 and later with `libvips-cpp.so: cannot open shared object file`. Those releases stage native modules in separate directories, so `sharp` cannot find `libvips`. `sharp` is now imported only when an image preview is built; if it cannot load, the image is sent as a document without a preview, as on any other preview failure.
+- The tarball scan finds the OpenClaw scanner in 2026.5 (`scanner-*.js`).
+
+### Changed
+- The minimum OpenClaw version is 2026.5.28 (was 2026.3.22) in `package.json` (`openclaw.compat`, `peerDependencies`), `openclaw.plugin.json` and the README. CI tests the locked OpenClaw at that floor.
 
 ## [1.2.12] - 2026-09-29
 

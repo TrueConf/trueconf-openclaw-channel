@@ -6,7 +6,7 @@
   "channels": [
     "trueconf"
   ],
-  "minOpenClawVersion": "2026.3.22",
+  "minOpenClawVersion": "2026.5.28",
   "contracts": {
     "tools": [
       "remember_bot_nickname",

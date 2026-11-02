@@ -57,7 +57,7 @@
 
 ## Требования
 
-- **OpenClaw** >= 2026.3.22
+- **OpenClaw** >= 2026.5.28
 - **TrueConf Server** >= 5.5.3 
 - **Учётная запись бота** на TrueConf Server 
 

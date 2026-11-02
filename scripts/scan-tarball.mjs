@@ -54,12 +54,13 @@ function walkScannable(dirAbs) {
 }
 
 // The openclaw scanner is a hashed chunk under node_modules/openclaw/dist and
-// the hash rotates per release, so glob-find it. Through 2026.8 it is
-// skill-scanner-{8 chars}.js exposing the scan function as minified `t`; from
-// 2026.9 it is a scanner-{8 chars}.mjs re-export chunk with named exports.
+// the hash rotates per release, so glob-find it. Older releases ship
+// skill-scanner-{8 chars}.js exposing the scan function as minified `t`;
+// 2026.5 has a scanner-{8 chars}.js and 2026.9 a scanner-{8 chars}.mjs
+// re-export chunk, both with named exports.
 const SCANNER_CHUNKS = [
   { pattern: /^skill-scanner-[A-Za-z0-9_-]{8}\.js$/, exportName: 't' },
-  { pattern: /^scanner-[A-Za-z0-9_-]{8}\.mjs$/, exportName: 'scanDirectoryWithSummary' },
+  { pattern: /^scanner-[A-Za-z0-9_-]{8}\.m?js$/, exportName: 'scanDirectoryWithSummary' },
 ]
 
 export async function resolveScannerModule() {

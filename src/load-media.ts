@@ -2,8 +2,7 @@ import { readFile as fsReadFile, realpath as fsRealpath } from 'node:fs/promises
 import { basename, isAbsolute as pathIsAbsolute, resolve as pathResolve, sep as pathSep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { request } from 'undici'
-import { getDefaultDispatcher } from './default-dispatcher'
+import { fetchWithSsrFGuard } from 'openclaw/plugin-sdk/ssrf-runtime'
 
 export type WebMediaResult = {
   buffer: Buffer
@@ -98,58 +97,50 @@ async function loadLocalFile(
   }
 }
 
+// The URL comes from the agent, so the fetch goes through OpenClaw's SSRF guard:
+// it refuses private, loopback and link-local targets, checks every redirect and
+// pins the resolved address, so the bot cannot be used to read internal services
+// and post the response to a chat.
 async function loadHttpMedia(
   mediaUrl: string,
   options: OutboundMediaLoadOptions,
 ): Promise<WebMediaResult> {
-  const { statusCode, headers, body } = await request(mediaUrl, {
-    method: 'GET',
-    headersTimeout: 15_000,
-    bodyTimeout: 60_000,
-    dispatcher: getDefaultDispatcher(),
-  })
-  if (statusCode < 200 || statusCode >= 300) {
-    body.destroy()
-    throw new Error(`Failed to fetch media: HTTP ${statusCode}`)
-  }
-  const cap = options.maxBytes
-  const chunks: Buffer[] = []
-  let total = 0
+  const { response, finalUrl, release } = await fetchWithSsrFGuard({ url: mediaUrl, timeoutMs: 60_000 })
   try {
-    for await (const chunk of body) {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array)
-      total += buf.byteLength
-      if (cap !== undefined && total > cap) {
-        body.destroy()
-        throw new Error(`Media exceeds maxBytes (${total} > ${cap})`)
+    if (!response.ok) {
+      throw new Error(`Failed to fetch media: HTTP ${response.status}`)
+    }
+    const cap = options.maxBytes
+    const chunks: Buffer[] = []
+    let total = 0
+    if (response.body) {
+      for await (const chunk of response.body) {
+        total += chunk.byteLength
+        if (cap !== undefined && total > cap) {
+          throw new Error(`Media exceeds maxBytes (${total} > ${cap})`)
+        }
+        chunks.push(Buffer.from(chunk))
       }
-      chunks.push(buf)
     }
-  } catch (err) {
-    if (!body.destroyed) body.destroy()
-    throw err
-  }
-  const buffer = Buffer.concat(chunks, total)
+    const buffer = Buffer.concat(chunks, total)
 
-  const contentTypeHeader = headers['content-type']
-  const contentType = Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : contentTypeHeader
-  const dispositionHeader = headers['content-disposition']
-  const disposition = Array.isArray(dispositionHeader) ? dispositionHeader[0] : dispositionHeader
-
-  let fileName = parseFilenameFromContentDisposition(disposition)
-  if (!fileName) {
-    try {
-      const parsedName = basename(new URL(mediaUrl).pathname)
-      if (parsedName) fileName = parsedName
-    } catch {
-      /* ignore — URL was not parseable for fileName extraction */
+    let fileName = parseFilenameFromContentDisposition(response.headers.get('content-disposition') ?? undefined)
+    if (!fileName) {
+      try {
+        const parsedName = basename(new URL(finalUrl).pathname)
+        if (parsedName) fileName = parsedName
+      } catch {
+        /* ignore — URL was not parseable for fileName extraction */
+      }
     }
-  }
 
-  return {
-    buffer,
-    contentType: typeof contentType === 'string' ? contentType : undefined,
-    fileName,
+    return {
+      buffer,
+      contentType: response.headers.get('content-type') ?? undefined,
+      fileName,
+    }
+  } finally {
+    await release()
   }
 }
 

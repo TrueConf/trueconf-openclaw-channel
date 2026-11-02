@@ -1,6 +1,5 @@
 import { loadOutboundMediaFromUrl } from './load-media'
 import { kindFromMime, type MediaKind } from 'openclaw/plugin-sdk/media-runtime'
-import sharp from 'sharp'
 import type { Dispatcher } from 'undici'
 import { ErrorCode } from './types'
 import type { Logger, TrueConfChannelConfig, TrueConfResponse } from './types'
@@ -24,6 +23,9 @@ const PREVIEW_QUALITY = 70
 // it lands as a downloadable document. For image MIMEs we downscale the
 // original into a small WebP via sharp. Failure is non-fatal: we fall back to
 // document rendering rather than blocking the send.
+// sharp is imported here, not at the top: OpenClaw 2026.9.9+ stages native
+// modules so that sharp cannot find libvips-cpp.so, and a top-level import
+// would fail the whole plugin load instead of just the preview.
 async function buildImagePreview(
   buffer: Buffer,
   mimeType: string,
@@ -31,6 +33,7 @@ async function buildImagePreview(
 ): Promise<Buffer | null> {
   if (!mimeType.startsWith('image/')) return null
   try {
+    const { default: sharp } = await import('sharp')
     return await sharp(buffer, { failOn: 'none' })
       .resize(PREVIEW_MAX_SIDE, PREVIEW_MAX_SIDE, { fit: 'inside', withoutEnlargement: true })
       .webp({ quality: PREVIEW_QUALITY })

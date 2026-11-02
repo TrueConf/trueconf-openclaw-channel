@@ -5,7 +5,7 @@ import {
   resolveSendableOutboundReplyParts,
   type OutboundReplyPayload,
 } from "openclaw/plugin-sdk/reply-payload"
-import { waitUntilAbort } from "openclaw/plugin-sdk/channel-lifecycle"
+import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound"
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'

@@ -218,6 +218,42 @@ describe('FileUploadLimits.getMaxBytes', () => {
   })
 })
 
+describe('FileUploadLimits.updateFromServer missing fields', () => {
+  it('an empty push keeps the size cap and the extension filter', () => {
+    const limits = new FileUploadLimits(1234)
+    limits.updateFromServer({ maxSize: 1000, extensions: { mode: 'block', list: ['exe'] } })
+    limits.updateFromServer({})
+    expect(limits.getMaxBytes()).toBe(1000)
+    expect(limits.validateFile('setup.exe', 10)).toEqual({
+      ok: false,
+      reason: 'extension_blocked',
+      detail: "extension 'exe' is in block-list",
+    })
+  })
+
+  it('an empty push before any server limits keeps the static cap', () => {
+    const limits = new FileUploadLimits(1234)
+    limits.updateFromServer({})
+    expect(limits.getMaxBytes()).toBe(1234)
+  })
+
+  it('a push with only maxSize leaves the extension filter in place', () => {
+    const limits = new FileUploadLimits(1234)
+    limits.updateFromServer({ maxSize: 1000, extensions: { mode: 'allow', list: ['pdf'] } })
+    limits.updateFromServer({ maxSize: 2000 })
+    expect(limits.getMaxBytes()).toBe(2000)
+    expect(limits.validateFile('a.png', 10).ok).toBe(false)
+  })
+
+  it('a push with only extensions: null clears the filter and keeps the size cap', () => {
+    const limits = new FileUploadLimits(1234)
+    limits.updateFromServer({ maxSize: 1000, extensions: { mode: 'allow', list: ['pdf'] } })
+    limits.updateFromServer({ extensions: null })
+    expect(limits.getMaxBytes()).toBe(1000)
+    expect(limits.validateFile('a.png', 10)).toEqual({ ok: true })
+  })
+})
+
 describe('FileUploadLimits.updateFromServer corrupt payloads', () => {
   it('non-int maxSize → warn + no-op', () => {
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }

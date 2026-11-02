@@ -317,6 +317,8 @@ export class FileUploadLimits {
 
   /**
    * Validate + apply atomically. Corrupt payload → log warn + no-op (no partial state change).
+   * Only an explicit `null` disables a limit; a field missing from the payload keeps its
+   * current value, so an empty or partial push cannot drop restrictions.
    */
   updateFromServer(payload: Record<string, unknown>): void {
     const validatedMax = validateMaxSize(payload['maxSize'])
@@ -330,8 +332,11 @@ export class FileUploadLimits {
       return
     }
 
-    this.maxSizeFromServer = validatedMax.value
-    this.hasServerMaxSize = true
+    if (validatedMax.value !== undefined) {
+      this.maxSizeFromServer = validatedMax.value
+      this.hasServerMaxSize = true
+    }
+    if (validatedExt.value === undefined) return
     if (validatedExt.value === null) {
       this.filterMode = null
       this.extensionsSet = null
@@ -396,8 +401,8 @@ export class FileUploadLimits {
 
 type ValidatedField<T> = { ok: true; value: T } | { ok: false; detail: string }
 
-function validateMaxSize(raw: unknown): ValidatedField<number | null> {
-  if (raw === null || raw === undefined) return { ok: true, value: null }
+function validateMaxSize(raw: unknown): ValidatedField<number | null | undefined> {
+  if (raw === null || raw === undefined) return { ok: true, value: raw }
   // Strict positive: maxSize=0 would block ALL uploads (footgun). Python's contract uses
   // `null` to mean "disabled" — `0` should be rejected so a misbehaving server can't lock
   // out file transfer with a single push.
@@ -407,8 +412,8 @@ function validateMaxSize(raw: unknown): ValidatedField<number | null> {
   return { ok: true, value: raw }
 }
 
-function validateExtensions(raw: unknown): ValidatedField<ServerExtensionsPayload | null> {
-  if (raw === null || raw === undefined) return { ok: true, value: null }
+function validateExtensions(raw: unknown): ValidatedField<ServerExtensionsPayload | null | undefined> {
+  if (raw === null || raw === undefined) return { ok: true, value: raw }
   if (typeof raw !== 'object') {
     return { ok: false, detail: `extensions must be object|null, got ${typeof raw}` }
   }

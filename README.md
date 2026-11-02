@@ -57,7 +57,7 @@ After installation, the OpenClaw AI agent communicates with users via TrueConf �
 
 With this channel, OpenClaw can:
 
-- **Work in group chats** — in a group the bot responds only when mentioned with `@` or when someone replies to its message (see the [Group Chats](#group-chats) section)
+- **Work in group chats** — in a group the bot responds when mentioned with `@`, when someone replies to its message, or when a message contains one of its nicknames (see the [Group Chats](#group-chats) section)
 - **Work across federation** — a bot on one TrueConf server replies to users on other servers via federation (see the [Cross-Server Federation](#cross-server-federation) section)
 - **Survive transient disconnects** — outbound messages park during WS reconnects and token rotations, then drain after re-auth (no manual retry, nothing lost)
 
@@ -76,8 +76,8 @@ Prerequisites: `npm`, `openclaw` >= 2026.8.1 (`npm install -g openclaw@latest`),
 ### From npm (recommended)
 
 ```bash
-openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel
-npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
+openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.2.16
+npx -y -p @trueconf-community/trueconf-openclaw-channel@1.2.16 trueconf-setup
 openclaw gateway
 ```
 
@@ -105,14 +105,14 @@ export TRUECONF_USERNAME=bot_user              # account login only, without the
 export TRUECONF_PASSWORD=secret
 export TRUECONF_USE_TLS=true                   # optional; default — auto-detect
 export TRUECONF_PORT=443                       # optional; any port 1-65535
-export TRUECONF_ACCEPT_UNTRUSTED_CA=true       # required if the cert is self-signed and the wizard should download it
+export TRUECONF_CA_PATH=/etc/trueconf/ca.pem   # if the cert is self-signed: the CA from the server admin
 
-openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel
-npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
+openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.2.16
+npx -y -p @trueconf-community/trueconf-openclaw-channel@1.2.16 trueconf-setup
 openclaw gateway
 ```
 
-Without `TRUECONF_ACCEPT_UNTRUSTED_CA=true`, on a self-signed certificate the wizard fails with `Self-signed cert detected; set TRUECONF_ACCEPT_UNTRUSTED_CA=true to auto-download chain`.
+On a self-signed certificate without `TRUECONF_CA_PATH` the wizard fails with `Self-signed cert detected; set TRUECONF_ACCEPT_UNTRUSTED_CA=true to auto-download chain`. `TRUECONF_ACCEPT_UNTRUSTED_CA=true` trusts whatever chain the server presents on first contact, so use it only in a trusted network (see [Headless-specific notes](#headless-specific-notes)).
 
 ### Re-running setup
 
@@ -302,7 +302,7 @@ On every subsequent run of `trueconf-setup`, the stored trust mode is re-checked
 
 - `TRUECONF_CA_PATH=/etc/trueconf/ca.pem` — preferred for production CI/Docker.
 - `TRUECONF_TLS_VERIFY=false` — last-resort insecure mode. Mutually exclusive with `TRUECONF_CA_PATH`.
-- `TRUECONF_ACCEPT_UNTRUSTED_CA=true` — legacy option that auto-downloads the server's chain into `~/.openclaw/trueconf-ca.pem`. **Use only in trusted networks**; anywhere MITM is possible, use `TRUECONF_CA_PATH` or `TRUECONF_TLS_VERIFY=false` instead.
+- `TRUECONF_ACCEPT_UNTRUSTED_CA=true` — legacy option that auto-downloads the server's chain into `~/.openclaw/trueconf-ca.pem`. **Use only in trusted networks**; anywhere MITM is possible, use `TRUECONF_CA_PATH` with the CA from the server admin.
 
 ### Wizard language
 
@@ -314,15 +314,25 @@ The channel works in group chats. Unlike direct messages, where the bot replies 
 
 - **`@` mention**
 - **reply to the bot's message** — click "Reply" on one of the bot's recent messages. Buffer: last 50 bot messages per chat.
+- **one of the bot's nicknames** as a whole word in the message (see [Bot nicknames](#bot-nicknames)).
 
-Messages without a reply or mention are visible to the bot but get no response. The log will contain `[trueconf] group <chatId>: no mention/reply, dropping`.
+Messages without a reply, mention or nickname are visible to the bot but get no response. The log will contain `[trueconf] group <chatId>: no mention/reply, dropping`.
 
 **Technical details:**
 
 - Chat type is determined via `getChatByID` on the first message in a new chat and cached until the gateway restarts. 
 - Each group = one shared session. The bot's conversation history is shared across the group, not per participant. Each message's `senderId` is preserved so the LLM knows who is speaking.
-- `dmPolicy` applies only to direct messages. In groups, filtering is based solely on mention/reply.
+- `dmPolicy` applies only to direct messages. In groups, filtering is based solely on mention, reply and nicknames.
 - TrueConf channels (`chatType=6`) are ignored — the bot does not respond in them. Log: `[trueconf] dropping channel message chatId=<id>`.
+
+### Bot nicknames
+
+Besides `@`, the bot can answer to nicknames such as "Клешня". Ask the bot in any chat ("запомни, тебя зовут Клешня") and the agent stores the name with its `remember_bot_nickname` tool; `forget_bot_nickname` removes one and `list_bot_nicknames` lists them.
+
+- One list serves **every group of every account** of this gateway: a nickname added in one chat makes the bot answer to it everywhere.
+- Only the OpenClaw owner and senders listed in `channels.trueconf.allowFrom` can add or remove nicknames (`"*"` lets everyone). Anyone can list them.
+- A nickname needs at least 3 characters; very common words (`да`, `ок`, `бот` and the like) are refused. Up to 50 nicknames.
+- The list is stored in `trueconf-nicknames.json` in the OpenClaw state directory (`~/.openclaw` by default).
 
 ### Always-respond chats
 
@@ -431,11 +441,11 @@ Six tunables expose the network-resilience knobs that ship with sensible default
 
 ### `openclaw plugins install` blocked by security scanner
 
-- **Symptom:** `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel` aborts with a critical scanner finding citing `Environment variable access combined with network send` in `bin/trueconf-setup.mjs`, `src/channel-setup.ts`, or `src/ws-client.ts`.
+- **Symptom:** `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.2.16` aborts with a critical scanner finding citing `Environment variable access combined with network send` in `bin/trueconf-setup.mjs`, `src/channel-setup.ts`, or `src/ws-client.ts`.
 - **Cause:** The openclaw plugin scanner uses a per-file regex that flags any source file containing both `process.env` and one of `fetch` / `post` / `http.request`. Versions of this plugin earlier than the scanner-friendly refactor inlined the env reads in those files; the current release moved them to `src/env-config.ts` so the scanner regex no longer matches.
 - **Solution:** Upgrade to the latest published `@trueconf-community/trueconf-openclaw-channel` — the scanner-friendly refactor is shipped. If you are pinned to an older version (or your openclaw build uses a customized scanner ruleset that still flags the current release), the fallback is to install with the dangerous-flag override:
   ```bash
-  openclaw plugins install --accept-capabilities --dangerously-force-unsafe-install @trueconf-community/trueconf-openclaw-channel
+  openclaw plugins install --accept-capabilities --dangerously-force-unsafe-install @trueconf-community/trueconf-openclaw-channel@1.2.16
   ```
 - **What not to do:** Do not adopt `--dangerously-force-unsafe-install` as a default install command. The flag bypasses ALL plugin-security checks, not just the env-harvesting rule, for ALL plugins it installs. Use the upgraded plugin first; reach for the flag only as a last-resort compatibility shim.
 
@@ -445,8 +455,8 @@ Six tunables expose the network-resilience knobs that ship with sensible default
 - **Cause:** `trueconf-setup` was run via `npx -p ... trueconf-setup` **without** a prior `openclaw plugins install`. The wizard then recorded the disposable npx cache dir (`~/.npm/_npx/<hash>/...`) as the plugin load path; once npm evicts that cache, the channel can no longer be found.
 - **Solution:** remove the stale `~/.npm/_npx/...` entry from `plugins.load.paths` in `~/.openclaw/openclaw.json` (or run `openclaw doctor --fix` if your openclaw build supports it), then reinstall and re-run setup:
   ```bash
-  openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel
-  npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
+  openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.2.16
+  npx -y -p @trueconf-community/trueconf-openclaw-channel@1.2.16 trueconf-setup
   openclaw gateway
   ```
   (Or run `openclaw onboard` and pick TrueConf instead of the `npx ... trueconf-setup` step.) Always run `openclaw plugins install` **before** `trueconf-setup`. Recent versions fail fast with this guidance instead of writing the bad path.
@@ -455,7 +465,7 @@ Six tunables expose the network-resilience knobs that ship with sensible default
 
 - **Symptom:** the plugin was installed and loading fine, but after a successful `trueconf-setup` run the gateway silently skips it — no `[trueconf]` lines in the log, the channel is missing from `openclaw channels status`.
 - **Cause:** plugin versions before 1.2.9 removed `plugins.entries.trueconf` from `openclaw.json` as a "stale" entry (1.2.8 fixed this for tarball installs but missed registry installs, which live under `~/.openclaw/npm/projects/`). On openclaw 2026.6.x that entry is the live enable record for an installed plugin, so deleting it disabled the plugin.
-- **Solution:** upgrade the plugin to >= 1.2.9 (the cleanup now only runs when no install evidence exists), then restore the entry — either re-run `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel`, or add it back manually in `~/.openclaw/openclaw.json`:
+- **Solution:** upgrade the plugin to >= 1.2.9 (the cleanup now only runs when no install evidence exists), then restore the entry — either re-run `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.2.16`, or add it back manually in `~/.openclaw/openclaw.json`:
   ```json
   { "plugins": { "entries": { "trueconf": { "enabled": true } } } }
   ```

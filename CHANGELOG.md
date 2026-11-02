@@ -1,8 +1,18 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.16] - 2026-11-02
+
+### Security
+- Reply attachments given as `http(s)` URLs are fetched through OpenClaw's SSRF guard (`fetchWithSsrFGuard`). Before, the plugin fetched any URL the agent named, so a prompt could make the bot read a loopback, private-network or cloud-metadata address and post the response to a chat. **Behavior change:** such URLs now fail with `Blocked hostname or private/internal/special-use IP address`; redirects are re-checked and the resolved address is pinned. To send a file from an internal server, save it into an OpenClaw media directory and send it as a local file.
+- Only the OpenClaw owner and senders listed in `channels.trueconf.allowFrom` (`"*"` lists everyone) can add or remove bot nicknames. Before, any group member could ask the agent to add a nickname, and the bot would then answer to it in every group of every account. Listing nicknames stays open.
+
+### Fixed
+- A `getFileUploadLimits` push that omits `maxSize` or `extensions` no longer removes that limit. Before, a missing field was read as `null` ("limit disabled"), so an empty push dropped the size cap and the extension filter. Only an explicit `null` disables a limit now.
+- Nickname changes take a lock file (`trueconf-nicknames.json.lock`) and re-read the list inside it, so two OpenClaw processes adding nicknames at once no longer drop each other's write. When another process holds the lock for 2 seconds, the tool answers that the list is busy.
 
 ### Changed
+- The README install and setup commands name the exact plugin version, so `openclaw plugins install` and `npx ... trueconf-setup` run the same release. A test keeps the pinned version equal to `package.json`.
+- The README describes nickname activation in groups and its global scope, and no longer suggests `TRUECONF_TLS_VERIFY=false` where a MITM is possible: on a self-signed server it points to `TRUECONF_CA_PATH` with the CA from the server admin. `tlsVerify: false` stays available as the last-resort mode it was.
 - Packages can be checked with ClawHub's scanners before a release. `npm run scan:clawhub` runs ClawHub's static scan, from ClawHub's own code at a pinned commit, on the working tree or a `.tgz`; its findings match the site. The first run downloads ClawHub and its dependencies (about 1.3 GB) into `node_modules/.cache/clawhub`. The **ClawHub scan** workflow (Actions tab, any branch or a published `version`) runs that scan plus ClawScan's `clawhub` profile, which matches ClawHub's production suite: SkillSpector, ClawScan static, A.I.G (skipped for plugins) and a Codex judge that reads the whole package. ClawScan is built from a pinned `main` commit, which passes partial SkillSpector reports to the judge, and the judge runs on OpenRouter (`gpt-6.1-sol`, secret `OPENROUTER_API_KEY`). The verdict and findings are in the run summary; the full report is attached to the run.
 - `clawhub-publish.yml` runs the `clawhub` CLI directly under Node 24 instead of ClawHub's reusable workflow, which runs `package validate` under Bun and now fails.
 

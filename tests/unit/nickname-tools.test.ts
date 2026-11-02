@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, it, expect, vi } from 'vitest'
-import { createNicknameTools } from '../../src/nickname-tools'
+import { canEditNicknames, createNicknameTools } from '../../src/nickname-tools'
 
 const store = (over: Record<string, unknown> = {}) => ({
   add: vi.fn(() => ({ status: 'added' })),
@@ -10,12 +10,12 @@ const store = (over: Record<string, unknown> = {}) => ({
   ...over,
 })
 
-const find = (s: ReturnType<typeof store>, name: string) =>
-  createNicknameTools(s as never).find((t) => t.name === name)!
+const find = (s: ReturnType<typeof store>, name: string, canEdit = true) =>
+  createNicknameTools(s as never, canEdit).find((t) => t.name === name)!
 
 describe('nickname tools', () => {
   it('exposes three tools with label+parameters', () => {
-    const tools = createNicknameTools(store() as never)
+    const tools = createNicknameTools(store() as never, true)
     expect(tools.map((t) => t.name)).toEqual(['remember_bot_nickname', 'forget_bot_nickname', 'list_bot_nicknames'])
     for (const t of tools) {
       expect(typeof t.label).toBe('string')
@@ -39,6 +39,18 @@ describe('nickname tools', () => {
     expect(await text('cap')).toContain('лимит')
     expect(await text('persist_failed')).toContain('пропадёт после перезапуска')
     expect(await text('exists')).toContain('уже задан')
+    expect(await text('busy')).toContain('попробуй ещё раз')
+  })
+
+  it('refuses to change nicknames for a requester without rights, but still lists them', async () => {
+    const s = store()
+    const refusal =
+      'Менять псевдонимы могут только пользователи из channels.trueconf.allowFrom: псевдонимы действуют во всех группах бота.'
+    expect((await find(s, 'remember_bot_nickname', false).execute('id', { name: 'клешня' })).content[0].text).toBe(refusal)
+    expect((await find(s, 'forget_bot_nickname', false).execute('id', { name: 'клешня' })).content[0].text).toBe(refusal)
+    expect(s.add).not.toHaveBeenCalled()
+    expect(s.remove).not.toHaveBeenCalled()
+    expect((await find(s, 'list_bot_nicknames', false).execute('id', {})).content[0].text).toBe('Псевдонимы: клешня.')
   })
 
   it('forget reports removed / not-found / persist_failed', async () => {
@@ -47,6 +59,7 @@ describe('nickname tools', () => {
     expect(await text('removed')).toContain('Убрал')
     expect(await text('not_found')).toContain('не найден')
     expect(await text('persist_failed')).toContain('вернётся после перезапуска')
+    expect(await text('busy')).toContain('попробуй ещё раз')
   })
 
   it('list returns current names, or a placeholder when empty', async () => {
@@ -64,5 +77,43 @@ describe('nickname tools', () => {
     ) as { contracts?: { tools?: string[] } }
     const declared = manifest.contracts?.tools ?? []
     for (const t of createNicknameTools(store() as never)) expect(declared).toContain(t.name)
+  })
+})
+
+describe('canEditNicknames', () => {
+  const cfg = (allowFrom?: string[]) => ({ channels: { trueconf: { serverUrl: 's', username: 'u', password: 'p', allowFrom } } })
+
+  it('allows a TrueConf sender listed in allowFrom', () => {
+    expect(canEditNicknames({ messageChannel: 'trueconf', requesterSenderId: 'alice@srv', config: cfg(['alice@srv']) })).toBe(true)
+  })
+
+  it('refuses a TrueConf sender missing from allowFrom, or any sender when allowFrom is empty', () => {
+    expect(canEditNicknames({ messageChannel: 'trueconf', requesterSenderId: 'bob@srv', config: cfg(['alice@srv']) })).toBe(false)
+    expect(canEditNicknames({ messageChannel: 'trueconf', requesterSenderId: 'bob@srv', config: cfg() })).toBe(false)
+  })
+
+  it('allows everyone when allowFrom lists "*"', () => {
+    expect(canEditNicknames({ messageChannel: 'trueconf', requesterSenderId: 'bob@srv', config: cfg(['*']) })).toBe(true)
+  })
+
+  it('prefers the runtime config snapshot over the static one', () => {
+    expect(
+      canEditNicknames({
+        messageChannel: 'trueconf',
+        requesterSenderId: 'bob@srv',
+        config: cfg(['alice@srv']),
+        getRuntimeConfig: () => cfg(['bob@srv']),
+      }),
+    ).toBe(true)
+  })
+
+  it('refuses a run without a trusted TrueConf sender', () => {
+    expect(canEditNicknames({ messageChannel: 'telegram', requesterSenderId: 'alice@srv', config: cfg(['alice@srv']) })).toBe(false)
+    expect(canEditNicknames({ messageChannel: 'trueconf', config: cfg(['*']) })).toBe(false)
+    expect(canEditNicknames({})).toBe(false)
+  })
+
+  it('allows the owner on any channel', () => {
+    expect(canEditNicknames({ senderIsOwner: true, messageChannel: 'webchat' })).toBe(true)
   })
 })

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -51,5 +53,38 @@ describe('loadOutboundMediaFromUrl: local files', () => {
     await expect(
       loadOutboundMediaFromUrl(join(root, 'escape', 'secret.txt'), { mediaLocalRoots: [root] }),
     ).rejects.toMatchObject({ code: 'EACCES' })
+  })
+})
+
+describe('loadOutboundMediaFromUrl: remote URLs', () => {
+  let server: Server
+  let hits: number
+  let port: number
+
+  beforeEach(async () => {
+    hits = 0
+    server = createServer((_req, res) => {
+      hits++
+      res.end('internal')
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    port = (server.address() as AddressInfo).port
+  })
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  })
+
+  it.each(['127.0.0.1', 'localhost'])('refuses %s without sending the request', async (host) => {
+    await expect(loadOutboundMediaFromUrl(`http://${host}:${port}/secret.png`)).rejects.toThrow(
+      'Blocked hostname or private/internal/special-use IP address',
+    )
+    expect(hits).toBe(0)
+  })
+
+  it('refuses the cloud metadata address', async () => {
+    await expect(loadOutboundMediaFromUrl('http://169.254.169.254/latest/meta-data/')).rejects.toThrow(
+      'Blocked hostname or private/internal/special-use IP address',
+    )
   })
 })

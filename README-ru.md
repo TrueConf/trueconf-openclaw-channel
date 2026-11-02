@@ -54,7 +54,7 @@
 
 С помощью этого канала OpenClaw умеет:
 
-- **Работать в групповых чатах** — отвечает в группе только когда его упомянули через @ или ответили на его сообщение (смотрите раздел [Групповые чаты](#групповые-чаты))
+- **Работать в групповых чатах** — отвечает в группе, когда его упомянули через @, ответили на его сообщение или написали один из его псевдонимов (смотрите раздел [Групповые чаты](#групповые-чаты))
 - **Работать через федерацию** — бот на одном TrueConf-сервере отвечает пользователям с других серверов по федерации (см. раздел [Межсерверная федерация](#межсерверная-федерация))
 - **Переживать обрывы соединения** — исходящие сообщения паркуются на время WS-реконнекта и ротации токена, доставляются после re-auth (без ручного retry, ничего не теряется)
 
@@ -73,8 +73,8 @@
 ### Из npm (рекомендуется)
 
 ```bash
-openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel
-npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
+openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.2.16
+npx -y -p @trueconf-community/trueconf-openclaw-channel@1.2.16 trueconf-setup
 openclaw gateway
 ```
 
@@ -102,14 +102,14 @@ export TRUECONF_USERNAME=bot_user              # только логин уче�
 export TRUECONF_PASSWORD=secret
 export TRUECONF_USE_TLS=true                   # опционально; по умолчанию — auto-detect
 export TRUECONF_PORT=443                       # опционально; любой порт 1-65535
-export TRUECONF_ACCEPT_UNTRUSTED_CA=true       # обязательно если cert самоподписанный и мастер установки должен его скачать
+export TRUECONF_CA_PATH=/etc/trueconf/ca.pem   # если cert самоподписанный: CA от админа сервера
 
-openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel
-npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
+openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.2.16
+npx -y -p @trueconf-community/trueconf-openclaw-channel@1.2.16 trueconf-setup
 openclaw gateway
 ```
 
-Без `TRUECONF_ACCEPT_UNTRUSTED_CA=true` мастер установки при встрече самоподписанного сертификата завершится с ошибкой `Self-signed cert detected; set TRUECONF_ACCEPT_UNTRUSTED_CA=true to auto-download chain`.
+На самоподписанном сертификате без `TRUECONF_CA_PATH` мастер установки завершится с ошибкой `Self-signed cert detected; set TRUECONF_ACCEPT_UNTRUSTED_CA=true to auto-download chain`. `TRUECONF_ACCEPT_UNTRUSTED_CA=true` доверяет той цепочке, которую сервер покажет при первом подключении, поэтому используйте его только в доверенной сети.
 
 ### Повторный запуск настройки
 
@@ -299,7 +299,7 @@ Probe видит `authorized: true`, мастер не задаёт trust-воп
 
 - `TRUECONF_CA_PATH=/etc/trueconf/ca.pem` — предпочтительно для production CI/Docker.
 - `TRUECONF_TLS_VERIFY=false` — last-resort режим. Несовместим с `TRUECONF_CA_PATH`.
-- `TRUECONF_ACCEPT_UNTRUSTED_CA=true` — legacy опция автоскачивания цепи сервера в `~/.openclaw/trueconf-ca.pem`. **Использовать только в доверенных сетях**; где возможен MITM, используйте `TRUECONF_CA_PATH` или `TRUECONF_TLS_VERIFY=false`.
+- `TRUECONF_ACCEPT_UNTRUSTED_CA=true` — legacy опция автоскачивания цепи сервера в `~/.openclaw/trueconf-ca.pem`. **Использовать только в доверенных сетях**; где возможен MITM, используйте `TRUECONF_CA_PATH` с CA от админа сервера.
 
 ### Язык мастера настройки
 
@@ -311,15 +311,25 @@ Probe видит `authorized: true`, мастер не задаёт trust-воп
 
 - **@-упоминание**
 - **ответ на сообщение бота** — нажмите «Ответить» на одно из последних сообщений бота. Буфер: 50 последних сообщений бота на чат.
+- **один из псевдонимов бота** отдельным словом в сообщении (см. [Псевдонимы бота](#псевдонимы-бота)).
 
-Сообщения без ответа и упоминания бот видит, но не отвечает на них. В логе будет строка `[trueconf] group <chatId>: no mention/reply, dropping`.
+Сообщения без ответа, упоминания и псевдонима бот видит, но не отвечает на них. В логе будет строка `[trueconf] group <chatId>: no mention/reply, dropping`.
 
 **Технические детали:**
 
 - Тип чата определяется через `getChatByID` при первом сообщении в новый чат и кешируется до перезапуска gateway. 
 - Каждая группа = одна общая сессия. История разговора у бота общая на всю группу, не персональная на участника. `senderId` каждого сообщения сохраняется, чтобы LLM знал, кто пишет.
-- Параметр `dmPolicy` действует только в личных диалогах. В группах фильтрация — только через mention/reply.
+- Параметр `dmPolicy` действует только в личных диалогах. В группах фильтрация — только через упоминание, ответ и псевдонимы.
 - Каналы TrueConf (`chatType=6`) игнорируются — бот не реагирует на сообщения в них. В логе: `[trueconf] dropping channel message chatId=<id>`.
+
+### Псевдонимы бота
+
+Кроме `@` бот может откликаться на псевдонимы вроде «Клешня». Попросите бота в любом чате («запомни, тебя зовут Клешня»), и агент сохранит имя инструментом `remember_bot_nickname`; `forget_bot_nickname` убирает псевдоним, `list_bot_nicknames` показывает список.
+
+- Список один на **все группы всех аккаунтов** этого gateway: псевдоним, добавленный в одном чате, работает везде.
+- Добавлять и убирать псевдонимы могут только владелец OpenClaw и отправители из `channels.trueconf.allowFrom` (`"*"` разрешает всем). Смотреть список может любой.
+- Псевдоним — минимум 3 символа; совсем общие слова (`да`, `ок`, `бот` и подобные) не принимаются. Не больше 50 псевдонимов.
+- Список хранится в `trueconf-nicknames.json` в каталоге состояния OpenClaw (по умолчанию `~/.openclaw`).
 
 ### Чаты, где бот всегда отвечает
 
@@ -428,11 +438,11 @@ Callback `setChatMutationHandler` (события edit / remove / clearHistory) 
 
 ### `openclaw plugins install` блокируется сканером безопасности
 
-- **Симптом:** `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel` падает с critical-находкой сканера про `Environment variable access combined with network send` в `bin/trueconf-setup.mjs`, `src/channel-setup.ts` или `src/ws-client.ts`.
+- **Симптом:** `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.2.16` падает с critical-находкой сканера про `Environment variable access combined with network send` в `bin/trueconf-setup.mjs`, `src/channel-setup.ts` или `src/ws-client.ts`.
 - **Причина:** Сканер плагинов openclaw использует per-file regex, который ловит любой исходный файл, содержащий и `process.env`, и одно из `fetch` / `post` / `http.request`. Версии плагина до scanner-friendly рефакторинга держали env-чтения inline в этих файлах; в текущем релизе они вынесены в `src/env-config.ts`, поэтому regex сканера больше не срабатывает.
 - **Решение:** Обновитесь до последней опубликованной версии `@trueconf-community/trueconf-openclaw-channel` — scanner-friendly рефакторинг уже в релизе. Если вы запинены на старой версии (или ваша сборка openclaw использует кастомный набор правил сканера, который всё равно flags текущий релиз), fallback — install с dangerous-flag override:
   ```bash
-  openclaw plugins install --accept-capabilities --dangerously-force-unsafe-install @trueconf-community/trueconf-openclaw-channel
+  openclaw plugins install --accept-capabilities --dangerously-force-unsafe-install @trueconf-community/trueconf-openclaw-channel@1.2.16
   ```
 - **Чего не стоит делать:** Не используйте `--dangerously-force-unsafe-install` как install-команду по умолчанию. Флаг отключает ВСЕ проверки безопасности плагинов, не только правило env-harvesting, и для ВСЕХ плагинов, которые этим флагом ставятся. Сначала пробуйте обновлённый плагин; флаг — только как last-resort совместимость со старыми версиями.
 
@@ -442,8 +452,8 @@ Callback `setChatMutationHandler` (события edit / remove / clearHistory) 
 - **Причина:** `trueconf-setup` запускали через `npx -p ... trueconf-setup` **без** предварительного `openclaw plugins install`. Мастер записал временную npx-папку (`~/.npm/_npx/<hash>/...`) как путь загрузки плагина; после очистки кэша канал перестаёт находиться.
 - **Решение:** удалите устаревшую запись `~/.npm/_npx/...` из `plugins.load.paths` в `~/.openclaw/openclaw.json` (или выполните `openclaw doctor --fix`, если ваша сборка openclaw это поддерживает), затем переустановите и запустите настройку заново:
   ```bash
-  openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel
-  npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
+  openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.2.16
+  npx -y -p @trueconf-community/trueconf-openclaw-channel@1.2.16 trueconf-setup
   openclaw gateway
   ```
   (Либо выполните `openclaw onboard` и выберите TrueConf вместо шага `npx ... trueconf-setup`.) Всегда запускайте `openclaw plugins install` **до** `trueconf-setup`. Свежие версии падают сразу с этой подсказкой, не записывая плохой путь.
@@ -452,7 +462,7 @@ Callback `setChatMutationHandler` (события edit / remove / clearHistory) 
 
 - **Симптом:** плагин был установлен и загружался, но после успешного прогона `trueconf-setup` gateway молча его пропускает — в логе нет строк `[trueconf]`, канала нет в `openclaw channels status`.
 - **Причина:** версии плагина до 1.2.9 удаляли `plugins.entries.trueconf` из `openclaw.json` как «устаревшую» запись (1.2.8 починил это для установки из tarball, но не для установки с registry — та живёт в `~/.openclaw/npm/projects/`). На openclaw 2026.6.x эта запись — живой признак включения установленного плагина, и её удаление отключало плагин.
-- **Решение:** обновите плагин до >= 1.2.9 (теперь очистка срабатывает только при отсутствии следов установки), затем восстановите запись — повторно выполните `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel` или верните её вручную в `~/.openclaw/openclaw.json`:
+- **Решение:** обновите плагин до >= 1.2.9 (теперь очистка срабатывает только при отсутствии следов установки), затем восстановите запись — повторно выполните `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.2.16` или верните её вручную в `~/.openclaw/openclaw.json`:
   ```json
   { "plugins": { "entries": { "trueconf": { "enabled": true } } } }
   ```

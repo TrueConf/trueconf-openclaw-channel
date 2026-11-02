@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.13] - 2026-11-02
 
 ### Fixed
 - The plugin loads on OpenClaw 2026.10. `waitUntilAbort` is imported from `openclaw/plugin-sdk/channel-outbound`: 2026.10 removed `openclaw/plugin-sdk/channel-lifecycle`, and `channel-outbound` has exported the same function since 2026.5.28.

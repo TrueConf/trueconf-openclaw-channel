@@ -25,6 +25,27 @@ describe('openclaw.plugin.json', () => {
     expect(loadManifest().version).toBe(pkg.version)
   })
 
+  // ClawHub requires openclaw.build.openclawVersion: the OpenClaw the package
+  // is built against, which is the locked devDependency (CI's latest job
+  // installs another one with --no-save, so read the lockfile, not node_modules).
+  it('records the locked OpenClaw as openclaw.build.openclawVersion', () => {
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
+      openclaw: { build: { openclawVersion: string } }
+    }
+    const lock = JSON.parse(readFileSync('package-lock.json', 'utf8')) as {
+      packages: Record<string, { version: string }>
+    }
+    expect(pkg.openclaw.build.openclawVersion).toBe(lock.packages['node_modules/openclaw'].version)
+  })
+
+  it('uses only manifest fields ClawHub accepts for a channel plugin', () => {
+    const manifest = loadManifest()
+    expect(manifest).toMatchObject({ id: 'trueconf', name: 'TrueConf', categories: ['channels'] })
+    expect(manifest).not.toHaveProperty('label')
+    expect(manifest).not.toHaveProperty('blurb')
+    expect(manifest).not.toHaveProperty('minOpenClawVersion')
+  })
+
   it('declares channel config metadata for TrueConf', () => {
     const manifest = loadManifest()
     const channelConfigs = manifest.channelConfigs as Record<string, unknown> | undefined

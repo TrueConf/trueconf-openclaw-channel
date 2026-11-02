@@ -51,6 +51,9 @@
       "pluginApi": ">=2026.5.28",
       "minGatewayVersion": "2026.5.28"
     },
+    "build": {
+      "openclawVersion": "2026.5.28"
+    },
     "install": {
       "npmSpec": "@trueconf-community/trueconf-openclaw-channel"
     },

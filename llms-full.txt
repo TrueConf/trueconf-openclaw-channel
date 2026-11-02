@@ -533,6 +533,12 @@ MIT
 
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- The package passes ClawHub validation and can be published there. `package.json` declares `openclaw.build.openclawVersion` (the locked OpenClaw it is built against, 2026.5.28), which ClawHub requires; a test keeps it equal to the lockfile.
+- `openclaw.plugin.json` uses `name` and `description` instead of `label` and `blurb`, declares the `channels` category, and drops `minOpenClawVersion`. OpenClaw reads none of the removed fields (the channel label and blurb come from `package.json#openclaw.channel`), and the minimum version stays in `openclaw.compat`.
+
 ## [1.2.13] - 2026-11-02
 
 ### Fixed

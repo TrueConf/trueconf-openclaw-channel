@@ -90,6 +90,15 @@ jobs:
             --sandbox-image "$CLAWSCAN_IMAGE" \
             --output clawscan-results/artifact.json
 
+      - name: TEMP debug SkillSpector
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          docker run --rm -e OPENAI_API_KEY -e OPENAI_BASE_URL=https://openrouter.ai/api/v1 \
+            -e SKILLSPECTOR_PROVIDER=openai -e SKILLSPECTOR_MODEL=openai/gpt-6.1-sol -e SKILLSPECTOR_REASONING_EFFORT=medium \
+            -v "$PWD/pkg/package:/pkg:ro" --entrypoint skillspector "$CLAWSCAN_IMAGE" \
+            scan /pkg --format json --output /tmp/r.json 2>&1 | grep -v "WARNING" | tail -120 || true
+
       - name: Summarize
         id: verdict
         if: always()

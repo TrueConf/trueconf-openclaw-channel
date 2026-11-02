@@ -13,6 +13,8 @@
 ### Changed
 - The README install and setup commands name the exact plugin version, so `openclaw plugins install` and `npx ... trueconf-setup` run the same release. A test keeps the pinned version equal to `package.json`.
 - The README describes nickname activation in groups and its global scope, and no longer suggests `TRUECONF_TLS_VERIFY=false` where a MITM is possible: on a self-signed server it points to `TRUECONF_CA_PATH` with the CA from the server admin. `tlsVerify: false` stays available as the last-resort mode it was.
+- Packages can be checked with ClawHub's scanners before a release. `npm run scan:clawhub` runs ClawHub's static scan, from ClawHub's own code at a pinned commit, on the working tree or a `.tgz`; its findings match the site. The first run downloads ClawHub and its dependencies (about 1.3 GB) into `node_modules/.cache/clawhub`. The **ClawHub scan** workflow (Actions tab, any branch or a published `version`) runs that scan plus ClawScan's `clawhub` profile, which matches ClawHub's production suite: SkillSpector, ClawScan static, A.I.G (skipped for plugins) and a Codex judge that reads the whole package. ClawScan is built from a pinned `main` commit, which passes partial SkillSpector reports to the judge, and the judge runs on OpenRouter (`gpt-6.1-sol`, secret `OPENROUTER_API_KEY`). The verdict and findings are in the run summary; the full report is attached to the run.
+- `clawhub-publish.yml` runs the `clawhub` CLI directly under Node 24 instead of ClawHub's reusable workflow, which runs `package validate` under Bun and now fails.
 
 ## [1.2.15] - 2026-11-02
 

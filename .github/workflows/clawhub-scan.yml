@@ -1,0 +1,124 @@
+name: ClawHub scan
+
+# Scans the package with what ClawHub runs on a published version, so a warning
+# costs a rerun instead of a release:
+#   - ClawHub's static scan (npm run scan:clawhub), the same code as the site;
+#   - ClawScan's clawhub profile (.github/clawscan/clawscan.yml): SkillSpector,
+#     ClawScan static, A.I.G (skipped for plugins) and a Codex judge that reads
+#     the whole package and gives the verdict.
+# The models run on OpenRouter, which accepts OpenAI's model names, with the
+# OPENROUTER_API_KEY secret; a run takes about 15 minutes and costs money.
+# The judge's verdict varies between runs: a benign result lowers the odds of
+# a "suspicious" badge but does not rule it out.
+#
+# ClawScan is built from a main commit rather than the 0.3.0 release: only main
+# lets the judge read a partial SkillSpector report (openclaw/clawscan#129),
+# and SkillSpector covers this package only partially. CLAWSCAN_IMAGE is the
+# runtime image built from the same commit.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Scan this published npm version instead of the selected branch
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CLAWSCAN_COMMIT: 49da06355f1e1bfedc09cb2f60b7807b3cbafac5
+      CLAWSCAN_IMAGE: ghcr.io/openclaw/clawscan-runtime@sha256:e43879c19023a8c104b5aa8d380ad8e3b58d2750c6548997035069c835ca5e04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm ci
+
+      - name: Pack the package
+        id: pack
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$VERSION" ]; then
+            TARBALL=$(npm pack "$(node -p 'require("./package.json").name')@$VERSION" | tail -n 1)
+          else
+            npm run build
+            TARBALL=$(npm pack | tail -n 1)
+          fi
+          mkdir pkg
+          tar -xzf "$TARBALL" -C pkg
+          echo "tarball=$PWD/$TARBALL" >> "$GITHUB_OUTPUT"
+
+      - name: ClawHub static scan
+        id: static
+        continue-on-error: true
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: npm run scan:clawhub -- "$TARBALL"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: openclaw/clawscan
+          ref: ${{ env.CLAWSCAN_COMMIT }}
+          path: .clawscan-src
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .clawscan-src/go.mod
+          cache: false
+
+      - name: Build ClawScan
+        working-directory: .clawscan-src
+        run: |
+          go build -o "$RUNNER_TEMP/clawscan" ./cmd/clawscan
+          cp internal/profiles/clawhub/prompt.md internal/profiles/clawhub/output.schema.json \
+            "$GITHUB_WORKSPACE/.github/clawscan/"
+
+      # .github/clawscan/clawscan.yml is the built-in clawhub profile with the
+      # judge on OpenRouter; the scanners reach it through OPENAI_BASE_URL. The
+      # scanners run as root in the sandbox and write their reports with mode
+      # 0600, so ClawScan runs as root to read them.
+      - name: Run ClawScan
+        continue-on-error: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_BASE_URL: https://openrouter.ai/api/v1
+        run: |
+          sudo --preserve-env=OPENAI_API_KEY,OPENAI_BASE_URL "$RUNNER_TEMP/clawscan" pkg/package \
+            --config .github/clawscan/clawscan.yml --profile clawhub \
+            --sandbox-image "$CLAWSCAN_IMAGE" \
+            --output clawscan-results/artifact.json
+
+      - name: Hand the results back to the runner user
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" clawscan-results || true
+
+      - name: Summarize
+        id: verdict
+        if: always()
+        continue-on-error: true
+        run: node .github/clawscan/summarize.mjs clawscan-results/artifact.json >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clawscan-results
+          path: clawscan-results/
+          if-no-files-found: ignore
+
+      - name: Check results
+        env:
+          STATIC: ${{ steps.static.outcome }}
+          VERDICT: ${{ steps.verdict.outcome }}
+        run: |
+          echo "ClawHub static scan: $STATIC"
+          echo "ClawScan verdict: $VERDICT (see the run summary)"
+          [ "$STATIC" = success ] && [ "$VERDICT" = success ]

@@ -13,7 +13,9 @@ out.push(`Run: ${artifact.status ?? 'unknown'}${artifact.complete ? '' : ' (inco
 if (artifact.error) out.push(`Error: ${artifact.error}`)
 out.push('', '| Scanner | Status | Error |', '| --- | --- | --- |')
 for (const [id, scanner] of Object.entries(artifact.scanners ?? {})) {
-  out.push(`| ${id} | ${scanner.status} | ${scanner.error ?? ''} |`)
+  // The error holds the whole stderr, image pull included; the last line says why.
+  const error = (scanner.error ?? '').trim().split('\n').at(-1).replaceAll('|', '\\|')
+  out.push(`| ${id} | ${scanner.status} | ${error} |`)
 }
 out.push('', `Judge: ${judge.status ?? 'not run'}${judge.error ? ` - ${judge.error}` : ''}`)
 

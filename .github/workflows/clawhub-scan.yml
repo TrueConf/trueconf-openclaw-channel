@@ -77,7 +77,24 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENAI_BASE_URL: https://openrouter.ai/api/v1
         run: |
-          "$RUNNER_TEMP/clawscan" pkg/package --profile clawhub             --sandbox-env OPENAI_BASE_URL             --sandbox-image "$CLAWSCAN_IMAGE"             --output clawscan-results/artifact.json
+          "$RUNNER_TEMP/clawscan" pkg/package --profile clawhub \
+            --sandbox-env OPENAI_BASE_URL \
+            --sandbox-image "$CLAWSCAN_IMAGE" \
+            --output clawscan-results/artifact.json
+
+      - name: TEMP debug SkillSpector
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          mkdir -p clawscan-results/debug && chmod 777 clawscan-results/debug
+          set +e
+          docker run --rm -e OPENAI_API_KEY -e OPENAI_BASE_URL=https://openrouter.ai/api/v1 \
+            -e SKILLSPECTOR_PROVIDER=openai -e SKILLSPECTOR_MODEL=gpt-6.1-sol -e SKILLSPECTOR_REASONING_EFFORT=medium \
+            -v "$PWD/pkg/package:/pkg:ro" -v "$PWD/clawscan-results/debug:/out" --entrypoint skillspector "$CLAWSCAN_IMAGE" \
+            scan /pkg --format json --output /out/report.json > clawscan-results/debug/stdout.txt 2> clawscan-results/debug/stderr.txt
+          echo "exit $?"
+          grep -v WARNING clawscan-results/debug/stderr.txt | tail -40
+          tail -20 clawscan-results/debug/stdout.txt
 
       - name: Summarize
         id: verdict

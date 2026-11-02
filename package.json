@@ -31,6 +31,7 @@
     "index.ts",
     "src/",
     "openclaw.plugin.json",
+    "assets/icon.png",
     "README.md",
     "LICENSE",
     "llms.txt",

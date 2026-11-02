@@ -9,6 +9,7 @@
 - The minimum OpenClaw version is 2026.8.1 (was 2026.5.28): `dispatchInboundDirectDm` is exported from `openclaw/plugin-sdk/channel-inbound` since 2026.8.1. CI tests the locked OpenClaw at that floor. OpenClaw 2026.8.1 itself requires Node 22.22.3+, 24.15.0+ or 25.9.0+.
 - The package passes ClawHub validation with no warnings and can be published there. `package.json` declares `openclaw.build.openclawVersion` (the locked OpenClaw it is built against, 2026.8.1), which ClawHub requires; a test keeps it equal to the lockfile.
 - `openclaw.plugin.json` uses `name` and `description` instead of `label` and `blurb`, declares the `channels` category, and drops `minOpenClawVersion`. OpenClaw reads none of the removed fields (the channel label and blurb come from `package.json#openclaw.channel`), and the minimum version stays in `openclaw.compat`.
+- The package ships `assets/icon.png` (the TrueConf logo, 512×512), which ClawHub shows as the plugin icon.
 
 ## [1.2.13] - 2026-11-02
 

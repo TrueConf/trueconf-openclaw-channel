@@ -1,6 +1,6 @@
 {
   "name": "@trueconf-community/trueconf-openclaw-channel",
-  "version": "1.2.13",
+  "version": "1.2.14",
   "description": "Connect OpenClaw to TrueConf Server corporate messenger.",
   "type": "module",
   "main": "./dist/index.js",

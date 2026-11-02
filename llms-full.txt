@@ -535,7 +535,7 @@ MIT
 
 # Changelog
 
-## [Unreleased]
+## [1.2.14] - 2026-11-02
 
 ### Fixed
 - Direct messages are dispatched with `dispatchInboundDirectDm` instead of the deprecated `dispatchInboundDirectDmWithRuntime`. OpenClaw retires the old function on 2026-12-31 and removes it in its first January 2027 stable release, which would stop the plugin from loading. The new function takes the same parameters without `runtime` and resolves the route, envelope and turn dispatch inside OpenClaw.

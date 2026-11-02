@@ -535,6 +535,11 @@ MIT
 
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Releases are published to ClawHub as well as npm. After `npm publish`, the release workflow dispatches `clawhub-publish.yml`, which packs the version npm serves and publishes it through ClawHub's official reusable workflow with GitHub OIDC trusted publishing (no stored token). It can also be run by hand from the Actions tab with a `version` and `dry_run`.
+
 ## [1.2.14] - 2026-11-02
 
 ### Fixed

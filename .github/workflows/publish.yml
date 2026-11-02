@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: read
   id-token: write
 
@@ -60,6 +61,13 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --access public
+
+      # A workflow_dispatch made with GITHUB_TOKEN still starts a run, which is
+      # what ClawHub trusted publishing requires (see clawhub-publish.yml).
+      - name: Dispatch the ClawHub publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run clawhub-publish.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_TAG"
 
       - name: Print npm debug logs
         if: failure()

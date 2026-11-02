@@ -1,0 +1,59 @@
+name: Publish to ClawHub
+
+# publish.yml dispatches this after the npm publish, with --ref set to the
+# release tag. ClawHub mints a trusted-publish token only for workflow_dispatch
+# runs that call its official reusable workflow, so this cannot be a step of
+# the release-triggered npm job. The tarball is the one npm serves, so ClawHub
+# and npm ship identical bytes.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version to publish (default - the dispatched tag without the leading v)
+        required: false
+        type: string
+      dry_run:
+        description: Validate without publishing
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Pack the release from npm
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          VERSION="${VERSION:-${GITHUB_REF_NAME#v}}"
+          SPEC="@trueconf-community/trueconf-openclaw-channel@$VERSION"
+          # npm can take a few minutes to serve a version it just accepted.
+          for attempt in $(seq 1 20); do
+            if npm pack "$SPEC"; then exit 0; fi
+            echo "attempt $attempt: $SPEC not available yet"
+            sleep 30
+          done
+          echo "::error::$SPEC is not available on npm"
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clawhub-package
+          path: '*.tgz'
+          if-no-files-found: error
+
+  publish:
+    needs: pack
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: openclaw/clawhub/.github/workflows/package-publish.yml@615dc45d1ec6dfae9c43a0af508239ec1f64969c
+    with:
+      dry_run: ${{ inputs.dry_run }}
+      package_artifact_name: clawhub-package

@@ -69,12 +69,14 @@ With this channel, OpenClaw can:
 
 ## Installation
 
-Prerequisites: `node >= 22.14`, `npm`, `openclaw` (`npm install -g openclaw@latest`).
+Prerequisites: `npm`, `openclaw` >= 2026.8.1 (`npm install -g openclaw@latest`), and the Node.js version your OpenClaw requires: 2026.8–2026.9 need Node 22.22.3+, 24.15.0+ or 25.9.0+; 2026.10 needs Node 24.22.1+ or 26.12.1+.
+
+`--accept-capabilities` in the install commands below grants the capabilities the plugin declares (channel, tools). Without it OpenClaw 2026.10 prints `requires capability consent` and does not install the plugin.
 
 ### From npm (recommended)
 
 ```bash
-openclaw plugins install @trueconf-community/trueconf-openclaw-channel
+openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel
 npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
 openclaw gateway
 ```
@@ -88,7 +90,7 @@ git clone https://github.com/TrueConf/trueconf-openclaw-channel.git
 cd trueconf-openclaw-channel
 npm install
 npm run build
-openclaw plugins install -l .
+openclaw plugins install --accept-capabilities -l .
 npm run setup      
 openclaw gateway
 ```
@@ -105,7 +107,7 @@ export TRUECONF_USE_TLS=true                   # optional; default — auto-dete
 export TRUECONF_PORT=443                       # optional; any port 1-65535
 export TRUECONF_ACCEPT_UNTRUSTED_CA=true       # required if the cert is self-signed and the wizard should download it
 
-openclaw plugins install @trueconf-community/trueconf-openclaw-channel
+openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel
 npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
 openclaw gateway
 ```
@@ -212,7 +214,7 @@ Point your assistant at [`llms.txt`](./llms.txt) (a short index) or paste the co
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `dmPolicy` | string | `"open"` | Direct-message access policy: `"open"` (everyone), `"allowlist"` (only users in `allowFrom`), `"closed"` / `"disabled"` (nobody). `"pairing"` is reserved for future functionality and currently behaves like `"open"` |
-| `allowFrom` | string[] | — | List of TrueConf IDs (`user@server`) allowed to DM the bot when `dmPolicy: "allowlist"` |
+| `allowFrom` | string[] | — | List of TrueConf IDs (`user@server`) allowed to DM the bot when `dmPolicy: "allowlist"`. If you set `dmPolicy: "open"` explicitly, add `"*"` here: OpenClaw 2026.10 warns `dmPolicy="open" but channels.trueconf.allowFrom does not include "*"; all DMs will be dropped` |
 | `maxFileSize` | number (bytes) | `52428800` (50 MB) | Maximum size of a single file. Applies equally to incoming and outgoing files. Range: 1 byte to 2 GB; on out-of-range values the channel logs `[trueconf] Invalid maxFileSize: ...` and falls back to the default |
 | `groupAlwaysRespondIn` | string[] | `[]` | List of titles and/or chatIds whose group messages bypass the mention/reply gate. Formats: `<name>`, `title:<name>`, `chatId:<id>`. See ["Always-respond chats"](#always-respond-chats) above |
 
@@ -429,11 +431,11 @@ Six tunables expose the network-resilience knobs that ship with sensible default
 
 ### `openclaw plugins install` blocked by security scanner
 
-- **Symptom:** `openclaw plugins install @trueconf-community/trueconf-openclaw-channel` aborts with a critical scanner finding citing `Environment variable access combined with network send` in `bin/trueconf-setup.mjs`, `src/channel-setup.ts`, or `src/ws-client.ts`.
+- **Symptom:** `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel` aborts with a critical scanner finding citing `Environment variable access combined with network send` in `bin/trueconf-setup.mjs`, `src/channel-setup.ts`, or `src/ws-client.ts`.
 - **Cause:** The openclaw plugin scanner uses a per-file regex that flags any source file containing both `process.env` and one of `fetch` / `post` / `http.request`. Versions of this plugin earlier than the scanner-friendly refactor inlined the env reads in those files; the current release moved them to `src/env-config.ts` so the scanner regex no longer matches.
 - **Solution:** Upgrade to the latest published `@trueconf-community/trueconf-openclaw-channel` — the scanner-friendly refactor is shipped. If you are pinned to an older version (or your openclaw build uses a customized scanner ruleset that still flags the current release), the fallback is to install with the dangerous-flag override:
   ```bash
-  openclaw plugins install --dangerously-force-unsafe-install @trueconf-community/trueconf-openclaw-channel
+  openclaw plugins install --accept-capabilities --dangerously-force-unsafe-install @trueconf-community/trueconf-openclaw-channel
   ```
 - **What not to do:** Do not adopt `--dangerously-force-unsafe-install` as a default install command. The flag bypasses ALL plugin-security checks, not just the env-harvesting rule, for ALL plugins it installs. Use the upgraded plugin first; reach for the flag only as a last-resort compatibility shim.
 
@@ -443,7 +445,7 @@ Six tunables expose the network-resilience knobs that ship with sensible default
 - **Cause:** `trueconf-setup` was run via `npx -p ... trueconf-setup` **without** a prior `openclaw plugins install`. The wizard then recorded the disposable npx cache dir (`~/.npm/_npx/<hash>/...`) as the plugin load path; once npm evicts that cache, the channel can no longer be found.
 - **Solution:** remove the stale `~/.npm/_npx/...` entry from `plugins.load.paths` in `~/.openclaw/openclaw.json` (or run `openclaw doctor --fix` if your openclaw build supports it), then reinstall and re-run setup:
   ```bash
-  openclaw plugins install @trueconf-community/trueconf-openclaw-channel
+  openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel
   npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
   openclaw gateway
   ```
@@ -453,7 +455,7 @@ Six tunables expose the network-resilience knobs that ship with sensible default
 
 - **Symptom:** the plugin was installed and loading fine, but after a successful `trueconf-setup` run the gateway silently skips it — no `[trueconf]` lines in the log, the channel is missing from `openclaw channels status`.
 - **Cause:** plugin versions before 1.2.9 removed `plugins.entries.trueconf` from `openclaw.json` as a "stale" entry (1.2.8 fixed this for tarball installs but missed registry installs, which live under `~/.openclaw/npm/projects/`). On openclaw 2026.6.x that entry is the live enable record for an installed plugin, so deleting it disabled the plugin.
-- **Solution:** upgrade the plugin to >= 1.2.9 (the cleanup now only runs when no install evidence exists), then restore the entry — either re-run `openclaw plugins install @trueconf-community/trueconf-openclaw-channel`, or add it back manually in `~/.openclaw/openclaw.json`:
+- **Solution:** upgrade the plugin to >= 1.2.9 (the cleanup now only runs when no install evidence exists), then restore the entry — either re-run `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel`, or add it back manually in `~/.openclaw/openclaw.json`:
   ```json
   { "plugins": { "entries": { "trueconf": { "enabled": true } } } }
   ```
@@ -477,7 +479,7 @@ Six tunables expose the network-resilience knobs that ship with sensible default
   1. You're messaging the bot from the same account — you need to write from a **different** user.
   2. Group-chat message without an @-mention and without a reply to the bot — in a group you have to address the bot explicitly (see the [Group Chats](#group-chats) section). The log will contain `group <chatId>: no mention/reply, dropping`.
   3. Message in a TrueConf channel (`chatType=6`) — the bot ignores them. Log: `dropping channel message chatId=<id>`.
-  4. `dmPolicy: "allowlist"` and the sender isn't in `allowFrom`. Log: `DM blocked for <id> by policy`.
+  4. `dmPolicy: "allowlist"` and the sender isn't in `allowFrom`. Log: `DM blocked for <id> by policy`. With `dmPolicy: "open"` on OpenClaw 2026.10, `allowFrom` must contain `"*"`; the startup log warns `all DMs will be dropped` otherwise.
   5. LLM provider is not configured — run `openclaw configure`.
   6. LLM provider is unreachable from the network — check access or use Ollama.
 
@@ -543,6 +545,8 @@ MIT
 - The package passes ClawHub validation with no warnings and can be published there. `package.json` declares `openclaw.build.openclawVersion` (the locked OpenClaw it is built against, 2026.8.1), which ClawHub requires; a test keeps it equal to the lockfile.
 - `openclaw.plugin.json` uses `name` and `description` instead of `label` and `blurb`, declares the `channels` category, and drops `minOpenClawVersion`. OpenClaw reads none of the removed fields (the channel label and blurb come from `package.json#openclaw.channel`), and the minimum version stays in `openclaw.compat`.
 - The package ships `assets/icon.png` (the TrueConf logo, 512×512), which ClawHub shows as the plugin icon.
+- Install commands in the README and in the setup wizard's hint use `openclaw plugins install --accept-capabilities`: OpenClaw 2026.10 refuses to install the plugin without capability consent. The README lists the Node.js versions OpenClaw requires and notes that `dmPolicy: "open"` needs `allowFrom: ["*"]` on OpenClaw 2026.10.
+- Checked on a live TrueConf server with OpenClaw 2026.10.9: a direct message gets a model reply, and an image reply arrives as a photo with its preview.
 
 ## [1.2.13] - 2026-11-02
 

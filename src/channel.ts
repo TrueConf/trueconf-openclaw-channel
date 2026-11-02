@@ -6,6 +6,7 @@ import {
   type OutboundReplyPayload,
 } from "openclaw/plugin-sdk/reply-payload"
 import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound"
+import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/media-runtime"
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -32,6 +33,7 @@ import {
   isEnabled as isEnabledImpl,
   describeAccount as describeAccountImpl,
   shouldAllowMessage,
+  isCommandSenderAllowed,
   parseAlwaysRespondConfig,
 } from './config'
 import { trueconfSetupWizard } from './channel-setup'
@@ -191,6 +193,14 @@ export function createRuntimeStore() {
 export type RuntimeStore = ReturnType<typeof createRuntimeStore>
 
 const store = createRuntimeStore()
+
+// OpenClaw's own media roots (its tmp, media, canvas and agent workspace
+// directories). A reply may attach a local file only from these; load-media
+// refuses local paths when no roots are passed.
+function defaultMediaLocalRoots(): readonly string[] {
+  if (!store.fullConfig) return []
+  return getAgentScopedMediaLocalRoots(store.fullConfig as Parameters<typeof getAgentScopedMediaLocalRoots>[0])
+}
 
 // Clears all per-(accountId, chatId) cache entries. Called from
 // `handleSdkPushEvent('removeChat', ...)`: once the server announces the chat
@@ -461,7 +471,7 @@ export const channelPlugin = {
               chatId: route.chatId,
               text: ctx.text ?? '',
               mediaUrl: ctx.mediaUrl,
-              mediaLocalRoots: ctx.mediaLocalRoots,
+              mediaLocalRoots: ctx.mediaLocalRoots ?? defaultMediaLocalRoots(),
             },
             commonDeps,
           )
@@ -478,7 +488,7 @@ export const channelPlugin = {
             to: route.userId,
             text: ctx.text ?? '',
             mediaUrl: ctx.mediaUrl,
-            mediaLocalRoots: ctx.mediaLocalRoots,
+            mediaLocalRoots: ctx.mediaLocalRoots ?? defaultMediaLocalRoots(),
             accountId,
           },
           { ...commonDeps, store },
@@ -494,7 +504,7 @@ export const channelPlugin = {
           to: ctx.to ?? '',
           text: ctx.text ?? '',
           mediaUrl: ctx.mediaUrl,
-          mediaLocalRoots: ctx.mediaLocalRoots,
+          mediaLocalRoots: ctx.mediaLocalRoots ?? defaultMediaLocalRoots(),
           accountId,
         },
         { ...commonDeps, store },
@@ -704,7 +714,7 @@ export const channelPlugin = {
           sendMedia: async ({ mediaUrl, caption }) => {
             if (inbound.isGroup) {
               const result = await handleOutboundAttachmentToChat(
-                { chatId: inbound.chatId, text: caption ?? '', mediaUrl },
+                { chatId: inbound.chatId, text: caption ?? '', mediaUrl, mediaLocalRoots: defaultMediaLocalRoots() },
                 liveTransport,
               )
               if (result.ok && result.messageId) {
@@ -712,7 +722,7 @@ export const channelPlugin = {
               }
             } else {
               const result = await handleOutboundAttachment(
-                { to: inbound.peerId, text: caption ?? '', mediaUrl, accountId },
+                { to: inbound.peerId, text: caption ?? '', mediaUrl, mediaLocalRoots: defaultMediaLocalRoots(), accountId },
                 { ...liveTransport, store },
               )
               if (result.ok && result.messageId) {
@@ -815,6 +825,10 @@ export const channelPlugin = {
         const isCommand = !hasExtra && ((store.runtime as {
           channel?: { commands?: { isControlCommandMessage?: (t: string) => boolean } }
         })?.channel?.commands?.isControlCommandMessage?.(inboundMsg.text) ?? false)
+        const commandAuthorized = isCommand && isCommandSenderAllowed(store.channelConfig!, inboundMsg.senderId)
+        if (isCommand && !commandAuthorized) {
+          logger.info(`[trueconf] control command from ${inboundMsg.senderId} not authorized: sender is not in allowFrom`)
+        }
 
         // The dispatcher reports failures along three paths: sync throw,
         // onRecordError (session record failed → file is orphaned), and
@@ -849,7 +863,7 @@ export const channelPlugin = {
             messageId: inboundMsg.messageId,
             timestamp: inboundMsg.timestamp,
             commandBody: isCommand ? inboundMsg.text : undefined,
-            commandAuthorized: isCommand ? true : undefined,
+            commandAuthorized: isCommand ? commandAuthorized : undefined,
             extraContext: widenExtraContext(extraContext),
             deliver: deliver(inboundMsg),
             onRecordError: (err: unknown) => {

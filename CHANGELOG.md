@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Security
+- OpenClaw control commands (such as `/new` or `/reset`) run only for senders listed in `channels.trueconf.allowFrom` (`"*"` lists everyone), as in OpenClaw's own channels. Before, every recognized command was marked authorized, so anyone who could DM the bot, or mention it in a group, could run one. **Behavior change:** with no `allowFrom`, commands reach OpenClaw unauthorized and are not executed; the log shows `control command from <id> not authorized`.
+- Replies attach local files only from OpenClaw's media roots (its tmp, media, canvas and agent workspace directories). Before, automatic reply delivery passed no roots, and with no roots any path the agent named was read and sent to the chat. Local paths are now refused when no roots are given, and both the file and the roots are resolved with `realpath`, so a link inside a root cannot point outside it.
+
+### Fixed
+- ClawHub's static scan no longer reports the setup wizard's password fallback (`src/setup-shared.ts`) as a hardcoded secret.
+
 ### Changed
 - Releases are published to ClawHub as well as npm. After `npm publish`, the release workflow dispatches `clawhub-publish.yml`, which packs the version npm serves and publishes it through ClawHub's official reusable workflow with GitHub OIDC trusted publishing (no stored token). It can also be run by hand from the Actions tab with a `version` and `dry_run`.
 

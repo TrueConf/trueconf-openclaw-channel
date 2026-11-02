@@ -538,7 +538,7 @@ MIT
 
 # Changelog
 
-## [Unreleased]
+## [1.2.15] - 2026-11-02
 
 ### Security
 - OpenClaw control commands (such as `/new` or `/reset`) run only for senders listed in `channels.trueconf.allowFrom` (`"*"` lists everyone), as in OpenClaw's own channels. Before, every recognized command was marked authorized, so anyone who could DM the bot, or mention it in a group, could run one. **Behavior change:** with no `allowFrom`, commands reach OpenClaw unauthorized and are not executed; the log shows `control command from <id> not authorized`.

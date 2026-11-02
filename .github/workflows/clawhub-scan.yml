@@ -3,10 +3,11 @@ name: ClawHub scan
 # Scans the package with what ClawHub runs on a published version, so a warning
 # costs a rerun instead of a release:
 #   - ClawHub's static scan (npm run scan:clawhub), the same code as the site;
-#   - ClawScan's clawhub profile: SkillSpector, ClawScan static, A.I.G and a
-#     Codex judge that reads the whole package and gives the verdict.
-# The models go through OpenRouter (secret OPENROUTER_API_KEY), so each run
-# costs money. The judge's verdict varies between runs: a benign result lowers
+#   - ClawScan's built-in clawhub profile: SkillSpector, ClawScan static, A.I.G
+#     (skipped for plugins) and a Codex judge that reads the whole package and
+#     gives the verdict.
+# OPENAI_BASE_URL sends the profile's OpenAI calls to OpenRouter, which accepts
+# the same model name, with the OPENROUTER_API_KEY secret; each run costs money. The judge's verdict varies between runs: a benign result lowers
 # the odds of a "suspicious" badge but does not rule it out.
 on:
   push:  # TEMP: testing before merge
@@ -27,7 +28,6 @@ jobs:
     timeout-minutes: 60
     env:
       CLAWSCAN_VERSION: 0.3.0
-      CLAWSCAN_COMMIT: bd3d0a3a5dfc03a522aad7af7156f3f301449d47
       CLAWSCAN_SHA256: c0f12b92623b72e43add86ebbac6ae70a027411bfba6d337c25e2334e2415c3f
       CLAWSCAN_IMAGE: ghcr.io/openclaw/clawscan-runtime@sha256:90e573e9c5193fc817002ac0db4e95068d188465f3b4349ba66f8e47931ad087
     steps:
@@ -67,37 +67,17 @@ jobs:
           echo "$CLAWSCAN_SHA256  clawscan.tar.gz" | sha256sum -c -
           tar -xzf clawscan.tar.gz
           mv "clawscan_v${CLAWSCAN_VERSION}_linux_amd64/clawscan" "$RUNNER_TEMP/clawscan"
-          for f in prompt.md output.schema.json; do
-            curl -fsSLo ".github/clawscan/$f" "https://raw.githubusercontent.com/openclaw/clawscan/$CLAWSCAN_COMMIT/internal/profiles/clawhub/$f"
-          done
 
+      # The clawhub profile accepts SkillSpector's exit 1 (issues found or a
+      # partial report) and passes its report to the judge; a project profile
+      # would count it as a failure.
       - name: Run ClawScan
         continue-on-error: true
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENAI_BASE_URL: https://openrouter.ai/api/v1
-          SKILLSPECTOR_PROVIDER: openai
-          SKILLSPECTOR_MODEL: openai/gpt-6.1-sol
-          SKILLSPECTOR_REASONING_EFFORT: medium
-          LLM_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          DEFAULT_BASE_URL: https://openrouter.ai/api/v1
-          DEFAULT_MODEL: openai/gpt-6.1-sol
-          REASONING_EFFORT: medium
         run: |
-          "$RUNNER_TEMP/clawscan" pkg/package \
-            --config .github/clawscan/clawscan.yml --profile clawhub-openrouter \
-            --sandbox-image "$CLAWSCAN_IMAGE" \
-            --output clawscan-results/artifact.json
-
-      - name: TEMP debug SkillSpector
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        run: |
-          docker run --rm -e OPENAI_API_KEY -e OPENAI_BASE_URL=https://openrouter.ai/api/v1 \
-            -e SKILLSPECTOR_PROVIDER=openai -e SKILLSPECTOR_MODEL=openai/gpt-6.1-sol -e SKILLSPECTOR_REASONING_EFFORT=medium \
-            -v "$PWD/pkg/package:/pkg:ro" --entrypoint skillspector "$CLAWSCAN_IMAGE" \
-            scan /pkg --format json --output /tmp/r.json 2>&1 | grep -v "WARNING" | tail -120 || true
+          "$RUNNER_TEMP/clawscan" pkg/package --profile clawhub             --sandbox-env OPENAI_BASE_URL             --sandbox-image "$CLAWSCAN_IMAGE"             --output clawscan-results/artifact.json
 
       - name: Summarize
         id: verdict

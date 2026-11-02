@@ -8,7 +8,7 @@ const artifact = JSON.parse(readFileSync(process.argv[2], 'utf8'))
 const judge = artifact.judge ?? {}
 const result = judge.result && typeof judge.result === 'object' ? judge.result : undefined
 
-const out = ['## ClawScan (ClawHub profile)', '']
+const out = ['## ClawScan (clawhub profile)', '']
 out.push(`Run: ${artifact.status ?? 'unknown'}${artifact.complete ? '' : ' (incomplete)'}`)
 if (artifact.error) out.push(`Error: ${artifact.error}`)
 out.push('', '| Scanner | Status | Error |', '| --- | --- | --- |')

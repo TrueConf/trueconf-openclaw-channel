@@ -129,6 +129,14 @@ export function shouldAllowMessage(cfg: TrueConfChannelConfig, senderId: string)
   }
 }
 
+// Mirrors OpenClaw's own channels: a control command runs only for a sender
+// listed in allowFrom ("*" lists everyone). dmPolicy decides who may talk to
+// the bot at all and never grants commands; it does not cover groups either.
+export function isCommandSenderAllowed(cfg: TrueConfChannelConfig, senderId: string): boolean {
+  const allowFrom = normalize(cfg).allowFrom ?? []
+  return allowFrom.includes('*') || allowFrom.includes(senderId)
+}
+
 export type SecretRef = { useEnv: string }
 
 export function resolveSecret(value: string | SecretRef | undefined): string | undefined {

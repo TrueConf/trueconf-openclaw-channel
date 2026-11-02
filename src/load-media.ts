@@ -1,4 +1,4 @@
-import { readFile as fsReadFile } from 'node:fs/promises'
+import { readFile as fsReadFile, realpath as fsRealpath } from 'node:fs/promises'
 import { basename, isAbsolute as pathIsAbsolute, resolve as pathResolve, sep as pathSep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -75,13 +75,19 @@ async function loadLocalFile(
   localPath: string,
   options: OutboundMediaLoadOptions,
 ): Promise<WebMediaResult> {
-  if (options.mediaLocalRoots && options.mediaLocalRoots.length > 0) {
-    const allowed = options.mediaLocalRoots.some((root) => isUnderRoot(localPath, root))
-    if (!allowed) {
-      throw withCode(`Local media path is not under any allowed root: ${localPath}`, 'EACCES')
-    }
+  // Fail closed: the path comes from the agent, so without roots any file the
+  // gateway can read would be sent to the chat. realpath on both sides keeps a
+  // link inside a root from pointing outside it.
+  const roots = options.mediaLocalRoots ?? []
+  if (roots.length === 0) {
+    throw withCode(`Local media is not allowed without mediaLocalRoots: ${localPath}`, 'EACCES')
   }
-  const buffer = await fsReadFile(localPath)
+  const realFile = await fsRealpath(localPath)
+  const realRoots = await Promise.all(roots.map((root) => fsRealpath(root).catch(() => pathResolve(root))))
+  if (!realRoots.some((root) => isUnderRoot(realFile, root))) {
+    throw withCode(`Local media path is not under any allowed root: ${localPath}`, 'EACCES')
+  }
+  const buffer = await fsReadFile(realFile)
   if (options.maxBytes !== undefined && buffer.byteLength > options.maxBytes) {
     throw new Error(`Media exceeds maxBytes (${buffer.byteLength} > ${options.maxBytes})`)
   }

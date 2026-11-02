@@ -27,6 +27,7 @@ vi.mock('../../src/inbound', async (importOriginal) => {
 
 import { dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
 import { prepareInboundAttachment } from '../../src/inbound'
+import { loadOutboundMediaFromUrl } from '../../src/load-media'
 import { __getAccountsForTesting, __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
 import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
 
@@ -127,6 +128,21 @@ describe('integration: deliver — OutboundReplyPayload routing', () => {
     // Critical assertion: the JSON envelope must NOT have been sent as plain
     // text via sendMessage. messageRequests must be empty for this turn.
     expect(server.messageRequests).toHaveLength(0)
+  })
+
+  // Without roots load-media refuses local paths, and before roots were passed
+  // an agent-chosen path could send any gateway-readable file to the chat.
+  it('passes OpenClaw media roots when loading reply media', async () => {
+    harness = await bootPlugin(server)
+    const load = vi.mocked(loadOutboundMediaFromUrl)
+    load.mockClear()
+
+    const deliver = await captureDeliverFromInbound(server)
+    await deliver({ mediaUrl: '/tmp/reply.png', mediaUrls: ['/tmp/reply.png'] })
+
+    await waitFor(() => load.mock.calls.length >= 1, 5000)
+    const options = load.mock.calls[0][1] as { mediaLocalRoots?: readonly string[] }
+    expect(options.mediaLocalRoots?.length).toBeGreaterThan(0)
   })
 
   it('routes text-only payload through sendMessage with the trimmed text', async () => {

@@ -214,7 +214,7 @@ Point your assistant at [`llms.txt`](./llms.txt) (a short index) or paste the co
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `dmPolicy` | string | `"open"` | Direct-message access policy: `"open"` (everyone), `"allowlist"` (only users in `allowFrom`), `"closed"` / `"disabled"` (nobody). `"pairing"` is reserved for future functionality and currently behaves like `"open"` |
-| `allowFrom` | string[] | — | List of TrueConf IDs (`user@server`) allowed to DM the bot when `dmPolicy: "allowlist"`. If you set `dmPolicy: "open"` explicitly, add `"*"` here: OpenClaw 2026.10 warns `dmPolicy="open" but channels.trueconf.allowFrom does not include "*"; all DMs will be dropped` |
+| `allowFrom` | string[] | — | List of TrueConf IDs (`user@server`) allowed to DM the bot when `dmPolicy: "allowlist"`. If you set `dmPolicy: "open"` explicitly, add `"*"` here: OpenClaw 2026.10 warns `dmPolicy="open" but channels.trueconf.allowFrom does not include "*"; all DMs will be dropped`. `allowFrom` also decides who may run OpenClaw control commands (such as `/new` or `/reset`) in DMs and groups: only listed senders, everyone with `"*"`, nobody when the list is empty |
 | `maxFileSize` | number (bytes) | `52428800` (50 MB) | Maximum size of a single file. Applies equally to incoming and outgoing files. Range: 1 byte to 2 GB; on out-of-range values the channel logs `[trueconf] Invalid maxFileSize: ...` and falls back to the default |
 | `groupAlwaysRespondIn` | string[] | `[]` | List of titles and/or chatIds whose group messages bypass the mention/reply gate. Formats: `<name>`, `title:<name>`, `chatId:<id>`. See ["Always-respond chats"](#always-respond-chats) above |
 

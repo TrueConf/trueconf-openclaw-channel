@@ -464,7 +464,8 @@ export async function runWizardAndFinalize(args: RunWizardAndFinalizeArgs): Prom
   }
   const serverUrl = tcFields.serverUrl
   const username = tcFields.username
-  const password = (credentialValues.password as string | undefined) ?? tcFields.password
+  const enteredPassword = credentialValues.password as string | undefined
+  const password = enteredPassword ?? tcFields.password
   if (!serverUrl || !username || !password) {
     throw new Error('Invariant: serverUrl/username/password missing at finalize entry')
   }

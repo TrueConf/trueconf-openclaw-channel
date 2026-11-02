@@ -7,8 +7,14 @@ name: ClawHub scan
 #     (skipped for plugins) and a Codex judge that reads the whole package and
 #     gives the verdict.
 # OPENAI_BASE_URL sends the profile's OpenAI calls to OpenRouter, which accepts
-# the same model name, with the OPENROUTER_API_KEY secret; each run costs money. The judge's verdict varies between runs: a benign result lowers
-# the odds of a "suspicious" badge but does not rule it out.
+# the same model name, with the OPENROUTER_API_KEY secret; each run costs
+# money. The judge's verdict varies between runs: a benign result lowers the
+# odds of a "suspicious" badge but does not rule it out.
+#
+# ClawScan is built from a main commit rather than the 0.3.0 release: only main
+# lets the judge read a partial SkillSpector report (openclaw/clawscan#129),
+# and SkillSpector covers this package only partially. CLAWSCAN_IMAGE is the
+# runtime image built from the same commit.
 on:
   push:  # TEMP: testing before merge
     branches: [clawhub-local-scan]
@@ -27,9 +33,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      CLAWSCAN_VERSION: 0.3.0
-      CLAWSCAN_SHA256: c0f12b92623b72e43add86ebbac6ae70a027411bfba6d337c25e2334e2415c3f
-      CLAWSCAN_IMAGE: ghcr.io/openclaw/clawscan-runtime@sha256:90e573e9c5193fc817002ac0db4e95068d188465f3b4349ba66f8e47931ad087
+      CLAWSCAN_COMMIT: 49da06355f1e1bfedc09cb2f60b7807b3cbafac5
+      CLAWSCAN_IMAGE: ghcr.io/openclaw/clawscan-runtime@sha256:e43879c19023a8c104b5aa8d380ad8e3b58d2750c6548997035069c835ca5e04
     steps:
       - uses: actions/checkout@v4
 
@@ -61,12 +66,20 @@ jobs:
           TARBALL: ${{ steps.pack.outputs.tarball }}
         run: npm run scan:clawhub -- "$TARBALL"
 
-      - name: Install ClawScan
-        run: |
-          curl -fsSLo clawscan.tar.gz "https://github.com/openclaw/clawscan/releases/download/v$CLAWSCAN_VERSION/clawscan_v${CLAWSCAN_VERSION}_linux_amd64.tar.gz"
-          echo "$CLAWSCAN_SHA256  clawscan.tar.gz" | sha256sum -c -
-          tar -xzf clawscan.tar.gz
-          mv "clawscan_v${CLAWSCAN_VERSION}_linux_amd64/clawscan" "$RUNNER_TEMP/clawscan"
+      - uses: actions/checkout@v4
+        with:
+          repository: openclaw/clawscan
+          ref: ${{ env.CLAWSCAN_COMMIT }}
+          path: .clawscan-src
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .clawscan-src/go.mod
+          cache: false
+
+      - name: Build ClawScan
+        working-directory: .clawscan-src
+        run: go build -o "$RUNNER_TEMP/clawscan" ./cmd/clawscan
 
       # The clawhub profile accepts SkillSpector's exit 1 (issues found or a
       # partial report) and passes its report to the judge; a project profile
@@ -79,7 +92,11 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENAI_BASE_URL: https://openrouter.ai/api/v1
         run: |
-          sudo --preserve-env=OPENAI_API_KEY,OPENAI_BASE_URL "$RUNNER_TEMP/clawscan" pkg/package             --profile clawhub             --sandbox-env OPENAI_BASE_URL             --sandbox-image "$CLAWSCAN_IMAGE"             --output clawscan-results/artifact.json
+          sudo --preserve-env=OPENAI_API_KEY,OPENAI_BASE_URL "$RUNNER_TEMP/clawscan" pkg/package \
+            --profile clawhub \
+            --sandbox-env OPENAI_BASE_URL \
+            --sandbox-image "$CLAWSCAN_IMAGE" \
+            --output clawscan-results/artifact.json
 
       - name: Hand the results back to the runner user
         if: always()

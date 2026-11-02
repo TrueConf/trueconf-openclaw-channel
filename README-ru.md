@@ -10,6 +10,9 @@
     <a href="https://www.npmjs.com/package/@trueconf-community/trueconf-openclaw-channel" target="_blank">
       <img alt="NPM Version" src="https://img.shields.io/npm/v/%40trueconf-community%2Ftrueconf-openclaw-channel">
     </a>
+    <a href="https://clawhub.ai/trueconf-community/plugins/trueconf-openclaw-channel" target="_blank">
+      <img alt="ClawHub" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fclawhub.ai%2Fapi%2Fv1%2Fpackages%2F%2540trueconf-community%252Ftrueconf-openclaw-channel&query=%24.package.latestVersion&label=ClawHub&color=00b2cc">
+    </a>
     <img alt="NPM Downloads" src="https://img.shields.io/npm/d18m/%40trueconf-community%2Ftrueconf-openclaw-channel?label=Downloads">
     <a href="https://t.me/trueconf_talks" target="_blank">
         <img src="https://img.shields.io/badge/Telegram-2CA5E0?logo=telegram&logoColor=white" />

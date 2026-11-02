@@ -45,15 +45,6 @@ jobs:
         run: |
           VERSION="${VERSION:-${GITHUB_REF_NAME#v}}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          # Attribute the release to its tag even when run by hand from main.
-          TAG_SHA=$(git ls-remote "https://github.com/$GITHUB_REPOSITORY" "refs/tags/v$VERSION^{}" "refs/tags/v$VERSION" | head -n 1 | cut -f1)
-          if [ -n "$TAG_SHA" ]; then
-            echo "source_commit=$TAG_SHA" >> "$GITHUB_OUTPUT"
-            echo "source_ref=refs/tags/v$VERSION" >> "$GITHUB_OUTPUT"
-          else
-            echo "source_commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
-            echo "source_ref=$GITHUB_REF" >> "$GITHUB_OUTPUT"
-          fi
           # npm can take a few minutes to serve a version it just accepted.
           for attempt in $(seq 1 20); do
             if TARBALL=$(npm pack "$PACKAGE@$VERSION" | tail -n 1); then
@@ -99,11 +90,12 @@ jobs:
       - name: Publish to ClawHub
         env:
           TARBALL: ${{ steps.pack.outputs.tarball }}
-          SOURCE_COMMIT: ${{ steps.pack.outputs.source_commit }}
-          SOURCE_REF: ${{ steps.pack.outputs.source_ref }}
           DRY_RUN: ${{ inputs.dry_run }}
+        # ClawHub requires the source commit to be the run's own commit (the
+        # OIDC sha claim). publish.yml dispatches on the release tag, so that
+        # is the release commit.
         run: |
           args=(package publish "$TARBALL"
-            --source-repo "$GITHUB_REPOSITORY" --source-commit "$SOURCE_COMMIT" --source-ref "$SOURCE_REF")
+            --source-repo "$GITHUB_REPOSITORY" --source-commit "$GITHUB_SHA" --source-ref "$GITHUB_REF")
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           npx --yes "$CLAWHUB_CLI" --no-input "${args[@]}"

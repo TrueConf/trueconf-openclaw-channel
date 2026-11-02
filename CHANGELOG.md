@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.16] - 2026-11-02
 
 ### Security
 - Reply attachments given as `http(s)` URLs are fetched through OpenClaw's SSRF guard (`fetchWithSsrFGuard`). Before, the plugin fetched any URL the agent named, so a prompt could make the bot read a loopback, private-network or cloud-metadata address and post the response to a chat. **Behavior change:** such URLs now fail with `Blocked hostname or private/internal/special-use IP address`; redirects are re-checked and the resolved address is pinned. To send a file from an internal server, save it into an OpenClaw media directory and send it as a local file.

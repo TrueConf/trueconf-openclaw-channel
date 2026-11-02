@@ -1,24 +1,14 @@
 #!/usr/bin/env node
-// Runs ClawHub's own scanners against the package before a release, so a
+// Runs ClawHub's static scan against the package before a release, so a
 // warning costs a rerun instead of a published version.
 //
 //   npm run scan:clawhub                 build, pack and scan the working tree
 //   npm run scan:clawhub -- some.tgz     scan an existing tarball
 //
-// The static scan is ClawHub's code at CLAWHUB_COMMIT and gives the same
-// findings as the site. The LLM review uses ClawHub's prompt but runs only
-// when CLAWSCAN_API_KEY is set; its verdict varies between runs, so a clean
-// result lowers the odds of a "suspicious" badge rather than ruling it out.
-// The site also runs VirusTotal and other scanners that need ClawHub's own
-// credentials; those are not covered here.
-//
-// Environment:
-//   CLAWSCAN_API_KEY   key for an OpenAI Responses API compatible endpoint
-//   CLAWSCAN_BASE_URL  default https://openrouter.ai/api/v1
-//   CLAWSCAN_MODEL     default openai/gpt-6.1-sol (ClawHub's review model)
-//
-// Exits 1 on a static finding outside ACCEPTED_FINDINGS or an LLM verdict
-// other than benign.
+// The scan is ClawHub's own code at CLAWHUB_COMMIT and gives the same
+// findings as the site. Exits 1 on a finding outside ACCEPTED_FINDINGS.
+// The verdict of ClawHub's AI review comes from ClawScan, which the
+// "ClawHub scan" workflow (clawhub-scan.yml) runs.
 //
 // ClawHub's script needs Bun, so this file runs twice: under Node it prepares
 // the ClawHub checkout and the tarball, then reruns itself under Bun to scan.
@@ -85,8 +75,8 @@ async function prepare() {
   process.exit(result.status ?? 1)
 }
 
-// Without a key the review is skipped: the stub answer lets ClawHub's script
-// finish, and its verdict is not printed.
+// ClawHub's script always asks an LLM for a review as well. Its prompt sees only
+// the first 50K characters of the package, so the stub answer skips it.
 const SKIPPED_REVIEW = {
   output: [{
     type: 'message',
@@ -95,50 +85,26 @@ const SKIPPED_REVIEW = {
 }
 
 async function scan(tarball) {
-  const apiKey = process.env.CLAWSCAN_API_KEY?.trim()
-  const baseUrl = (process.env.CLAWSCAN_BASE_URL ?? 'https://openrouter.ai/api/v1').replace(/\/+$/, '')
-  const model = process.env.CLAWSCAN_MODEL ?? 'openai/gpt-6.1-sol'
-
   const dryRun = pathToFileURL(join(process.env.CLAWHUB_SCAN_DIR, 'scripts', 'local-clawscan-dry-run.ts'))
   const { runLocalClawScanDryRun } = await import(dryRun.href)
 
-  const fetchImpl = async (url, init) => {
-    if (url !== OPENAI_RESPONSES_URL) return fetch(url, init)
-    if (!apiKey) return Response.json(SKIPPED_REVIEW)
-    // service_tier is an OpenAI-only field that other endpoints reject.
-    const { service_tier: _, ...body } = JSON.parse(init.body)
-    return fetch(`${baseUrl}/responses`, { ...init, body: JSON.stringify({ ...body, model }) })
-  }
-
-  const result = await runLocalClawScanDryRun({
+  const { name, version, files, staticScan } = await runLocalClawScanDryRun({
     path: tarball,
     kind: 'plugin',
-    env: { OPENAI_API_KEY: apiKey ?? 'unused', OPENAI_EVAL_MODEL: model },
-    fetchImpl,
+    env: { OPENAI_API_KEY: 'unused' },
+    fetchImpl: async (url, init) => (url === OPENAI_RESPONSES_URL ? Response.json(SKIPPED_REVIEW) : fetch(url, init)),
   })
 
-  console.log(`\n${result.name}@${result.version}, ${result.files.length} files`)
-  const { staticScan, llmAnalysis } = result
-  const staticClean = staticScan.findings.every((f) => ACCEPTED_FINDINGS.has(f.code))
-  const accepted = staticClean && staticScan.status !== 'clean' ? ' (accepted findings only)' : ''
-  console.log(`\nStatic scan: ${staticScan.status}${accepted}`)
+  console.log(`
+${name}@${version}, ${files.length} files`)
+  const clean = staticScan.findings.every((f) => ACCEPTED_FINDINGS.has(f.code))
+  const accepted = clean && staticScan.status !== 'clean' ? ' (accepted findings only)' : ''
+  console.log(`
+Static scan: ${staticScan.status}${accepted}`)
   for (const f of staticScan.findings) {
     console.log(`  ${f.severity} ${f.code} ${f.file}:${f.line} - ${f.message}`)
     console.log(`    ${f.evidence}`)
   }
-
-  if (!apiKey) {
-    console.log('\nLLM review: skipped (set CLAWSCAN_API_KEY to run it)')
-  } else {
-    console.log(`\nLLM review (${model}): ${llmAnalysis.verdict}, confidence ${llmAnalysis.confidence}`)
-    console.log(llmAnalysis.summary)
-    for (const d of llmAnalysis.dimensions) {
-      if (d.rating !== 'ok') console.log(`  [${d.rating}] ${d.label}: ${d.detail}`)
-    }
-    if (llmAnalysis.guidance) console.log(`\nGuidance: ${llmAnalysis.guidance}`)
-  }
-
-  const clean = staticClean && (!apiKey || llmAnalysis.status === 'clean')
   process.exit(clean ? 0 : 1)
 }
 

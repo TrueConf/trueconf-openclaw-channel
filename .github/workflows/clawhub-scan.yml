@@ -1,0 +1,113 @@
+name: ClawHub scan
+
+# Scans the package with what ClawHub runs on a published version, so a warning
+# costs a rerun instead of a release:
+#   - ClawHub's static scan (npm run scan:clawhub), the same code as the site;
+#   - ClawScan's clawhub profile: SkillSpector, ClawScan static, A.I.G and a
+#     Codex judge that reads the whole package and gives the verdict.
+# The models go through OpenRouter (secret OPENROUTER_API_KEY), so each run
+# costs money. The judge's verdict varies between runs: a benign result lowers
+# the odds of a "suspicious" badge but does not rule it out.
+on:
+  push:  # TEMP: testing before merge
+    branches: [clawhub-local-scan]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Scan this published npm version instead of the selected branch
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CLAWSCAN_VERSION: 0.3.0
+      CLAWSCAN_COMMIT: bd3d0a3a5dfc03a522aad7af7156f3f301449d47
+      CLAWSCAN_SHA256: c0f12b92623b72e43add86ebbac6ae70a027411bfba6d337c25e2334e2415c3f
+      CLAWSCAN_IMAGE: ghcr.io/openclaw/clawscan-runtime@sha256:90e573e9c5193fc817002ac0db4e95068d188465f3b4349ba66f8e47931ad087
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm ci
+
+      - name: Pack the package
+        id: pack
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$VERSION" ]; then
+            TARBALL=$(npm pack "$(node -p 'require("./package.json").name')@$VERSION" | tail -n 1)
+          else
+            npm run build
+            TARBALL=$(npm pack | tail -n 1)
+          fi
+          mkdir pkg
+          tar -xzf "$TARBALL" -C pkg
+          echo "tarball=$PWD/$TARBALL" >> "$GITHUB_OUTPUT"
+
+      - name: ClawHub static scan
+        id: static
+        continue-on-error: true
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: npm run scan:clawhub -- "$TARBALL"
+
+      - name: Install ClawScan
+        run: |
+          curl -fsSLo clawscan.tar.gz "https://github.com/openclaw/clawscan/releases/download/v$CLAWSCAN_VERSION/clawscan_v${CLAWSCAN_VERSION}_linux_amd64.tar.gz"
+          echo "$CLAWSCAN_SHA256  clawscan.tar.gz" | sha256sum -c -
+          tar -xzf clawscan.tar.gz
+          mv "clawscan_v${CLAWSCAN_VERSION}_linux_amd64/clawscan" "$RUNNER_TEMP/clawscan"
+          for f in prompt.md output.schema.json; do
+            curl -fsSLo ".github/clawscan/$f" "https://raw.githubusercontent.com/openclaw/clawscan/$CLAWSCAN_COMMIT/internal/profiles/clawhub/$f"
+          done
+
+      - name: Run ClawScan
+        continue-on-error: true
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_BASE_URL: https://openrouter.ai/api/v1
+          SKILLSPECTOR_PROVIDER: openai
+          SKILLSPECTOR_MODEL: openai/gpt-6.1-sol
+          SKILLSPECTOR_REASONING_EFFORT: medium
+          LLM_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DEFAULT_BASE_URL: https://openrouter.ai/api/v1
+          DEFAULT_MODEL: openai/gpt-6.1-sol
+          REASONING_EFFORT: medium
+        run: |
+          "$RUNNER_TEMP/clawscan" pkg/package \
+            --config .github/clawscan/clawscan.yml --profile clawhub-openrouter \
+            --sandbox-image "$CLAWSCAN_IMAGE" \
+            --output clawscan-results/artifact.json
+
+      - name: Summarize
+        id: verdict
+        if: always()
+        continue-on-error: true
+        run: node .github/clawscan/summarize.mjs clawscan-results/artifact.json >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clawscan-results
+          path: clawscan-results/
+          if-no-files-found: ignore
+
+      - name: Check results
+        env:
+          STATIC: ${{ steps.static.outcome }}
+          VERDICT: ${{ steps.verdict.outcome }}
+        run: |
+          echo "ClawHub static scan: $STATIC"
+          echo "ClawScan verdict: $VERDICT (see the run summary)"
+          [ "$STATIC" = success ] && [ "$VERDICT" = success ]

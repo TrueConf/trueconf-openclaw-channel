@@ -1,0 +1,46 @@
+# ClawScan's built-in clawhub profile (v0.3.0, internal/profiles/clawhub),
+# with the Codex judge sent to OpenRouter instead of OpenAI. The scanners reach
+# OpenRouter through OPENAI_BASE_URL and DEFAULT_BASE_URL, which
+# clawhub-scan.yml sets. clawhub-scan.yml downloads prompt.md and
+# output.schema.json next to this file from the same ClawScan release.
+version: 1
+
+profiles:
+  clawhub-openrouter:
+    scanners:
+      - skillspector
+      - clawscan-static
+      - aig
+    sandbox:
+      env:
+        - OPENROUTER_API_KEY
+        - OPENAI_API_KEY
+        - OPENAI_BASE_URL
+        - SKILLSPECTOR_PROVIDER
+        - SKILLSPECTOR_MODEL
+        - SKILLSPECTOR_REASONING_EFFORT
+        - LLM_API_KEY
+        - DEFAULT_MODEL
+        - DEFAULT_BASE_URL
+        - REASONING_EFFORT
+    judge:
+      command: >-
+        codex exec --cd {{ workspace }}
+        --model openai/gpt-6.1-sol
+        --sandbox {{ judge_sandbox }}
+        --skip-git-repo-check
+        --ignore-user-config
+        -c model_provider=openrouter
+        -c 'model_providers.openrouter.name="OpenRouter"'
+        -c 'model_providers.openrouter.base_url="https://openrouter.ai/api/v1"'
+        -c 'model_providers.openrouter.env_key="OPENROUTER_API_KEY"'
+        -c 'model_providers.openrouter.wire_api="responses"'
+        -c approval_policy=never
+        -c model_reasoning_effort=high
+        -c 'shell_environment_policy.inherit="core"'
+        -c shell_environment_policy.ignore_default_excludes=false
+        --output-schema {{ output_schema:output.schema.json }}
+        --output-last-message {{ output }}
+        --ephemeral
+        --json
+        - < {{ prompt:prompt.md }}

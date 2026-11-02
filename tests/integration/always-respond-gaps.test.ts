@@ -1,17 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
-  dispatchInboundDirectDmWithRuntime: vi.fn().mockResolvedValue({}),
+  dispatchInboundDirectDm: vi.fn().mockResolvedValue({}),
 }))
 
-import { dispatchInboundDirectDmWithRuntime } from 'openclaw/plugin-sdk/channel-inbound'
+import { dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
 import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
 import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
 import { AlwaysRespondResolver, type WireAdapter } from '../../src/always-respond'
 import { parseAlwaysRespondConfig } from '../../src/config'
 import type { TrueConfFlatConfig, TrueConfMultiAccountConfig } from '../../src/types'
 
-const dispatch = vi.mocked(dispatchInboundDirectDmWithRuntime)
+const dispatch = vi.mocked(dispatchInboundDirectDm)
 const BOT_ID = 'bot@srv'
 
 interface Harness {

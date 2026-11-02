@@ -47,7 +47,7 @@ describe('bin: npx-cache ephemeral-host gate', () => {
 
     expect(caught).toBeDefined()
     expect(caught.message).not.toContain(HALT)
-    expect(caught.message).toContain('openclaw plugins install @trueconf-community/trueconf-openclaw-channel')
+    expect(caught.message).toContain('openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel')
     expect(caught.message).toContain(NPX_HOST)
     expect(caught.userFacing).toBe(true)
     expect(existsSync(configPath)).toBe(false)
@@ -124,7 +124,7 @@ describe('bin: npx-cache ephemeral-host gate', () => {
 
     expect(caught).toBeDefined()
     expect(caught.userFacing).toBe(true)
-    expect(caught.message).toContain('openclaw plugins install @trueconf-community/trueconf-openclaw-channel')
+    expect(caught.message).toContain('openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel')
     expect(existsSync(configPath)).toBe(false)
   })
 
@@ -140,7 +140,7 @@ describe('bin: npx-cache ephemeral-host gate', () => {
 
     expect(caught).toBeDefined()
     expect(caught.userFacing).toBe(true)
-    expect(caught.message).toContain('openclaw plugins install @trueconf-community/trueconf-openclaw-channel')
+    expect(caught.message).toContain('openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel')
     expect(existsSync(configPath)).toBe(false)
   })
 })

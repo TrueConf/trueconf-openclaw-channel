@@ -57,18 +57,20 @@
 
 ## Требования
 
-- **OpenClaw** >= 2026.5.28
+- **OpenClaw** >= 2026.8.1
 - **TrueConf Server** >= 5.5.3 
 - **Учётная запись бота** на TrueConf Server 
 
 ## Установка
 
-Предварительно нужны: `node >= 22.14`, `npm`, `openclaw` (`npm install -g openclaw@latest`).
+Предварительно нужны: `npm`, `openclaw` >= 2026.8.1 (`npm install -g openclaw@latest`) и та версия Node.js, которую требует ваш OpenClaw: для 2026.8–2026.9 — Node 22.22.3+, 24.15.0+ или 25.9.0+; для 2026.10 — Node 24.22.1+ или 26.12.1+.
+
+Флаг `--accept-capabilities` в командах установки ниже выдаёт плагину заявленные им возможности (канал, инструменты). Без него OpenClaw 2026.10 пишет `requires capability consent` и плагин не ставит.
 
 ### Из npm (рекомендуется)
 
 ```bash
-openclaw plugins install @trueconf-community/trueconf-openclaw-channel
+openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel
 npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
 openclaw gateway
 ```
@@ -82,7 +84,7 @@ git clone https://github.com/TrueConf/trueconf-openclaw-channel.git
 cd trueconf-openclaw-channel
 npm install
 npm run build
-openclaw plugins install -l .
+openclaw plugins install --accept-capabilities -l .
 npm run setup      
 openclaw gateway
 ```
@@ -99,7 +101,7 @@ export TRUECONF_USE_TLS=true                   # опционально; по у
 export TRUECONF_PORT=443                       # опционально; любой порт 1-65535
 export TRUECONF_ACCEPT_UNTRUSTED_CA=true       # обязательно если cert самоподписанный и мастер установки должен его скачать
 
-openclaw plugins install @trueconf-community/trueconf-openclaw-channel
+openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel
 npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
 openclaw gateway
 ```
@@ -206,7 +208,7 @@ openclaw gateway
 | Поле | Тип | По умолчанию | Описание |
 |------|-----|--------------|----------|
 | `dmPolicy` | string | `"open"` | Политика доступа к личным диалогам: `"open"` (все), `"allowlist"` (только из `allowFrom`), `"closed"` / `"disabled"` (никто). `"pairing"` зарезервировано под будущую функциональность, сейчас работает как `"open"` |
-| `allowFrom` | string[] | — | Список TrueConf ID (`user@server`), которым разрешено писать боту в личные сообщения при `dmPolicy: "allowlist"` |
+| `allowFrom` | string[] | — | Список TrueConf ID (`user@server`), которым разрешено писать боту в личные сообщения при `dmPolicy: "allowlist"`. Если `dmPolicy: "open"` задан явно, добавьте сюда `"*"`: OpenClaw 2026.10 предупреждает `dmPolicy="open" but channels.trueconf.allowFrom does not include "*"; all DMs will be dropped` |
 | `maxFileSize` | number (байты) | `52428800` (50 МБ) | Максимальный размер одного файла. Применяется к входящим и исходящим файлам одинаково. Диапазон 1 байт — 2 ГБ; при выходе из диапазона канал пишет `[trueconf] Invalid maxFileSize: ...` в лог и использует значение по умолчанию |
 | `groupAlwaysRespondIn` | string[] | `[]` | Список названий и/или chatId групп, где бот отвечает на каждое сообщение, минуя mention/reply gate. Форматы: `<name>`, `title:<name>`, `chatId:<id>`. См. раздел [«Чаты, где бот всегда отвечает»](#чаты-где-бот-всегда-отвечает) выше |
 
@@ -423,11 +425,11 @@ Callback `setChatMutationHandler` (события edit / remove / clearHistory) 
 
 ### `openclaw plugins install` блокируется сканером безопасности
 
-- **Симптом:** `openclaw plugins install @trueconf-community/trueconf-openclaw-channel` падает с critical-находкой сканера про `Environment variable access combined with network send` в `bin/trueconf-setup.mjs`, `src/channel-setup.ts` или `src/ws-client.ts`.
+- **Симптом:** `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel` падает с critical-находкой сканера про `Environment variable access combined with network send` в `bin/trueconf-setup.mjs`, `src/channel-setup.ts` или `src/ws-client.ts`.
 - **Причина:** Сканер плагинов openclaw использует per-file regex, который ловит любой исходный файл, содержащий и `process.env`, и одно из `fetch` / `post` / `http.request`. Версии плагина до scanner-friendly рефакторинга держали env-чтения inline в этих файлах; в текущем релизе они вынесены в `src/env-config.ts`, поэтому regex сканера больше не срабатывает.
 - **Решение:** Обновитесь до последней опубликованной версии `@trueconf-community/trueconf-openclaw-channel` — scanner-friendly рефакторинг уже в релизе. Если вы запинены на старой версии (или ваша сборка openclaw использует кастомный набор правил сканера, который всё равно flags текущий релиз), fallback — install с dangerous-flag override:
   ```bash
-  openclaw plugins install --dangerously-force-unsafe-install @trueconf-community/trueconf-openclaw-channel
+  openclaw plugins install --accept-capabilities --dangerously-force-unsafe-install @trueconf-community/trueconf-openclaw-channel
   ```
 - **Чего не стоит делать:** Не используйте `--dangerously-force-unsafe-install` как install-команду по умолчанию. Флаг отключает ВСЕ проверки безопасности плагинов, не только правило env-harvesting, и для ВСЕХ плагинов, которые этим флагом ставятся. Сначала пробуйте обновлённый плагин; флаг — только как last-resort совместимость со старыми версиями.
 
@@ -437,7 +439,7 @@ Callback `setChatMutationHandler` (события edit / remove / clearHistory) 
 - **Причина:** `trueconf-setup` запускали через `npx -p ... trueconf-setup` **без** предварительного `openclaw plugins install`. Мастер записал временную npx-папку (`~/.npm/_npx/<hash>/...`) как путь загрузки плагина; после очистки кэша канал перестаёт находиться.
 - **Решение:** удалите устаревшую запись `~/.npm/_npx/...` из `plugins.load.paths` в `~/.openclaw/openclaw.json` (или выполните `openclaw doctor --fix`, если ваша сборка openclaw это поддерживает), затем переустановите и запустите настройку заново:
   ```bash
-  openclaw plugins install @trueconf-community/trueconf-openclaw-channel
+  openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel
   npx -y -p @trueconf-community/trueconf-openclaw-channel trueconf-setup
   openclaw gateway
   ```
@@ -447,7 +449,7 @@ Callback `setChatMutationHandler` (события edit / remove / clearHistory) 
 
 - **Симптом:** плагин был установлен и загружался, но после успешного прогона `trueconf-setup` gateway молча его пропускает — в логе нет строк `[trueconf]`, канала нет в `openclaw channels status`.
 - **Причина:** версии плагина до 1.2.9 удаляли `plugins.entries.trueconf` из `openclaw.json` как «устаревшую» запись (1.2.8 починил это для установки из tarball, но не для установки с registry — та живёт в `~/.openclaw/npm/projects/`). На openclaw 2026.6.x эта запись — живой признак включения установленного плагина, и её удаление отключало плагин.
-- **Решение:** обновите плагин до >= 1.2.9 (теперь очистка срабатывает только при отсутствии следов установки), затем восстановите запись — повторно выполните `openclaw plugins install @trueconf-community/trueconf-openclaw-channel` или верните её вручную в `~/.openclaw/openclaw.json`:
+- **Решение:** обновите плагин до >= 1.2.9 (теперь очистка срабатывает только при отсутствии следов установки), затем восстановите запись — повторно выполните `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel` или верните её вручную в `~/.openclaw/openclaw.json`:
   ```json
   { "plugins": { "entries": { "trueconf": { "enabled": true } } } }
   ```
@@ -471,7 +473,7 @@ Callback `setChatMutationHandler` (события edit / remove / clearHistory) 
   1. Вы пишете боту из-под того же аккаунта — нужно писать от **другого** пользователя.
   2. Сообщение в групповом чате без @-mention и без reply на бота — в группе нужно явно обратиться (см. раздел [Групповые чаты](#групповые-чаты)). В логе будет строка `group <chatId>: no mention/reply, dropping`.
   3. Сообщение в TrueConf-канале (`chatType=6`) — бот их игнорирует. В логе: `dropping channel message chatId=<id>`.
-  4. `dmPolicy: "allowlist"` и отправитель не в `allowFrom`. В логе: `DM blocked for <id> by policy`.
+  4. `dmPolicy: "allowlist"` и отправитель не в `allowFrom`. В логе: `DM blocked for <id> by policy`. При `dmPolicy: "open"` на OpenClaw 2026.10 в `allowFrom` должен быть `"*"`, иначе при запуске в логе предупреждение `all DMs will be dropped`.
   5. LLM-провайдер не настроен — запустите `openclaw configure`.
   6. LLM-провайдер недоступен из сети — проверьте доступ или используйте Ollama.
 

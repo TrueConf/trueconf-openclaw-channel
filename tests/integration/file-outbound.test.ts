@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url'
 import sharp from 'sharp'
 
 vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
-  dispatchInboundDirectDmWithRuntime: vi.fn().mockResolvedValue({}),
+  dispatchInboundDirectDm: vi.fn().mockResolvedValue({}),
 }))
 
 import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'

@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Direct messages are dispatched with `dispatchInboundDirectDm` instead of the deprecated `dispatchInboundDirectDmWithRuntime`. OpenClaw retires the old function on 2026-12-31 and removes it in its first January 2027 stable release, which would stop the plugin from loading. The new function takes the same parameters without `runtime` and resolves the route, envelope and turn dispatch inside OpenClaw.
+
+### Changed
+- The minimum OpenClaw version is 2026.8.1 (was 2026.5.28): `dispatchInboundDirectDm` is exported from `openclaw/plugin-sdk/channel-inbound` since 2026.8.1. CI tests the locked OpenClaw at that floor. OpenClaw 2026.8.1 itself requires Node 22.22.3+, 24.15.0+ or 25.9.0+.
+- The package passes ClawHub validation with no warnings and can be published there. `package.json` declares `openclaw.build.openclawVersion` (the locked OpenClaw it is built against, 2026.8.1), which ClawHub requires; a test keeps it equal to the lockfile.
+- `openclaw.plugin.json` uses `name` and `description` instead of `label` and `blurb`, declares the `channels` category, and drops `minOpenClawVersion`. OpenClaw reads none of the removed fields (the channel label and blurb come from `package.json#openclaw.channel`), and the minimum version stays in `openclaw.compat`.
+- The package ships `assets/icon.png` (the TrueConf logo, 512×512), which ClawHub shows as the plugin icon.
+- Install commands in the README and in the setup wizard's hint use `openclaw plugins install --accept-capabilities`: OpenClaw 2026.10 refuses to install the plugin without capability consent. The README lists the Node.js versions OpenClaw requires and notes that `dmPolicy: "open"` needs `allowFrom: ["*"]` on OpenClaw 2026.10.
+- Checked on a live TrueConf server with OpenClaw 2026.10.9: a direct message gets a model reply, and an image reply arrives as a photo with its preview.
+
 ## [1.2.13] - 2026-11-02
 
 ### Fixed

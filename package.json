@@ -31,6 +31,7 @@
     "index.ts",
     "src/",
     "openclaw.plugin.json",
+    "assets/icon.png",
     "README.md",
     "LICENSE",
     "llms.txt",
@@ -48,8 +49,11 @@
     ],
     "setupEntry": "./dist/src/setup-entry.js",
     "compat": {
-      "pluginApi": ">=2026.5.28",
-      "minGatewayVersion": "2026.5.28"
+      "pluginApi": ">=2026.8.1",
+      "minGatewayVersion": "2026.8.1"
+    },
+    "build": {
+      "openclawVersion": "2026.8.1"
     },
     "install": {
       "npmSpec": "@trueconf-community/trueconf-openclaw-channel"
@@ -78,7 +82,7 @@
     "@types/node": "^22.14.0",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.1.0",
-    "openclaw": ">=2026.5.28",
+    "openclaw": ">=2026.8.1",
     "oxfmt": "^0.42.0",
     "oxlint": "^1.57.0",
     "tsc-alias": "^1.8.10",
@@ -86,7 +90,7 @@
     "vitest": "^4.1.0"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.5.28"
+    "openclaw": ">=2026.8.1"
   },
   "publishConfig": {
     "access": "public"

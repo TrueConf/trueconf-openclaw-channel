@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
-  dispatchInboundDirectDmWithRuntime: vi.fn().mockResolvedValue({}),
+  dispatchInboundDirectDm: vi.fn().mockResolvedValue({}),
 }))
 
 // loadOutboundMediaFromUrl applies the SDK's strict SSRF guard, which rejects
@@ -25,12 +25,12 @@ vi.mock('../../src/inbound', async (importOriginal) => {
   return { ...actual, prepareInboundAttachment: vi.fn() }
 })
 
-import { dispatchInboundDirectDmWithRuntime } from 'openclaw/plugin-sdk/channel-inbound'
+import { dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
 import { prepareInboundAttachment } from '../../src/inbound'
 import { __getAccountsForTesting, __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
 import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
 
-const dispatch = vi.mocked(dispatchInboundDirectDmWithRuntime)
+const dispatch = vi.mocked(dispatchInboundDirectDm)
 
 interface Harness {
   abort: () => void

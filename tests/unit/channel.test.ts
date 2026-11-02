@@ -299,7 +299,7 @@ describe('startAccount onTerminalFailure → outboundQueue.failAll wiring', () =
     })
 
     vi.doMock('openclaw/plugin-sdk/channel-inbound', () => ({
-      dispatchInboundDirectDmWithRuntime: vi.fn().mockResolvedValue({}),
+      dispatchInboundDirectDm: vi.fn().mockResolvedValue({}),
     }))
 
     const { channelPlugin, registerFull, __resetForTesting } = await import('../../src/channel')
@@ -382,7 +382,7 @@ describe('startAccount cleanup when lifecycle.start() fails', () => {
     })
 
     vi.doMock('openclaw/plugin-sdk/channel-inbound', () => ({
-      dispatchInboundDirectDmWithRuntime: vi.fn().mockResolvedValue({}),
+      dispatchInboundDirectDm: vi.fn().mockResolvedValue({}),
     }))
 
     const { channelPlugin, registerFull, __resetForTesting, __getAccountsForTesting } = await import('../../src/channel')

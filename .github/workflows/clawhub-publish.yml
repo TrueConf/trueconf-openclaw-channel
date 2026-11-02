@@ -40,6 +40,9 @@ jobs:
 
       - name: Pack the release from npm
         id: pack
+        # An explicit `bash` adds pipefail, so a failed `npm pack` fails the
+        # pipeline below and gets retried instead of yielding an empty name.
+        shell: bash
         env:
           VERSION: ${{ inputs.version }}
         run: |

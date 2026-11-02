@@ -3,21 +3,19 @@ name: ClawHub scan
 # Scans the package with what ClawHub runs on a published version, so a warning
 # costs a rerun instead of a release:
 #   - ClawHub's static scan (npm run scan:clawhub), the same code as the site;
-#   - ClawScan's clawhub profile (.github/clawscan/clawscan.yml): SkillSpector, ClawScan static, A.I.G
-#     (skipped for plugins) and a Codex judge that reads the whole package and
-#     gives the verdict.
-# OPENAI_BASE_URL sends the profile's OpenAI calls to OpenRouter, which accepts
-# the same model name, with the OPENROUTER_API_KEY secret; each run costs
-# money. The judge's verdict varies between runs: a benign result lowers the
-# odds of a "suspicious" badge but does not rule it out.
+#   - ClawScan's clawhub profile (.github/clawscan/clawscan.yml): SkillSpector,
+#     ClawScan static, A.I.G (skipped for plugins) and a Codex judge that reads
+#     the whole package and gives the verdict.
+# The models run on OpenRouter, which accepts OpenAI's model names, with the
+# OPENROUTER_API_KEY secret; a run takes about 15 minutes and costs money.
+# The judge's verdict varies between runs: a benign result lowers the odds of
+# a "suspicious" badge but does not rule it out.
 #
 # ClawScan is built from a main commit rather than the 0.3.0 release: only main
 # lets the judge read a partial SkillSpector report (openclaw/clawscan#129),
 # and SkillSpector covers this package only partially. CLAWSCAN_IMAGE is the
 # runtime image built from the same commit.
 on:
-  push:  # TEMP: testing before merge
-    branches: [clawhub-local-scan]
   workflow_dispatch:
     inputs:
       version:

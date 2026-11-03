@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.3.0] - 2026-11-03
 
 ### Added
 - Several OpenClaw instances can share one TrueConf bot account. OpenClaw's standard keys decide which groups an instance serves and who may address it there: `groups` (keyed by chatId or `"*"`, with `requireMention`, `enabled`, `allowFrom`, `tools` and `toolsBySender`), `groupPolicy` (`"open"`, the default, `"disabled"` or `"allowlist"`) and `groupAllowFrom`. Without `groups`, every group is served, as before. A message in a group the instance does not serve gets no reply and is not kept; the first one per chat logs `ignoring group chatId=<id> title="<title>": <reason>`, so the chatId can be copied into `groups`. The README explains the setup and warns that every instance receives every message of the account.

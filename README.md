@@ -322,7 +322,14 @@ Messages without a reply, mention or nickname are visible to the bot but get no 
 
 - Chat type is determined via `getChatByID` on the first message in a new chat and cached until the gateway restarts. 
 - Each group chat has its own OpenClaw session, `agent:<agentId>:trueconf:group:<chatId>`, separate from direct messages and from other groups. The history is shared across the group, not per participant. Each message's `senderId` is preserved so the LLM knows who is speaking.
+- Group history from before per-group sessions stays in the main session (`agent:main:main` for the default agent). `session.groupScope: "main"` routes all groups back into the main session.
+- A group turn carries the group address, `trueconf:group:<chatId>`, as `From`, `To` and `OriginatingTo`, while `SenderId` stays the person. A message-tool send without a target, a queued follow-up or a restart notice goes to the group, and the agent can also address a group as `group:<chatId>`.
+- OpenClaw applies its group rules. The group system prompt tells the model to mostly lurk, reply when addressed or useful, and answer `NO_REPLY` to stay silent; a generic run failure ends silently instead of posting an error.
+- `messages.groupChat.*` settings apply, including `visibleReplies: "message_tool"`, where only `message(action=send)` posts to the group.
+- With `agents.defaults.sandbox.mode: "non-main"`, group sessions run in the sandbox. The agent's main session watches group sessions after their first human turn.
+- Two bot accounts in the same group under one agent share that group's session. To separate them, bind each account to its own agent with `bindings` and `match.accountId`.
 - Direct messages follow OpenClaw's `session.dmScope`. With the default `main`, all DMs share the agent's main session. To give each TrueConf user a separate session, set `session.dmScope: "per-channel-peer"` in `openclaw.json`.
+- Only DM turns address the bot's own JID, so only they trigger the bot-JID self-send redirect. The redirect keeps one last inbound conversation per account.
 - `dmPolicy` applies only to direct messages. In groups, filtering is based solely on mention, reply and nicknames.
 - TrueConf channels (`chatType=6`) are ignored — the bot does not respond in them. Log: `[trueconf] dropping channel message chatId=<id>`.
 
@@ -337,7 +344,7 @@ Besides `@`, the bot can answer to nicknames such as "Клешня". Ask the bot
 
 ### Always-respond chats
 
-By default the bot only replies in groups when @-mentioned or replied to. To make the bot respond to every message in a specific group, list it in `groupAlwaysRespondIn`:
+By default the bot only replies in groups when @-mentioned or replied to. To pass every message in a specific group to the agent, list it in `groupAlwaysRespondIn`:
 
 ```json
 {
@@ -368,6 +375,8 @@ By default the bot only replies in groups when @-mentioned or replied to. To mak
 **Duplicate titles:** if one configured title matches multiple groups, the bypass applies to all of them and the plugin warns. For pinpoint targeting, use `chatId:`.
 
 **Multi-account:** the list is shared across all accounts in the channel. A title `"HR"` matches the same-named group in every account that has one. `chatId` is globally unique on a TrueConf server — if two accounts are members of the same group, the chatId is identical for both.
+
+**Activation:** OpenClaw marks these chats "always-on". The model sees every message and may answer `NO_REPLY` to stay silent, so not every message gets a reply.
 
 **Limitations:**
 

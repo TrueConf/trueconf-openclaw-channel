@@ -3,7 +3,21 @@
 ## [Unreleased]
 
 ### Fixed
-- Each group chat gets its own OpenClaw session, `agent:<agentId>:trueconf:group:<chatId>`, with chat type `group`. Before, group messages were dispatched as direct messages, so under the default `session.dmScope: "main"` every group chat and every DM shared the agent's main session, and `session.groupScope` and bindings on `peer.kind: "group"` did not apply. **Behavior change:** a group's history no longer mixes with DMs and other groups. Earlier group turns stay in the main session. DMs still follow `session.dmScope`; set it to `"per-channel-peer"` to give each TrueConf user a separate session.
+- Each group chat gets its own OpenClaw session, `agent:<agentId>:trueconf:group:<chatId>`, with chat type `group`. Before, group messages were dispatched as direct messages, so every group and every DM shared the agent's main session, and `session.groupScope` and group bindings did not apply.
+- Group turns name the group, `trueconf:group:<chatId>`, as `From`, `To` and `OriginatingTo` instead of the sender and the bot. Message-tool sends without a target, queued follow-ups and restart notices now reach the group, and outbound accepts `trueconf:group:<chatId>` and `group:<chatId>` targets.
+- Group turns report whether the bot was addressed (an @-mention, a reply to the bot or a nickname) instead of always claiming a mention. Always-respond chats pass `GroupRequireMention: false`.
+
+### Changed
+- **Behavior change:** a group's history no longer mixes with DMs and other groups. Earlier group turns stay in the main session (`agent:main:main` for the default agent).
+- **Behavior change:** TrueConf groups get OpenClaw's group system prompt, which tells the model to mostly lurk, reply when addressed or useful, and answer `NO_REPLY` to stay silent. In always-respond chats the activation is "always-on", so the model may now stay silent instead of answering every message.
+- With `agents.defaults.sandbox.mode: "non-main"`, TrueConf group sessions are non-main sessions and run in the sandbox.
+- **Behavior change:** a generic run failure in a group ends silently instead of posting "Something went wrong".
+- `messages.groupChat.*` settings apply to TrueConf groups, including `visibleReplies: "message_tool"`.
+- The agent's main session watches TrueConf group sessions after their first human turn.
+- `session.groupScope: "main"` routes all TrueConf groups back into the agent's main session.
+- Two TrueConf accounts in the same group under one agent share that group's session. To separate them, bind each account to its own agent with `bindings` and `match.accountId`.
+- Only DM turns address the bot's own JID now, so only they trigger the bot-JID self-send redirect. The redirect still keeps one last inbound conversation per account.
+- DMs still follow `session.dmScope`; `"per-channel-peer"` gives each TrueConf user a separate session.
 
 ## [1.2.16] - 2026-11-02
 

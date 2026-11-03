@@ -38,6 +38,10 @@ export interface FakeOAuthRequest {
   body: string
 }
 
+// How the fake answers getUserDisplayName for one user: a name, a non-zero
+// errorCode, or no answer at all.
+export type FakeDisplayName = string | { errorCode: number } | 'hang'
+
 export interface FakeChat {
   chatId: string
   title: string
@@ -62,6 +66,8 @@ export interface FakeServer {
   uploadFileRequests: FakeRequest[]
   sendFileRequests: FakeRequest[]
   getChatByIdRequests: FakeRequest[]
+  getFileInfoRequests: FakeRequest[]
+  getUserDisplayNameRequests: FakeRequest[]
   createP2PChatRequests: FakeRequest[]
   subscribeFileProgressRequests: FakeRequest[]
   unsubscribeFileProgressRequests: FakeRequest[]
@@ -86,6 +92,8 @@ export interface FakeServer {
   respondUploadTaskId: (value: string) => void
   respondTemporalFileId: (value: string) => void
   setChatType: (chatId: string, chatType: number) => void
+  // Users without an entry get { errorCode: 0 } and no displayName.
+  setDisplayName: (userId: string, reply: FakeDisplayName) => void
   setOauthResponse: (response: FakeOAuthResponse) => void
   // When true, the OAuth POST handler accepts the request body but never
   // writes a response — used by integration tests that need AbortSignal.timeout
@@ -126,6 +134,9 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
   const uploadFileRequests: FakeRequest[] = []
   const sendFileRequests: FakeRequest[] = []
   const getChatByIdRequests: FakeRequest[] = []
+  const getFileInfoRequests: FakeRequest[] = []
+  const getUserDisplayNameRequests: FakeRequest[] = []
+  const displayNames = new Map<string, FakeDisplayName>()
   const createP2PChatRequests: FakeRequest[] = []
   const subscribeFileProgressRequests: FakeRequest[] = []
   const unsubscribeFileProgressRequests: FakeRequest[] = []
@@ -298,7 +309,16 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
         return
       }
       if (method === 'getFileInfo') {
+        getFileInfoRequests.push({ id, method, payload })
         replyFileInfo(ws, id, String(payload.fileId ?? ''))
+        return
+      }
+      if (method === 'getUserDisplayName') {
+        getUserDisplayNameRequests.push({ id, method, payload })
+        const reply = displayNames.get(String(payload.userId ?? ''))
+        if (reply === 'hang') return
+        if (typeof reply === 'string') send(ws, { type: 2, id, payload: { errorCode: 0, displayName: reply } })
+        else send(ws, { type: 2, id, payload: { errorCode: reply?.errorCode ?? 0 } })
         return
       }
       if (method === 'subscribeFileProgress') {
@@ -377,6 +397,8 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
     uploadFileRequests,
     sendFileRequests,
     getChatByIdRequests,
+    getFileInfoRequests,
+    getUserDisplayNameRequests,
     createP2PChatRequests,
     subscribeFileProgressRequests,
     unsubscribeFileProgressRequests,
@@ -393,6 +415,7 @@ export async function startFakeServer(opts: FakeServerOptions = {}): Promise<Fak
     setOauthResponse(value) { oauthResponse = value },
     setHangOauth(value) { oauthHangs = value },
     setChatType(chatId, chatType) { chatTypeOverrides.set(chatId, chatType) },
+    setDisplayName(userId, reply) { displayNames.set(userId, reply) },
     pushInbound(envelope) {
       const id = nextServerRequestId++
       for (const ws of connections) send(ws, { type: 1, id, method: 'sendMessage', payload: envelope })

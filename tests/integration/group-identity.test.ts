@@ -94,4 +94,41 @@ describe('integration: group title and sender names', () => {
     )
     expect(labels).toEqual({ g1: 'Отдел продаж', g2: 'Group untitled', g3: 'Продажи' })
   })
+
+  it('names the sender from getUserDisplayName and falls back to the userId on an error or a 3 s timeout', { timeout: 15_000 }, async () => {
+    server.chats.add({ chatId: 'team', title: 'Team', chatType: 2 })
+    server.setDisplayName(ALICE, 'Александр Пономарёв')
+    server.setDisplayName('bob@srv', { errorCode: 304 })
+    server.setDisplayName('carol@srv', 'hang')
+    harness = await bootPlugin(server)
+
+    server.pushInbound(mention('team', 'n1', ALICE))
+    server.pushInbound(mention('team', 'n2', 'bob@srv'))
+    server.pushInbound(mention('team', 'n3', 'carol@srv'))
+    await waitFor(() => groupDispatch.mock.calls.length >= 3, 8000)
+
+    const seen = Object.fromEntries(
+      groupTurns().map(({ ctxPayload }) => [
+        ctxPayload.messageId,
+        { sender: ctxPayload.sender, body: ctxPayload.message.body, bodyForAgent: ctxPayload.message.bodyForAgent },
+      ]),
+    )
+    expect(seen).toEqual({
+      n1: {
+        sender: { id: ALICE, name: 'Александр Пономарёв' },
+        body: '[TrueConf Team] Александр Пономарёв (alice@srv): Bot hi',
+        bodyForAgent: 'Александр Пономарёв (alice@srv): Bot hi',
+      },
+      n2: {
+        sender: { id: 'bob@srv', name: 'bob@srv' },
+        body: '[TrueConf Team] bob@srv: Bot hi',
+        bodyForAgent: 'bob@srv: Bot hi',
+      },
+      n3: {
+        sender: { id: 'carol@srv', name: 'carol@srv' },
+        body: '[TrueConf Team] carol@srv: Bot hi',
+        bodyForAgent: 'carol@srv: Bot hi',
+      },
+    })
+  })
 })

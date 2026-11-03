@@ -43,6 +43,7 @@ import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './a
 import { WsClient, ConnectionLifecycle } from './ws-client'
 import { OutboundQueue } from './outbound-queue'
 import { dispatchGroupInbound, type InboundTurn } from './group-inbound'
+import { DisplayNames } from './display-names'
 import { formatTarget, parseTarget, type TrueConfTarget } from './target'
 import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage, InboundExtraContext, InboundMediaContext } from './types'
 
@@ -87,6 +88,7 @@ export interface AccountEntry {
   sendQueue: PerChatSendQueue
   outboundQueue: OutboundQueue
   alwaysRespond: AlwaysRespondResolver
+  displayNames: DisplayNames
 }
 
 // Tears down a single account entry: stops its lifecycle and closes the
@@ -558,6 +560,14 @@ export const channelPlugin = {
         },
       }
 
+      const displayNames = new DisplayNames(async (userId) => {
+        const resp = await wsClient.sendRequest('getUserDisplayName', { userId })
+        const errorCode = responseErrorCode(resp)
+        if (errorCode !== undefined && errorCode !== 0) throw new Error(`errorCode ${errorCode}`)
+        const name = resp.payload?.displayName
+        return typeof name === 'string' && name.trim() ? name.trim() : null
+      }, logger)
+
       const alwaysRespond = new AlwaysRespondResolver(
         parseAlwaysRespondConfig(channelConfig.groupAlwaysRespondIn, logger),
         wireAdapter,
@@ -813,6 +823,7 @@ export const channelPlugin = {
             ...turn,
             chatId: inboundMsg.chatId,
             title: store.chatsById.get(inboundMsg.chatId)?.title ?? '',
+            senderName: await displayNames.resolve(inboundMsg.senderId),
             wasMentioned: inboundMsg.wasMentioned,
             requireMention: !alwaysRespond.isAlwaysRespond(inboundMsg.chatId),
           }).catch(onFailure('dispatchGroupInbound'))
@@ -891,6 +902,7 @@ export const channelPlugin = {
         sendQueue,
         outboundQueue,
         alwaysRespond,
+        displayNames,
       })
 
       try {

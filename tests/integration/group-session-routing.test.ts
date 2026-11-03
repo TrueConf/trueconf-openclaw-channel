@@ -182,6 +182,7 @@ describe('integration: session routing with real OpenClaw routing', () => {
   // Fails when OpenClaw starts filling a DM context field that the group path
   // does not supply, or when the two paths drift on a shared field.
   it('the same message builds the same context in a DM and a group, except for the group facts', async () => {
+    server.setDisplayName(ALICE, 'Alice Liddell')
     harness = await bootPlugin(server, { groupAlwaysRespondIn: [`chatId:${GROUP_CHAT}`] })
     const message = {
       type: 200,
@@ -210,21 +211,26 @@ describe('integration: session routing with real OpenClaw routing', () => {
     const differing = Object.fromEntries(
       dmKeys.filter((k) => groupKeys.includes(k) && !isDeepStrictEqual(dm[k], group[k])).map((k) => [k, [dm[k], group[k]]]),
     )
+    // A group line names its speaker in Body and BodyForAgent (agentText is
+    // core's copy of BodyForAgent); a DM has one speaker. The group
+    // SenderName is the TrueConf display name.
     expect(differing).toEqual({
       // The envelope timestamp is rendered in the machine's time zone.
       Body: [
         expect.stringMatching(/^\[TrueConf DM with alice@srv .+\] hello$/),
-        expect.stringMatching(/^\[TrueConf Team chat .+\] hello$/),
+        expect.stringMatching(/^\[TrueConf Team chat .+\] Alice Liddell \(alice@srv\): hello$/),
       ],
+      BodyForAgent: ['hello', 'Alice Liddell (alice@srv): hello'],
       ChatId: ['alice@srv', 'e28a99f1c0d34b7a'],
       ChatType: ['direct', 'group'],
       ConversationLabel: ['DM with alice@srv', 'Team chat'],
       ConversationRoutePeerId: ['alice@srv', 'e28a99f1c0d34b7a'],
       From: ['alice@srv', 'trueconf:group:e28a99f1c0d34b7a'],
       OriginatingTo: ['alice@srv', 'trueconf:group:e28a99f1c0d34b7a'],
-      SenderName: ['DM with alice@srv', 'alice@srv'],
+      SenderName: ['DM with alice@srv', 'Alice Liddell'],
       SessionKey: ['agent:main:main', 'agent:main:trueconf:group:e28a99f1c0d34b7a'],
       To: ['bot@srv', 'trueconf:group:e28a99f1c0d34b7a'],
+      agentText: ['hello', 'Alice Liddell (alice@srv): hello'],
     })
     expect({ dm: dm.NativeDirectUserId, group: [group.GroupSubject, group.WasMentioned, group.GroupRequireMention] }).toEqual({
       dm: 'alice@srv',

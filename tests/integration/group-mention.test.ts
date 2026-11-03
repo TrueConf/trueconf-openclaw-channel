@@ -119,7 +119,12 @@ describe('integration: group chat mention/reply gate', () => {
       sender: { id: ALICE },
       conversation: { kind: 'group', id: GROUP_CHAT, label: 'Team chat' },
       reply: { to: 'trueconf:group:group_123', originatingTo: 'trueconf:group:group_123' },
-      message: { body: 'Bot what is up', rawBody: 'Bot what is up', commandBody: 'Bot what is up' },
+      message: {
+        body: '[TrueConf Team chat] alice@srv: Bot what is up',
+        bodyForAgent: 'alice@srv: Bot what is up',
+        rawBody: 'Bot what is up',
+        commandBody: 'Bot what is up',
+      },
       access: { commands: { authorized: false }, mentions: { wasMentioned: true, requireMention: true } },
     })
   })

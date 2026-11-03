@@ -40,6 +40,7 @@ function makeCtx(opts: CtxOpts = {}) {
     allowsDirect: () => true,
     groupAccess: () => ({ kind: 'served', requireMention: true }),
     unservedChatsLogged: new Set(),
+    recordUnaddressed: () => {},
     matchesNickname: () => false,
   }
   return { ctx, dispatch, sendRequest, logger }

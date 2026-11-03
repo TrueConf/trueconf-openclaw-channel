@@ -62,6 +62,7 @@ function makeHarness(opts?: { chatType?: 'p2p' | 'group'; matchesNickname?: (tex
     allowsDirect: () => true,
     groupAccess: (chatId: string) => ({ kind: 'served', requireMention: !alwaysRespondChats.has(chatId) }),
     unservedChatsLogged: new Set(),
+    recordUnaddressed: () => {},
     matchesNickname: opts?.matchesNickname ?? (() => false),
   }
   return { ctx, dispatch, logger, wsClient, chats, recentBotMsgIds, alwaysRespondChats }

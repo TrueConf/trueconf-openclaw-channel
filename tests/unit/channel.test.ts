@@ -123,6 +123,7 @@ describe('invalidateChatState', () => {
     store.chatsById.set(chatId, { kind: 'group', title: '' })
     store.inflightChatLookups.set(chatId, Promise.resolve({ kind: 'group', title: '' }))
     store.recentBotMsgIdsByChat.set(chatId, new Set(['m1', 'm2']))
+    store.groupHistory.record(accountId, chatId, { sender: 'user-A', body: 'pending line', timestamp: 1 }, 50)
 
     invalidateChatState(store, accountId, chatId)
 
@@ -131,6 +132,7 @@ describe('invalidateChatState', () => {
     expect(store.chatsById.has(chatId)).toBe(false)
     expect(store.inflightChatLookups.has(chatId)).toBe(false)
     expect(store.recentBotMsgIdsByChat.has(chatId)).toBe(false)
+    expect(store.groupHistory.reserve(accountId, chatId, Infinity).entries).toEqual([])
   })
 
   it('does not touch other accounts or chats', async () => {

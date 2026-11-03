@@ -7,6 +7,7 @@ import {
   type dispatchInboundDirectDm,
 } from 'openclaw/plugin-sdk/channel-inbound'
 import { normalizeOutboundReplyPayload } from 'openclaw/plugin-sdk/reply-payload'
+import { buildHistoryContextFromEntries, type HistoryEntry } from 'openclaw/plugin-sdk/reply-history'
 import { groupAddress } from './target'
 import type { InboundExtraContext } from './types'
 
@@ -19,10 +20,13 @@ export type InboundTurn = Omit<
 
 // title: the chat's TrueConf title, or empty when getChatByID did not give one.
 // senderName: the sender's display name, or the sender id when unknown.
+// history: unaddressed lines since the bot last answered here, oldest first,
+// each sender already a speaker label.
 export type GroupInboundParams = InboundTurn & {
   chatId: string
   title: string
   senderName: string
+  history: readonly HistoryEntry[]
   wasMentioned: boolean
   requireMention: boolean
 }
@@ -79,10 +83,16 @@ export async function dispatchGroupInbound(params: GroupInboundParams): Promise<
         previousTimestamp,
         envelope: envelopeOptions,
       }),
-      // OpenClaw stores BodyForAgent as the session's user line, so a group
-      // session records who said what. Commands stay bare for core's parser.
+      // OpenClaw stores BodyForAgent as the session's user line, so the
+      // pending group lines and the speaker names land in the transcript.
+      // Commands stay bare for core's parser.
       bodyForAgent: params.commandBody === undefined
-        ? `${speakerLabel(params.senderId, params.senderName)}: ${params.rawBody}`
+        ? buildHistoryContextFromEntries({
+            entries: [...params.history],
+            currentMessage: `${speakerLabel(params.senderId, params.senderName)}: ${params.rawBody}`,
+            formatEntry: (line) => `${line.sender}: ${line.body}`,
+            excludeLast: false,
+          })
         : params.rawBody,
       rawBody: params.rawBody,
       commandBody: params.commandBody ?? params.rawBody,

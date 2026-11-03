@@ -42,7 +42,8 @@ import { trueconfSetupAdapter } from './setup-shared'
 import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './always-respond'
 import { WsClient, ConnectionLifecycle } from './ws-client'
 import { OutboundQueue } from './outbound-queue'
-import { dispatchGroupInbound, type InboundTurn } from './group-inbound'
+import { dispatchGroupInbound, speakerLabel, type InboundTurn } from './group-inbound'
+import { GroupHistory, NOTHING_RESERVED, resolveHistoryLimit } from './group-history'
 import { groupRequiresMention, resolveGroupAccess } from './group-policy'
 import { DisplayNames } from './display-names'
 import { formatTarget, parseTarget, type TrueConfTarget } from './target'
@@ -184,6 +185,9 @@ export function createRuntimeStore() {
     // Groups already logged as not served by this instance, so the log line
     // that names their chatId appears once per process.
     unservedChatsLogged: new Set<string>(),
+    // Unaddressed lines of served groups, per account and chat, until the
+    // next addressed turn there takes them.
+    groupHistory: new GroupHistory(),
     // Global bot-nickname store (disk-backed). Created in registerFull; read by
     // the inbound gate via inboundCtx.matchesNickname.
     nicknameStore: null as NicknameStore | null,
@@ -221,6 +225,7 @@ export function invalidateChatState(
   store.chatsById.delete(chatId)
   store.inflightChatLookups.delete(chatId)
   store.recentBotMsgIdsByChat.delete(chatId)
+  store.groupHistory.forget(accountId, chatId)
 }
 
 // Lazy-closure adapter for the WsClient `forceReconnect` option. WsClient is
@@ -823,14 +828,30 @@ export const channelPlugin = {
           await cleanupTemp()
         }
         if (inboundMsg.isGroup) {
-          await dispatchGroupInbound({
-            ...turn,
-            chatId: inboundMsg.chatId,
-            title: store.chatsById.get(inboundMsg.chatId)?.title ?? '',
-            senderName: await displayNames.resolve(inboundMsg.senderId),
-            wasMentioned: inboundMsg.wasMentioned,
-            requireMention: inboundMsg.requireMention,
-          }).catch(onFailure('dispatchGroupInbound'))
+          // A command goes to core's parser bare and leaves the group's
+          // pending lines for the next turn.
+          const history = isCommand
+            ? NOTHING_RESERVED
+            : store.groupHistory.reserve(accountId, inboundMsg.chatId, inboundMsg.timestamp)
+          try {
+            await dispatchGroupInbound({
+              ...turn,
+              chatId: inboundMsg.chatId,
+              title: store.chatsById.get(inboundMsg.chatId)?.title ?? '',
+              senderName: await displayNames.resolve(inboundMsg.senderId),
+              history: await Promise.all(history.entries.map(async (line) => ({
+                ...line,
+                sender: speakerLabel(line.sender, await displayNames.resolve(line.sender)),
+              }))),
+              wasMentioned: inboundMsg.wasMentioned,
+              requireMention: inboundMsg.requireMention,
+            })
+            history.commit()
+          } catch (err) {
+            await onFailure('dispatchGroupInbound')(err)
+          } finally {
+            history.release()
+          }
         } else {
           await dispatchInboundDirectDm({
             ...turn,
@@ -872,6 +893,11 @@ export const channelPlugin = {
             alwaysRespond: alwaysRespond.isAlwaysRespond(chatId),
           }),
           unservedChatsLogged: store.unservedChatsLogged,
+          recordUnaddressed: (chatId, line) => {
+            // Warm the name cache, so the turn that takes the line need not wait.
+            const limit = resolveHistoryLimit(store.fullConfig as OpenClawConfig | null)
+            if (store.groupHistory.record(accountId, chatId, line, limit)) void displayNames.resolve(line.sender)
+          },
           matchesNickname: (text) => store.nicknameStore?.matches(text) ?? false,
         }
         Promise.resolve(handleInboundMessage(msg, inboundCtx)).catch((err) => {
@@ -978,6 +1004,7 @@ export function registerFull(api: OpenClawPluginApi): void {
     store.chatsById.clear()
     store.inflightChatLookups.clear()
     store.recentBotMsgIdsByChat.clear()
+    store.groupHistory.clear()
   })
 }
 
@@ -1017,6 +1044,7 @@ export function __resetForTesting(): void {
   store.inflightChatLookups.clear()
   store.recentBotMsgIdsByChat.clear()
   store.unservedChatsLogged.clear()
+  store.groupHistory.clear()
   store.nicknameStore = null
   __resetCoalesceBufferForTesting()
 }

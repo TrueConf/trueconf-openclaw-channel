@@ -265,6 +265,10 @@
                 }
               }
             }
+          },
+          "historyLimit": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       }

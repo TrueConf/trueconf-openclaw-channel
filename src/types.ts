@@ -245,6 +245,8 @@ export interface TrueConfChannelOptions {
   groupPolicy?: GroupPolicy
   groupAllowFrom?: string[]
   groups?: Record<string, TrueConfGroupEntry>
+  // Unaddressed group lines kept per chat for the next addressed turn.
+  historyLimit?: number
 }
 
 export interface TrueConfFlatConfig extends TrueConfAccountConfig, TrueConfChannelOptions {

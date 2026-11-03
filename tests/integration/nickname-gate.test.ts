@@ -28,6 +28,7 @@ function makeCtx(opts: { matchesNickname?: (text: string) => boolean } = {}) {
     allowsDirect: () => true,
     groupAccess: () => ({ kind: 'served', requireMention: true }),
     unservedChatsLogged: new Set(),
+    recordUnaddressed: () => {},
     matchesNickname: opts.matchesNickname ?? (() => false),
   }
   return { ctx, dispatch }

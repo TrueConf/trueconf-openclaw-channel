@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { basename, resolve as pathResolve, sep as pathSep, join as pathJoin } from 'node:path'
 import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web'
 import { getMediaDir, kindFromMime, type MediaKind } from 'openclaw/plugin-sdk/media-runtime'
+import type { HistoryEntry } from 'openclaw/plugin-sdk/reply-history'
 import { fetch, type Dispatcher, type Response } from 'undici'
 import { getDefaultDispatcher } from './default-dispatcher'
 import { EnvelopeType, FileReadyState, TrueConfChatType } from './types'
@@ -243,6 +244,9 @@ export interface InboundContext {
   groupAccess: (chatId: string, senderId: string) => GroupAccess
   // `${accountId}\u0000${chatId}` of groups already logged as not served.
   unservedChatsLogged: Set<string>
+  // Keeps an unaddressed line of a served group as context for the next
+  // addressed turn there.
+  recordUnaddressed: (chatId: string, line: HistoryEntry) => void
   matchesNickname: (text: string) => boolean
 }
 
@@ -409,7 +413,17 @@ export async function handleInboundMessage(
       activated = replied || pending !== undefined
     }
     if (!activated && requireMention) {
-      ctx.logger.info(`[trueconf] group ${chatId}: no mention/reply for type ${envelope.type}, dropping`)
+      // Placeholder text only: a file is never downloaded for context.
+      const body = attachment ? `[File: ${sanitizeAttachmentName(attachment.name)}]` : (plainText ?? syntheticText ?? '')
+      if (body.trim()) {
+        ctx.recordUnaddressed(chatId, {
+          sender: stableUserId,
+          body,
+          timestamp: envelope.timestamp,
+          messageId: envelope.messageId,
+        })
+      }
+      ctx.logger.info(`[trueconf] group ${chatId}: no mention/reply for type ${envelope.type}, not dispatching`)
       return
     }
   }

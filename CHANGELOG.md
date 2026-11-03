@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Each group chat gets its own OpenClaw session, `agent:<agentId>:trueconf:group:<chatId>`, with chat type `group`. Before, group messages were dispatched as direct messages, so under the default `session.dmScope: "main"` every group chat and every DM shared the agent's main session, and `session.groupScope` and bindings on `peer.kind: "group"` did not apply. **Behavior change:** a group's history no longer mixes with DMs and other groups. Earlier group turns stay in the main session. DMs still follow `session.dmScope`; set it to `"per-channel-peer"` to give each TrueConf user a separate session.
+
 ## [1.2.16] - 2026-11-02
 
 ### Security

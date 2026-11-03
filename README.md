@@ -321,7 +321,8 @@ Messages without a reply, mention or nickname are visible to the bot but get no 
 **Technical details:**
 
 - Chat type is determined via `getChatByID` on the first message in a new chat and cached until the gateway restarts. 
-- Each group = one shared session. The bot's conversation history is shared across the group, not per participant. Each message's `senderId` is preserved so the LLM knows who is speaking.
+- Each group chat has its own OpenClaw session, `agent:<agentId>:trueconf:group:<chatId>`, separate from direct messages and from other groups. The history is shared across the group, not per participant. Each message's `senderId` is preserved so the LLM knows who is speaking.
+- Direct messages follow OpenClaw's `session.dmScope`. With the default `main`, all DMs share the agent's main session. To give each TrueConf user a separate session, set `session.dmScope: "per-channel-peer"` in `openclaw.json`.
 - `dmPolicy` applies only to direct messages. In groups, filtering is based solely on mention, reply and nicknames.
 - TrueConf channels (`chatType=6`) are ignored — the bot does not respond in them. Log: `[trueconf] dropping channel message chatId=<id>`.
 

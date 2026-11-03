@@ -51,8 +51,8 @@ export interface NicknameStore {
 
 // Global, flat, disk-backed list of bot nicknames. The list is global (one set
 // per bot) — no chatId — because activation runs in the channel layer before
-// the agent, and this bot lives in a single session where the tool layer cannot
-// see the originating chat (see spec "Почему не пер-чат"). Reads parse the file
+// the agent, and the nickname tools' context carries the sender but not the
+// originating chat (see spec "Почему не пер-чат"). Reads parse the file
 // directly so a corrupt file is observable (the SDK json-store hides
 // missing-vs-corrupt behind a single undefined); writes go through the SDK
 // saveJsonFile (it creates the dir and sets perms). Both load and persist log

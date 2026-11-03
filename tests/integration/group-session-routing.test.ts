@@ -127,7 +127,9 @@ describe('integration: session routing with real OpenClaw routing', () => {
       SenderId: ALICE,
       RawBody: 'Bot status?',
       WasMentioned: true,
-      To: 'bot@srv',
+      From: 'trueconf:group:e28a99f1c0d34b7a',
+      To: 'trueconf:group:e28a99f1c0d34b7a',
+      OriginatingTo: 'trueconf:group:e28a99f1c0d34b7a',
     })
     expect(dmDispatch).not.toHaveBeenCalled()
   })

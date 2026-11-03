@@ -92,6 +92,40 @@ describe('integration: group-context outbound (tool path)', () => {
     await rm(workDir, { recursive: true, force: true }).catch(() => {})
   })
 
+  it.each(['trueconf:group:grp_target', 'group:grp_target'])('sendText to %s posts into that chat without a P2P chat', async (to) => {
+    harness = await bootPlugin(server)
+
+    const sendText = channelPlugin.outbound.sendText as SendText
+    const result = await sendText({ to, text: 'to the group', accountId: 'default' })
+
+    expect(result.messageId).toMatch(/^msg_/)
+    expect(server.messageRequests.map((r) => r.payload)).toEqual([
+      expect.objectContaining({ chatId: 'grp_target', content: expect.objectContaining({ text: 'to the group' }) }),
+    ])
+    expect(server.createP2PChatRequests).toEqual([])
+  })
+
+  it.each(['trueconf:group:grp_target', 'group:grp_target'])('sendMedia to %s posts the file into that chat without a P2P chat', async (to) => {
+    harness = await bootPlugin(server)
+    const filePath = join(workDir, 'doc.bin')
+    await writeFile(filePath, Buffer.from('GROUP-TARGET-BYTES'))
+
+    const sendMedia = (channelPlugin.outbound as { sendMedia: SendMedia }).sendMedia
+    const result = await sendMedia({
+      to,
+      text: 'the file',
+      mediaUrl: pathToFileURL(filePath).toString(),
+      mediaLocalRoots: [workDir],
+      accountId: 'default',
+    })
+
+    expect(result.messageId).toMatch(/^fmsg_/)
+    expect(server.sendFileRequests.map((r) => r.payload)).toEqual([
+      expect.objectContaining({ chatId: 'grp_target', content: expect.objectContaining({ caption: expect.objectContaining({ text: 'the file' }) }) }),
+    ])
+    expect(server.createP2PChatRequests).toEqual([])
+  })
+
   it('sendText with ctx.to=bot after a group mention → routes to group chatId (not P2P DM)', async () => {
     harness = await bootPlugin(server)
 

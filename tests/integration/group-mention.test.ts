@@ -115,10 +115,10 @@ describe('integration: group chat mention/reply gate', () => {
     const turn = groupTurn(0)
     expect(turn.route.sessionKey).toBe(`test:group:${GROUP_CHAT}`)
     expect(turn.ctxPayload).toMatchObject({
-      from: ALICE,
+      from: 'trueconf:group:group_123',
       sender: { id: ALICE },
       conversation: { kind: 'group', id: GROUP_CHAT, label: `Group ${GROUP_CHAT}` },
-      reply: { to: 'bot@srv', originatingTo: ALICE },
+      reply: { to: 'trueconf:group:group_123', originatingTo: 'trueconf:group:group_123' },
       message: { body: 'Bot what is up', rawBody: 'Bot what is up', commandBody: 'Bot what is up' },
       access: { commands: { authorized: false }, mentions: { wasMentioned: true } },
     })
@@ -182,7 +182,7 @@ describe('integration: group chat mention/reply gate', () => {
       }))
 
       await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
-      expect(groupTurn(0).ctxPayload.reply.to).toBe('bot@srv')
+      expect(groupTurn(0).ctxPayload.message.rawBody).toBe('bot ping')
       innerHarness.abort()
       await Promise.race([innerHarness.startPromise.catch(() => {}), new Promise((r) => setTimeout(r, 500))])
     } finally {

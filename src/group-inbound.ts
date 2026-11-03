@@ -5,13 +5,14 @@ import {
   type dispatchInboundDirectDm,
 } from 'openclaw/plugin-sdk/channel-inbound'
 import { normalizeOutboundReplyPayload } from 'openclaw/plugin-sdk/reply-payload'
+import { groupAddress } from './target'
 import type { InboundExtraContext } from './types'
 
 // What every inbound turn carries, DM or group. The DM-only fields stay with
 // the dispatchInboundDirectDm call.
 export type InboundTurn = Omit<
   Parameters<typeof dispatchInboundDirectDm>[0],
-  'channel' | 'channelLabel' | 'peer' | 'senderAddress' | 'conversationLabel' | 'extraContext'
+  'channel' | 'channelLabel' | 'peer' | 'senderAddress' | 'recipientAddress' | 'conversationLabel' | 'extraContext'
 > & { extraContext?: InboundExtraContext }
 
 export type GroupInboundParams = InboundTurn & { chatId: string }
@@ -22,6 +23,7 @@ export type GroupInboundParams = InboundTurn & { chatId: string }
 export async function dispatchGroupInbound(params: GroupInboundParams): Promise<void> {
   const peer = { kind: 'group' as const, id: params.chatId }
   const label = `Group ${params.chatId}`
+  const address = groupAddress(params.chatId)
   const { route, buildEnvelope } = resolveChannelInboundRouteEnvelope({
     cfg: params.cfg,
     channel: 'trueconf',
@@ -35,7 +37,7 @@ export async function dispatchGroupInbound(params: GroupInboundParams): Promise<
     messageId: params.messageId,
     messageIdFull: params.messageId,
     timestamp: params.timestamp,
-    from: params.senderId,
+    from: address,
     sender: { id: params.senderId, name: params.senderId },
     conversation: { kind: 'group', id: params.chatId, routePeer: peer, label },
     route: {
@@ -44,7 +46,7 @@ export async function dispatchGroupInbound(params: GroupInboundParams): Promise<
       routeSessionKey: route.sessionKey,
       dispatchSessionKey: route.sessionKey,
     },
-    reply: { to: params.recipientAddress, originatingTo: params.senderId },
+    reply: { to: address, originatingTo: address },
     message: {
       body: buildEnvelope({ channel: 'TrueConf', from: label, body: params.rawBody, timestamp: params.timestamp }),
       bodyForAgent: params.rawBody,

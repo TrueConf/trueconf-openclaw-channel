@@ -46,4 +46,23 @@ describe('channelPlugin.messaging', () => {
     const fn = channelPlugin.messaging?.targetResolver?.looksLikeId
     expect(fn!('just some user name', 'just some user name')).toBe(false)
   })
+
+  it('normalizeTarget turns group addresses into group:<chatId>', () => {
+    const fn = channelPlugin.messaging!.normalizeTarget
+    expect(fn('trueconf:group:e28a99f1c0d34b7a')).toBe('group:e28a99f1c0d34b7a')
+    expect(fn('group:e28a99f1c0d34b7a')).toBe('group:e28a99f1c0d34b7a')
+    expect(fn(' TrueConf:Group:Grp_A ')).toBe('group:Grp_A')
+  })
+
+  it('normalizeTarget strips the trueconf: prefix and /resource from a user JID', () => {
+    const fn = channelPlugin.messaging!.normalizeTarget
+    expect(fn('trueconf:alice@srv/phone')).toBe('alice@srv')
+  })
+
+  it('targetResolver.looksLikeId accepts group:<chatId> and rejects an empty group id', () => {
+    const fn = channelPlugin.messaging!.targetResolver.looksLikeId
+    expect(fn('trueconf:group:e28a99f1c0d34b7a', 'group:e28a99f1c0d34b7a')).toBe(true)
+    expect(fn('group:e28a99f1c0d34b7a', 'group:e28a99f1c0d34b7a')).toBe(true)
+    expect(fn('group:', 'group:')).toBe(false)
+  })
 })

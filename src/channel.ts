@@ -42,14 +42,8 @@ import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './a
 import { WsClient, ConnectionLifecycle } from './ws-client'
 import { OutboundQueue } from './outbound-queue'
 import { dispatchGroupInbound, type InboundTurn } from './group-inbound'
+import { formatTarget, parseTarget, type TrueConfTarget } from './target'
 import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage, InboundExtraContext, InboundMediaContext } from './types'
-
-// Most recent inbound conversation per account. Used only for the self-send
-// redirect: when an agent tool call lands with ctx.to == bot's own identity,
-// we route it here instead of erroring or hanging on createP2PChat(self).
-type InboundRoute =
-  | { kind: 'direct'; userId: string }
-  | { kind: 'group'; chatId: string }
 
 function getChannelConfig(cfg: unknown): TrueConfChannelConfig {
   return ((cfg as { channels?: { trueconf?: unknown } })?.channels?.trueconf ?? {}) as TrueConfChannelConfig
@@ -170,13 +164,10 @@ export function createRuntimeStore() {
     // Registry key: `${accountId}\u0000${stableUserId}`. Updated inline by
     // inbound (on observation) and outbound (on createP2PChat / 304).
     directChatsByStableUserId: new Map<string, string>(),
-    // Fallback route when the gateway sets outbound `to` to the bot's own
-    // identity (agent tool calls default `to` to ctxPayload.To, which is
-    // `recipientAddress` = bot). We redirect to the most recent inbound
-    // conversation so replies still land where the user asked. Tracks BOTH
-    // direct peers and group chats — without the group case, bot replies
-    // to a group @mention get misrouted to a stale DM or silently skipped.
-    lastInboundRouteByAccount: new Map<string, InboundRoute>(),
+    // Most recent inbound conversation per account, DM peer or group chat.
+    // A send addressed to the bot's own JID is redirected here. Only DM turns
+    // put the bot JID in ctxPayload.To; group turns carry the group address.
+    lastInboundRouteByAccount: new Map<string, TrueConfTarget>(),
     // chatType is immutable for the lifetime of a chat; survives reconnect.
     chatTypeByChatId: new Map<string, ResolvedChatKind>(),
     // Dedups concurrent getChatByID lookups for the same chatId.
@@ -286,6 +277,30 @@ function clearAccountChats(accountId: string): void {
   // __resetForTesting or module reload.
 }
 
+// An agent tool call can target the bot's own JID. createP2PChat on self would
+// hang for 30s, so such a send goes to the account's most recent inbound
+// conversation instead, or is skipped when there is none.
+function redirectSelfSend(
+  op: 'sendText' | 'sendMedia',
+  target: TrueConfTarget,
+  entry: AccountEntry,
+  accountId: string,
+  logger: Logger,
+): TrueConfTarget | null {
+  const botUserId = entry.wsClient.botUserId
+  if (target.kind !== 'direct' || !botUserId || normalizeForCompare(botUserId) !== normalizeForCompare(target.userId)) {
+    return target
+  }
+  const route = store.lastInboundRouteByAccount.get(accountId)
+  if (!route) {
+    logger.info(`[trueconf] ${op}: target=${target.userId} is bot identity and no cached inbound route; skipping`)
+    return null
+  }
+  const where = route.kind === 'group' ? `group ${route.chatId}` : `peer ${route.userId}`
+  logger.info(`[trueconf] ${op}: target=${target.userId} is bot identity; redirecting to last inbound ${where}`)
+  return route
+}
+
 export const channelPlugin = {
   id: "trueconf" as const,
 
@@ -309,18 +324,18 @@ export const channelPlugin = {
     blockStreaming: false,
   },
 
-  // TrueConf JIDs are `user@server` with an optional per-connection `/resource`
-  // suffix. The SDK's tools.message pipeline falls back to `currentChannelId`
-  // when the LLM omits a target, and currentChannelId is our own botUserId.
-  // Without a normalizer + id recognizer the SDK's resolver rejects the JID
-  // with `Unknown target` before our outbound is called — which is why the
-  // self-send redirect in sendText/sendMedia never got the chance to run.
+  // Without a normalizer and an id recognizer, core's target resolver rejects
+  // TrueConf ids with `Unknown target` before outbound.sendText runs. Group
+  // targets become `group:<chatId>`, user targets the bare JID.
   messaging: {
-    normalizeTarget: (raw: string): string => raw.replace(/\/.*$/, '').trim(),
+    normalizeTarget: (raw: string): string => {
+      const target = parseTarget(raw)
+      return target ? formatTarget(target) : raw.trim()
+    },
     targetResolver: {
-      looksLikeId: (_raw: string, normalized: string): boolean =>
-        /^[^@\s/]+@[^@\s/]+$/.test(normalized),
-      hint: "<user@server>",
+      looksLikeId: (raw: string, normalized?: string): boolean =>
+        /^group:\S+$/.test(normalized ?? raw) || /^[^@\s/]+@[^@\s/]+$/.test(normalized ?? raw),
+      hint: "<user@server> or group:<chatId>",
     },
   },
 
@@ -356,60 +371,25 @@ export const channelPlugin = {
         return { channel: 'trueconf', messageId: '' }
       }
 
-      const to = ctx.to?.replace(/\/.*$/, '').trim() ?? ''
-      if (!to || to.includes('\u0000')) {
+      // Core hands over stored targets as they are, e.g. a group turn's
+      // OriginatingTo `trueconf:group:<chatId>` for a queued follow-up.
+      const target = parseTarget(ctx.to ?? '')
+      if (!target) {
         logger.error(`[trueconf] sendText: invalid ctx.to ${JSON.stringify(ctx.to)}`)
         return { channel: 'trueconf', messageId: '' }
       }
+      const destination = redirectSelfSend('sendText', target, entry, accountId ?? '', logger)
+      if (!destination) return { channel: 'trueconf', messageId: '' }
 
-      // Gateway tool-path occasionally routes `ctx.to` back to the bot's own
-      // identity (ctxPayload.To === recipientAddress). Redirect to the most
-      // recent inbound conversation so agent replies still land where the
-      // user asked; createP2PChat on self would hang 30s anyway. For group
-      // inbounds we route through sendTextToChat (no P2P resolution) so the
-      // reply lands in the group chat — not in a stale DM peer.
-      const botUserId = entry.wsClient.botUserId
-      if (botUserId && normalizeForCompare(botUserId) === normalizeForCompare(to)) {
-        const route = store.lastInboundRouteByAccount.get(accountId ?? '')
-        if (!route) {
-          logger.info(
-            `[trueconf] sendText: target=${to} is bot identity and no cached inbound route; skipping`,
-          )
-          return { channel: 'trueconf', messageId: '' }
-        }
-        if (route.kind === 'group') {
-          logger.info(
-            `[trueconf] sendText: target=${to} is bot identity; redirecting to last inbound group ${route.chatId}`,
-          )
-          const groupResult = await sendTextToChat(entry.outboundQueue, route.chatId, ctx.text, logger, entry.sendQueue)
-          if (groupResult.ok && groupResult.messageId) {
-            rememberBotMessage(store.recentBotMsgIdsByChat, groupResult.chatId, groupResult.messageId)
-          }
-          return { channel: 'trueconf', messageId: groupResult.ok ? (groupResult.messageId ?? '') : '' }
-        }
-        logger.info(
-          `[trueconf] sendText: target=${to} is bot identity; redirecting to last inbound peer ${route.userId}`,
-        )
-        const directResult = await sendText(route.userId, ctx.text, logger, {
-          fallbackUserId: route.userId,
-          directChatStore: store,
-          accountId,
-          sendQueue: entry.sendQueue,
-          outboundQueue: entry.outboundQueue,
-        })
-        if (directResult.ok && directResult.messageId) {
-          rememberBotMessage(store.recentBotMsgIdsByChat, directResult.chatId, directResult.messageId)
-        }
-        return { channel: 'trueconf', messageId: directResult.ok ? (directResult.messageId ?? '') : '' }
-      }
-
-      const result = await sendText(to, ctx.text, logger, {
-        fallbackUserId: to,
-        directChatStore: store,
-        accountId,
-        sendQueue: entry.sendQueue,
-        outboundQueue: entry.outboundQueue,
-      })
+      const result = destination.kind === 'group'
+        ? await sendTextToChat(entry.outboundQueue, destination.chatId, ctx.text, logger, entry.sendQueue)
+        : await sendText(destination.userId, ctx.text, logger, {
+            fallbackUserId: destination.userId,
+            directChatStore: store,
+            accountId,
+            sendQueue: entry.sendQueue,
+            outboundQueue: entry.outboundQueue,
+          })
       if (result.ok && result.messageId) {
         rememberBotMessage(store.recentBotMsgIdsByChat, result.chatId, result.messageId)
       }
@@ -438,14 +418,15 @@ export const channelPlugin = {
         return { channel: 'trueconf', messageId: '' }
       }
 
-      // Same fallback as sendText: if the gateway sets media ctx.to to the
-      // bot's own identity, redirect to the most recent inbound conversation.
-      // For group inbounds we dispatch via handleOutboundAttachmentToChat so
-      // the file lands in the group chatId directly — the previous DM-only
-      // fallback either misrouted to a stale DM peer or silently skipped.
-      const botUserIdMedia = entry.wsClient.botUserId
-      const normalizedTo = (ctx.to ?? '').replace(/\/.*$/, '').trim()
-      const commonDeps = {
+      const target = parseTarget(ctx.to ?? '')
+      if (!target) {
+        logger.error(`[trueconf] sendMedia: invalid ctx.to ${JSON.stringify(ctx.to)}`)
+        return { channel: 'trueconf', messageId: '' }
+      }
+      const destination = redirectSelfSend('sendMedia', target, entry, accountId ?? '', logger)
+      if (!destination) return { channel: 'trueconf', messageId: '' }
+
+      const deps = {
         outboundQueue: entry.outboundQueue,
         resolved: { serverUrl: resolved.serverUrl, useTls: resolved.useTls ?? true, port: resolved.port },
         channelConfig: store.channelConfig,
@@ -454,62 +435,14 @@ export const channelPlugin = {
         limits: entry.limits,
         sendQueue: entry.sendQueue,
       }
-      if (botUserIdMedia && normalizeForCompare(botUserIdMedia) === normalizeForCompare(normalizedTo)) {
-        const route = store.lastInboundRouteByAccount.get(accountId ?? '')
-        if (!route) {
-          logger.info(
-            `[trueconf] sendMedia: target=${ctx.to} is bot identity and no cached inbound route; skipping`,
-          )
-          return { channel: 'trueconf', messageId: '' }
-        }
-        if (route.kind === 'group') {
-          logger.info(
-            `[trueconf] sendMedia: target=${ctx.to} is bot identity; redirecting to last inbound group ${route.chatId}`,
-          )
-          const groupResult = await handleOutboundAttachmentToChat(
-            {
-              chatId: route.chatId,
-              text: ctx.text ?? '',
-              mediaUrl: ctx.mediaUrl,
-              mediaLocalRoots: ctx.mediaLocalRoots ?? defaultMediaLocalRoots(),
-            },
-            commonDeps,
-          )
-          if (groupResult.ok) {
-            rememberBotMessage(store.recentBotMsgIdsByChat, groupResult.chatId, groupResult.messageId)
-          }
-          return { channel: 'trueconf', messageId: groupResult.ok ? groupResult.messageId : '' }
-        }
-        logger.info(
-          `[trueconf] sendMedia: target=${ctx.to} is bot identity; redirecting to last inbound peer ${route.userId}`,
-        )
-        const directResult = await handleOutboundAttachment(
-          {
-            to: route.userId,
-            text: ctx.text ?? '',
-            mediaUrl: ctx.mediaUrl,
-            mediaLocalRoots: ctx.mediaLocalRoots ?? defaultMediaLocalRoots(),
-            accountId,
-          },
-          { ...commonDeps, store },
-        )
-        if (directResult.ok) {
-          rememberBotMessage(store.recentBotMsgIdsByChat, directResult.chatId, directResult.messageId)
-        }
-        return { channel: 'trueconf', messageId: directResult.ok ? directResult.messageId : '' }
+      const media = {
+        text: ctx.text ?? '',
+        mediaUrl: ctx.mediaUrl,
+        mediaLocalRoots: ctx.mediaLocalRoots ?? defaultMediaLocalRoots(),
       }
-
-      const result = await handleOutboundAttachment(
-        {
-          to: ctx.to ?? '',
-          text: ctx.text ?? '',
-          mediaUrl: ctx.mediaUrl,
-          mediaLocalRoots: ctx.mediaLocalRoots ?? defaultMediaLocalRoots(),
-          accountId,
-        },
-        { ...commonDeps, store },
-      )
-
+      const result = destination.kind === 'group'
+        ? await handleOutboundAttachmentToChat({ ...media, chatId: destination.chatId }, deps)
+        : await handleOutboundAttachment({ ...media, to: destination.userId, accountId }, { ...deps, store })
       if (result.ok) {
         rememberBotMessage(store.recentBotMsgIdsByChat, result.chatId, result.messageId)
       }
@@ -847,10 +780,6 @@ export const channelPlugin = {
           cfg: store.fullConfig as OpenClawConfig,
           accountId,
           senderId: inboundMsg.senderId,
-          // Strip the per-connection /resource suffix: ctx.To and
-          // currentChannelId must be stable across reconnects, and downstream
-          // target resolution operates on bare JIDs.
-          recipientAddress: (wsClient.botUserId ?? '').replace(/\/.*$/, '').trim(),
           rawBody,
           messageId: inboundMsg.messageId,
           timestamp: inboundMsg.timestamp,
@@ -882,6 +811,10 @@ export const channelPlugin = {
             channelLabel: 'TrueConf',
             peer: { kind: 'direct' as const, id: inboundMsg.peerId },
             senderAddress: inboundMsg.senderId,
+            // Strip the per-connection /resource suffix: ctx.To and
+            // currentChannelId must be stable across reconnects, and downstream
+            // target resolution operates on bare JIDs.
+            recipientAddress: (wsClient.botUserId ?? '').replace(/\/.*$/, '').trim(),
             conversationLabel: `DM with ${inboundMsg.peerId}`,
           }).catch(onFailure('dispatchInboundDirectDm'))
         }

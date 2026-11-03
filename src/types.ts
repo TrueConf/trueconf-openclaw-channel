@@ -155,7 +155,9 @@ export type InboundEnvelopeHint =
 // Media file paths threaded into extraContext when the inbound carried an
 // attachment. The arrays are the bulk-media API form; the singular
 // MediaPath/MediaType are kept for SDK consumers that read one entry.
-export interface InboundMediaContext {
+// A type alias, not an interface: only aliases are assignable to the SDK's
+// Record<string, unknown> extraContext without a cast.
+export type InboundMediaContext = {
   MediaPath: string
   MediaType: string
   MediaPaths: string[]
@@ -169,16 +171,6 @@ export type InboundExtraContext =
   | InboundEnvelopeHint
   | InboundMediaContext
   | (InboundEnvelopeHint & InboundMediaContext)
-
-// Widens the structured InboundExtraContext to the Record<string, unknown>
-// the SDK dispatcher accepts. The widening is the single seam between the
-// typed inbound layer and the bag-typed dispatch boundary; concentrating it
-// here keeps the unsafe cast grep-able instead of inlined at each call.
-export function widenExtraContext(
-  e: InboundExtraContext | undefined,
-): Record<string, unknown> | undefined {
-  return e as Record<string, unknown> | undefined
-}
 
 export interface InboundMessage {
   channel: string

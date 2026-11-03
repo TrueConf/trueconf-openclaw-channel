@@ -194,7 +194,7 @@ Point your assistant at [`llms.txt`](./llms.txt) (a short index) or paste the co
 }
 ```
 
-> **Important:** `dmPolicy`, `allowFrom`, and `maxFileSize` live at the `channels.trueconf` level, **not** inside a specific account. If you put them inside `accounts.*`, the channel ignores them and falls back to defaults.
+> **Important:** `dmPolicy`, `allowFrom`, `maxFileSize`, `groupAlwaysRespondIn`, `groupPolicy`, `groupAllowFrom`, `groups` and `historyLimit` live at the `channels.trueconf` level, **not** inside a specific account. If you put them inside `accounts.*`, the channel ignores them and falls back to defaults.
 
 ### Account field reference
 
@@ -220,6 +220,10 @@ Point your assistant at [`llms.txt`](./llms.txt) (a short index) or paste the co
 | `allowFrom` | string[] | — | List of TrueConf IDs (`user@server`) allowed to DM the bot when `dmPolicy: "allowlist"`. If you set `dmPolicy: "open"` explicitly, add `"*"` here: OpenClaw 2026.10 warns `dmPolicy="open" but channels.trueconf.allowFrom does not include "*"; all DMs will be dropped`. `allowFrom` also decides who may run OpenClaw control commands (such as `/new` or `/reset`) in DMs and groups: only listed senders, everyone with `"*"`, nobody when the list is empty |
 | `maxFileSize` | number (bytes) | `52428800` (50 MB) | Maximum size of a single file. Applies equally to incoming and outgoing files. Range: 1 byte to 2 GB; on out-of-range values the channel logs `[trueconf] Invalid maxFileSize: ...` and falls back to the default |
 | `groupAlwaysRespondIn` | string[] | `[]` | List of titles and/or chatIds whose group messages bypass the mention/reply gate. Formats: `<name>`, `title:<name>`, `chatId:<id>`. See ["Always-respond chats"](#always-respond-chats) above |
+| `groupPolicy` | string | `"open"` | Who can address the bot in a served group: `"open"` (any participant), `"allowlist"` (only senders in the group's `allowFrom`, else `groupAllowFrom`, else `allowFrom`), `"disabled"` (no group is served) |
+| `groupAllowFrom` | string[] | — | TrueConf IDs that can address the bot in groups when `groupPolicy: "allowlist"`. `"*"` allows everyone. When empty, `allowFrom` applies |
+| `groups` | object | — | Groups this instance serves, keyed by chatId, with `"*"` for every group. Without `groups`, every group is served; with `groups` and no `"*"`, only the listed ones. Entry fields: `requireMention` (`false` makes the group always-on), `enabled` (`false` stops serving it), `allowFrom` (senders for `groupPolicy: "allowlist"`), `tools` and `toolsBySender` (OpenClaw tool policy for the group). See [Several OpenClaw instances on one bot account](#several-openclaw-instances-on-one-bot-account) |
+| `historyLimit` | number | `messages.groupChat.historyLimit`, then `50` | Unaddressed lines kept per group as context for the next message that addresses the bot. `0` keeps none. See [Group context](#group-context) |
 
 ### TLS mode
 
@@ -319,12 +323,12 @@ The channel works in group chats. Unlike direct messages, where the bot replies 
 - **reply to the bot's message** — click "Reply" on one of the bot's recent messages. Buffer: last 50 bot messages per chat.
 - **one of the bot's nicknames** as a whole word in the message (see [Bot nicknames](#bot-nicknames)).
 
-Messages without a reply, mention or nickname are visible to the bot but get no response. The log will contain `[trueconf] group <chatId>: no mention/reply, dropping`.
+Messages without a reply, mention or nickname get no response. The bot keeps them as context for the next message that addresses it (see [Group context](#group-context)). The log will contain `[trueconf] group <chatId>: no mention/reply for type <type>, not dispatching`.
 
 **Technical details:**
 
 - Chat type is determined via `getChatByID` on the first message in a new chat and cached until the gateway restarts. 
-- Each group chat has its own OpenClaw session, `agent:<agentId>:trueconf:group:<chatId>`, separate from direct messages and from other groups. The history is shared across the group, not per participant. Each message's `senderId` is preserved so the LLM knows who is speaking.
+- Each group chat has its own OpenClaw session, `agent:<agentId>:trueconf:group:<chatId>`, separate from direct messages and from other groups. The history is shared across the group, not per participant. Each line names its speaker (see [Group titles and display names](#group-titles-and-display-names)).
 - Group history from before per-group sessions stays in the main session (`agent:main:main` for the default agent). `session.groupScope: "main"` routes all groups back into the main session.
 - A group turn carries the group address, `trueconf:group:<chatId>`, as `From`, `To` and `OriginatingTo`, while `SenderId` stays the person. A message-tool send without a target, a queued follow-up or a restart notice goes to the group, and the agent can also address a group as `group:<chatId>`.
 - OpenClaw applies its group rules. The group system prompt tells the model to mostly lurk, reply when addressed or useful, and answer `NO_REPLY` to stay silent; a generic run failure ends silently instead of posting an error.
@@ -332,9 +336,39 @@ Messages without a reply, mention or nickname are visible to the bot but get no 
 - With `agents.defaults.sandbox.mode: "non-main"`, group sessions run in the sandbox. The agent's main session watches group sessions after their first human turn.
 - Two bot accounts in the same group under one agent share that group's session. To separate them, bind each account to its own agent with `bindings` and `match.accountId`.
 - Direct messages follow OpenClaw's `session.dmScope`. With the default `main`, all DMs share the agent's main session. To give each TrueConf user a separate session, set `session.dmScope: "per-channel-peer"` in `openclaw.json`.
-- Only DM turns address the bot's own JID, so only they trigger the bot-JID self-send redirect. The redirect keeps one last inbound conversation per account.
-- `dmPolicy` applies only to direct messages. In groups, filtering is based solely on mention, reply and nicknames.
+- Only DM turns address the bot's own JID, so only they trigger the bot-JID self-send redirect. The redirect goes to the account's last DM peer and never into a group.
+- `dmPolicy` applies only to direct messages. Groups follow `groups` and `groupPolicy` first (see [Several OpenClaw instances on one bot account](#several-openclaw-instances-on-one-bot-account)), then the mention, reply and nickname rules.
 - TrueConf channels (`chatType=6`) are ignored — the bot does not respond in them. Log: `[trueconf] dropping channel message chatId=<id>`.
+
+### Group context
+
+In a served group, the bot keeps the messages that do not address it in memory, from every sender that `groupPolicy` allows. The next message that addresses the bot carries these lines to the agent, oldest first, under OpenClaw's history markers:
+
+```text
+[Chat messages since your last reply - for context]
+Alice Liddell (alice@trueconf.example.com): who is on call today?
+Bob Stone (bob@trueconf.example.com): me
+
+[Current message - respond to this]
+carol@trueconf.example.com: Bot, write that down
+```
+
+The lines are part of the message the agent gets, so they stay in the group session's history. A turn takes only the lines sent before its own message. Lines that arrive while the agent works wait for the next turn.
+
+Limits:
+
+- `historyLimit` keeps the last N lines per group. Without it the bot uses `messages.groupChat.historyLimit`, then 50. `0` turns group context off.
+- The lines live in memory. A gateway restart loses the lines that no turn has taken yet.
+- A file, forward, location or survey is kept as its placeholder text, such as `[File: plan.pdf]`. The bot does not download files for context.
+- The bot does not keep its own messages, which also covers other instances on the same bot account.
+- An always-on group sends every message to the agent, so no lines wait there.
+- A control command such as `/new` leaves the lines for the next turn.
+
+### Group titles and display names
+
+A group session takes the TrueConf chat title as its name (`GroupSubject` and the session label). A chat without a title is named `Group <chatId>`. A rename applies from the next message.
+
+The bot looks up each speaker's display name with TrueConf `getUserDisplayName` and keeps it for an hour. The agent sees the speaker as `Name (user@server)`, and the session history records each line with that label. When the lookup fails or takes longer than 3 seconds, the bot shows the speaker's ID. Direct messages are unchanged.
 
 ### Bot nicknames
 
@@ -379,6 +413,8 @@ By default the bot only replies in groups when @-mentioned or replied to. To pas
 
 **Multi-account:** the list is shared across all accounts in the channel. A title `"HR"` matches the same-named group in every account that has one. `chatId` is globally unique on a TrueConf server — if two accounts are members of the same group, the chatId is identical for both.
 
+**Same effect from `groups`:** `groups.<chatId>.requireMention: false` also makes a group always-on.
+
 **Activation:** OpenClaw marks these chats "always-on". The model sees every message and may answer `NO_REPLY` to stay silent, so not every message gets a reply.
 
 **Limitations:**
@@ -387,14 +423,63 @@ By default the bot only replies in groups when @-mentioned or replied to. To pas
 - If `getChats` fails on startup, title-based entries stay inactive until the next successful reconnect — `chatId:` entries always work.
 - The list is not hot-reloaded; restart the gateway after changes.
 
+## Several OpenClaw instances on one bot account
+
+Several people can each run their own OpenClaw, with its own agent and tasks, on the same TrueConf bot account. TrueConf Server delivers every message of the account to every connected instance. Each instance then handles only its own share:
+
+- Direct messages from its owner. Set `dmPolicy: "allowlist"` and put the owner in `allowFrom`.
+- The group chats listed in its `groups`. Any participant there can address the bot, and the group's conversation becomes context in this instance's group session (see [Group context](#group-context)).
+- Nothing else. The instance ignores all other messages silently: it sends no reply and keeps nothing.
+
+Example for the owner `alice@trueconf.example.com`, who serves one group:
+
+```json
+{
+  "channels": {
+    "trueconf": {
+      "serverUrl": "trueconf.example.com",
+      "username": "team_bot",
+      "password": { "useEnv": "TRUECONF_PASSWORD" },
+      "useTls": true,
+      "dmPolicy": "allowlist",
+      "allowFrom": ["alice@trueconf.example.com"],
+      "groupPolicy": "open",
+      "groups": {
+        "a734f1c2e5b94d0f": { "requireMention": true }
+      },
+      "historyLimit": 50
+    }
+  }
+}
+```
+
+**Finding a chatId.** Add the bot to the group and send any message there. An instance that does not serve the group logs one line per group at info level:
+
+```text
+[trueconf] ignoring group chatId=a734f1c2e5b94d0f title="Sales team": not listed in channels.trueconf.groups
+```
+
+Copy the `chatId` value into `groups`. An instance without `groups` serves every group, so set `groups` on every instance that shares the account.
+
+How `groups` and `groupPolicy` decide:
+
+- With `groups` set and no `"*"` key, the instance serves only the listed groups. A `"*"` entry serves every group and sets defaults for the others.
+- `enabled: false` stops serving a listed group.
+- `requireMention: false` makes a group always-on: every message goes to the agent, as with `groupAlwaysRespondIn`.
+- `groupPolicy: "allowlist"` limits who can address the bot in a served group: the group's `allowFrom`, else `groupAllowFrom`, else `allowFrom`. `groupPolicy: "disabled"` serves no group.
+- If two instances list the same group, both answer in it. A group that no instance lists gets no answer.
+- Without `groups`, an instance serves every group. Existing single-instance setups keep working unchanged.
+
+> **Warning:** every instance receives all messages of the bot account, including other people's direct messages with the bot. The filter decides which instance answers. It is not a privacy boundary: whoever runs an instance can read everything the account receives, for example by changing the config or reading the logs. When that matters, give each person their own bot account.
+
 ## Cross-Server Federation
 
 If multiple accounts are configured (`accounts.office`, `accounts.support`, ...):
 
-- Each account gets its own WebSocket connection, its own CA trust, its own last-inbound-route buffer, and its own recent-bot-messages cache.
+- Each account gets its own WebSocket connection, its own CA trust, its own last DM peer for the self-send redirect, its own display-name cache and its own recent-bot-messages cache.
 - A single account failing to start doesn't affect the others: the gateway logs `[trueconf] Account <id> startup failed: ...` and continues starting the rest.
 - Outgoing-response routing uses `ctx.accountId`. The LLM must know which account to reply from; this is typically derived from the inbound `accountId`.
-- `dmPolicy`, `allowFrom`, and `maxFileSize` are shared across all accounts (at the `trueconf.*` level). Per-account versions are not supported.
+- `dmPolicy`, `allowFrom`, `maxFileSize` and the group keys (`groupPolicy`, `groupAllowFrom`, `groups`, `historyLimit`) are shared across all accounts (at the `trueconf.*` level). Per-account versions are not supported.
 
 ## Media Files and Limits
 
@@ -500,11 +585,12 @@ Six tunables expose the network-resilience knobs that ship with sensible default
 - **Symptom:** The log shows `Connected and authenticated`, but there are no replies.
 - **Possible causes:**
   1. You're messaging the bot from the same account — you need to write from a **different** user.
-  2. Group-chat message without an @-mention and without a reply to the bot — in a group you have to address the bot explicitly (see the [Group Chats](#group-chats) section). The log will contain `group <chatId>: no mention/reply, dropping`.
+  2. Group-chat message without an @-mention and without a reply to the bot — in a group you have to address the bot explicitly (see the [Group Chats](#group-chats) section). The log will contain `group <chatId>: no mention/reply for type <type>, not dispatching`.
   3. Message in a TrueConf channel (`chatType=6`) — the bot ignores them. Log: `dropping channel message chatId=<id>`.
   4. `dmPolicy: "allowlist"` and the sender isn't in `allowFrom`. Log: `DM blocked for <id> by policy`. With `dmPolicy: "open"` on OpenClaw 2026.10, `allowFrom` must contain `"*"`; the startup log warns `all DMs will be dropped` otherwise.
   5. LLM provider is not configured — run `openclaw configure`.
   6. LLM provider is unreachable from the network — check access or use Ollama.
+  7. The group is not served by this instance. The log contains `ignoring group chatId=<id> title="<title>": <reason>` once per group. Add the chatId to `groups` (see [Several OpenClaw instances on one bot account](#several-openclaw-instances-on-one-bot-account)).
 
 ### Bot sends a photo without the caption
 
@@ -560,6 +646,12 @@ MIT
 
 ## [Unreleased]
 
+### Added
+- Several OpenClaw instances can share one TrueConf bot account. OpenClaw's standard keys decide which groups an instance serves and who may address it there: `groups` (keyed by chatId or `"*"`, with `requireMention`, `enabled`, `allowFrom`, `tools` and `toolsBySender`), `groupPolicy` (`"open"`, the default, `"disabled"` or `"allowlist"`) and `groupAllowFrom`. Without `groups`, every group is served, as before. A message in a group the instance does not serve gets no reply and is not kept; the first one per chat logs `ignoring group chatId=<id> title="<title>": <reason>`, so the chatId can be copied into `groups`. The README explains the setup and warns that every instance receives every message of the account.
+- Group context. Unaddressed messages in a served group stay in memory and go to the next addressed turn in `BodyForAgent`, under OpenClaw's history markers, so they land in the group session's transcript. `historyLimit`, then `messages.groupChat.historyLimit`, then 50 bounds them per chat; `0` turns this off. Files, forwards, locations and surveys are kept as placeholder text without a download. Lines that arrive while a turn runs wait for the next turn. A restart loses lines no turn has taken.
+- Group sessions take the TrueConf chat title as their name (`GroupSubject`), fall back to `Group <chatId>` and follow renames.
+- Group speakers get their TrueConf display name from `getUserDisplayName`, cached for an hour. A failure or a 3 s timeout falls back to the user ID.
+
 ### Fixed
 - Each group chat gets its own OpenClaw session, `agent:<agentId>:trueconf:group:<chatId>`, with chat type `group`. Before, group messages were dispatched as direct messages, so every group and every DM shared the agent's main session, and `session.groupScope` and group bindings did not apply.
 - Group turns name the group, `trueconf:group:<chatId>`, as `From`, `To` and `OriginatingTo` instead of the sender and the bot. Message-tool sends without a target, queued follow-ups and restart notices now reach the group, and outbound accepts `trueconf:group:<chatId>` and `group:<chatId>` targets.
@@ -574,7 +666,10 @@ MIT
 - The agent's main session watches TrueConf group sessions after their first human turn.
 - `session.groupScope: "main"` routes all TrueConf groups back into the agent's main session.
 - Two TrueConf accounts in the same group under one agent share that group's session. To separate them, bind each account to its own agent with `bindings` and `match.accountId`.
-- Only DM turns address the bot's own JID now, so only they trigger the bot-JID self-send redirect. The redirect still keeps one last inbound conversation per account.
+- **Behavior change:** only DM turns address the bot's own JID, and the bot-JID self-send redirect goes only to the account's last DM peer. A group message no longer becomes its target; a self-send with no DM peer yet is skipped.
+- **Behavior change:** a group turn's `BodyForAgent` starts with the speaker, `Name (user@server): text`, because OpenClaw stores `BodyForAgent` as the session's user line. `Body` uses OpenClaw's group envelope with the same speaker. Command turns keep a bare body.
+- `groups.<chatId>.requireMention: false` (or `"*"`) makes a group always-on, like `groupAlwaysRespondIn`. The inbound gate and the group system prompt share this rule.
+- `dmPolicy` is checked as soon as the chat kind is known, before any quote fetch or file request.
 - DMs still follow `session.dmScope`; `"per-channel-peer"` gives each TrueConf user a separate session.
 
 ## [1.2.16] - 2026-11-02

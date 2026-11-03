@@ -345,8 +345,8 @@ export const channelPlugin = {
       return target ? formatTarget(target) : raw.trim()
     },
     targetResolver: {
-      looksLikeId: (raw: string, normalized?: string): boolean =>
-        /^group:\S+$/.test(normalized ?? raw) || /^[^@\s/]+@[^@\s/]+$/.test(normalized ?? raw),
+      looksLikeId: (raw: string, normalized = raw): boolean =>
+        /^group:\S+$/.test(normalized) || /^[^@\s/]+@[^@\s/]+$/.test(normalized),
       hint: "<user@server> or group:<chatId>",
     },
   },

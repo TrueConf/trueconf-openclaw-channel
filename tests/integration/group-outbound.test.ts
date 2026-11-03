@@ -4,15 +4,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
-  dispatchInboundDirectDm: vi.fn().mockResolvedValue({}),
-}))
+vi.mock('openclaw/plugin-sdk/channel-inbound', async () =>
+  (await import('./__helpers__/channel-inbound-mock')).channelInboundMock())
 
-import { dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
+import { dispatchChannelInboundTurn, dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
 import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
 import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
 
-const dispatch = vi.mocked(dispatchInboundDirectDm)
+const dmDispatch = vi.mocked(dispatchInboundDirectDm)
+const groupDispatch = vi.mocked(dispatchChannelInboundTurn)
 
 interface Harness {
   abort: () => void
@@ -75,7 +75,8 @@ describe('integration: group-context outbound (tool path)', () => {
 
   beforeEach(async () => {
     __resetForTesting()
-    dispatch.mockClear()
+    dmDispatch.mockClear()
+    groupDispatch.mockClear()
     server = await startFakeServer()
     server.setChatType(GROUP_CHAT, 2)
     workDir = await mkdtemp(join(tmpdir(), 'tc-grp-out-'))
@@ -95,7 +96,7 @@ describe('integration: group-context outbound (tool path)', () => {
     harness = await bootPlugin(server)
 
     server.pushInbound(groupMention({ author: ALICE, text: 'ping', messageId: 'g1' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1)
 
     const sendText = channelPlugin.outbound.sendText as SendText
     const result = await sendText({
@@ -126,7 +127,7 @@ describe('integration: group-context outbound (tool path)', () => {
     harness = await bootPlugin(server)
 
     server.pushInbound(groupMention({ author: ALICE, text: 'send the photo', messageId: 'g2' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1)
 
     const filePath = join(workDir, 'img.bin')
     await writeFile(filePath, Buffer.from('GROUP-MEDIA-BYTES'))
@@ -160,7 +161,7 @@ describe('integration: group-context outbound (tool path)', () => {
 
     // Group mention — last route = group
     server.pushInbound(groupMention({ author: ALICE, text: 'hi group', messageId: 'g3' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1)
 
     // Subsequent DM from Bob — last route flips to direct-with-bob
     server.pushInbound({
@@ -171,7 +172,7 @@ describe('integration: group-context outbound (tool path)', () => {
       messageId: 'd1',
       timestamp: Date.now(),
     })
-    await waitFor(() => dispatch.mock.calls.length >= 2)
+    await waitFor(() => dmDispatch.mock.calls.length >= 1)
 
     const sendText = channelPlugin.outbound.sendText as SendText
     await sendText({ to: 'bot@srv', text: 'reply to bob', accountId: 'default' })
@@ -189,7 +190,7 @@ describe('integration: group-context outbound (tool path)', () => {
     harness = await bootPlugin(server)
 
     server.pushInbound(groupMention({ author: ALICE, text: 'ping', messageId: 'g4' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1)
 
     // Agent explicitly addresses a specific user — must NOT be rewritten to
     // the group even though the last inbound was a group.
@@ -206,7 +207,7 @@ describe('integration: group-context outbound (tool path)', () => {
 
     // Only a group message, no DM history at all.
     server.pushInbound(groupMention({ author: ALICE, text: 'solo group ping', messageId: 'g5' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1)
 
     const sendText = channelPlugin.outbound.sendText as SendText
     const result = await sendText({ to: 'bot@srv', text: 'group-only reply', accountId: 'default' })

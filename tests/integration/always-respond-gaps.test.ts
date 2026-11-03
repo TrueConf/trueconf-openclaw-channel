@@ -1,17 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
-  dispatchInboundDirectDm: vi.fn().mockResolvedValue({}),
-}))
+vi.mock('openclaw/plugin-sdk/channel-inbound', async () =>
+  (await import('./__helpers__/channel-inbound-mock')).channelInboundMock())
 
-import { dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
+import { dispatchChannelInboundTurn, dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
 import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
 import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
 import { AlwaysRespondResolver, type WireAdapter } from '../../src/always-respond'
 import { parseAlwaysRespondConfig } from '../../src/config'
 import type { TrueConfFlatConfig, TrueConfMultiAccountConfig } from '../../src/types'
 
-const dispatch = vi.mocked(dispatchInboundDirectDm)
+const dmDispatch = vi.mocked(dispatchInboundDirectDm)
+const groupDispatch = vi.mocked(dispatchChannelInboundTurn)
+const dispatchCount = () => dmDispatch.mock.calls.length + groupDispatch.mock.calls.length
 const BOT_ID = 'bot@srv'
 
 interface Harness {
@@ -68,7 +69,8 @@ describe('integration: always-respond — extra coverage', () => {
 
   beforeEach(async () => {
     __resetForTesting()
-    dispatch.mockClear()
+    dmDispatch.mockClear()
+    groupDispatch.mockClear()
     server = await startFakeServer()
   })
 
@@ -92,8 +94,8 @@ describe('integration: always-respond — extra coverage', () => {
     await waitFor(() => harness!.logger.info.mock.calls.some((c) => String(c[0]).includes('always-respond: ready')))
 
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_hr', messageId: 'gap-grp' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
 
     const matchedTitleLog = harness!.logger.info.mock.calls.find((c) => String(c[0]).includes('"hr" not found now'))
     expect(matchedTitleLog).toBeUndefined()
@@ -112,15 +114,15 @@ describe('integration: always-respond — extra coverage', () => {
 
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'silent', chatId: 'grp_1', messageId: 'rb-1' }))
     await new Promise((r) => setTimeout(r, 200))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
 
     server.chats.rename('grp_1', 'HR')
     server.pushEvent('editChatTitle', { chatId: 'grp_1', title: 'HR' })
     await waitFor(() => harness!.logger.info.mock.calls.some((c) => String(c[0]).includes('"nothr" → "hr", added to always-respond')))
 
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_1', messageId: 'rb-2' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
   })
 
   it('createGroupChat activates bypass when title matches', async () => {
@@ -132,8 +134,8 @@ describe('integration: always-respond — extra coverage', () => {
     await waitFor(() => harness!.logger.info.mock.calls.some((c) => String(c[0]).includes('joined group "hr" — added to always-respond')))
 
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_new', messageId: 'cg-1' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
   })
 
   it('createGroupChat does not activate bypass for non-group return from getChatByID', async () => {
@@ -145,7 +147,7 @@ describe('integration: always-respond — extra coverage', () => {
     await new Promise((r) => setTimeout(r, 250))
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'silent', chatId: 'grp_unknown', messageId: 'cg-2' }))
     await new Promise((r) => setTimeout(r, 200))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
   })
 })
 
@@ -155,7 +157,8 @@ describe('integration: always-respond — multi-account isolation', () => {
 
   beforeEach(async () => {
     __resetForTesting()
-    dispatch.mockClear()
+    dmDispatch.mockClear()
+    groupDispatch.mockClear()
     serverA = await startFakeServer({ botUserId: 'botA@srv' })
     serverB = await startFakeServer({ botUserId: 'botB@srv' })
   })
@@ -194,13 +197,17 @@ describe('integration: always-respond — multi-account isolation', () => {
 
       // A bypasses (HR matches grp_hr_A)
       serverA.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_hr_A', messageId: 'mA-1' }))
-      await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-      expect(dispatch).toHaveBeenCalledTimes(1)
+      await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+      expect(groupDispatch).toHaveBeenCalledTimes(1)
+      expect(groupDispatch.mock.calls[0][0]).toMatchObject({
+        accountId: 'A',
+        route: { sessionKey: 'test:group:grp_hr_A' },
+      })
 
       // B does NOT bypass (no matching title on B's chats)
       serverB.pushInbound(groupTextEnvelope({ author: 'bob@srv', text: 'no mention', chatId: 'grp_hr_B', messageId: 'mB-1' }))
       await new Promise((r) => setTimeout(r, 250))
-      expect(dispatch).toHaveBeenCalledTimes(1)
+      expect(dispatchCount()).toBe(1)
     } finally {
       acA.abort(); acB.abort()
       await Promise.race([startA.catch(() => {}), new Promise((r) => setTimeout(r, 500))])

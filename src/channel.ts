@@ -1,7 +1,13 @@
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core"
-import { dispatchInboundDirectDm } from "openclaw/plugin-sdk/channel-inbound"
+import type { OpenClawConfig, OpenClawPluginApi } from "openclaw/plugin-sdk/core"
+import {
+  buildChannelInboundEventContext,
+  dispatchChannelInboundTurn,
+  dispatchInboundDirectDm,
+  resolveChannelInboundRouteEnvelope,
+} from "openclaw/plugin-sdk/channel-inbound"
 import {
   deliverTextOrMediaReply,
+  normalizeOutboundReplyPayload,
   resolveSendableOutboundReplyParts,
   type OutboundReplyPayload,
 } from "openclaw/plugin-sdk/reply-payload"
@@ -284,6 +290,84 @@ function clearAccountChats(accountId: string): void {
   // both survive a reconnect, so keeping the cache lets redirects keep
   // working until a genuine shutdown. Process-level reset happens via
   // __resetForTesting or module reload.
+}
+
+type GroupInboundParams = {
+  cfg: OpenClawConfig
+  accountId: string
+  chatId: string
+  senderId: string
+  recipientAddress: string
+  rawBody: string
+  messageId: string
+  timestamp: number
+  commandBody?: string
+  commandAuthorized?: boolean
+  extraContext?: Record<string, unknown>
+  deliver: (payload: OutboundReplyPayload) => Promise<void>
+  onRecordError: (err: unknown) => void
+  onDispatchError: (err: unknown, info: { kind: string }) => void
+}
+
+// The SDK's dispatchInboundDirectDm with a group peer. That helper hardcodes
+// conversation kind "direct", so under the default session.dmScope "main"
+// every group chat would land in the agent's main DM session.
+async function dispatchGroupInbound(params: GroupInboundParams): Promise<void> {
+  const peer = { kind: 'group' as const, id: params.chatId }
+  const label = `Group ${params.chatId}`
+  const { route, buildEnvelope } = resolveChannelInboundRouteEnvelope({
+    cfg: params.cfg,
+    channel: 'trueconf',
+    accountId: params.accountId,
+    peer,
+  })
+  const accountId = route.accountId ?? params.accountId
+  const ctxPayload = await buildChannelInboundEventContext({
+    channel: 'trueconf',
+    accountId,
+    messageId: params.messageId,
+    messageIdFull: params.messageId,
+    timestamp: params.timestamp,
+    from: params.senderId,
+    sender: { id: params.senderId, name: params.senderId },
+    conversation: { kind: 'group', id: params.chatId, routePeer: peer, label },
+    route: {
+      agentId: route.agentId,
+      accountId: route.accountId,
+      routeSessionKey: route.sessionKey,
+      dispatchSessionKey: route.sessionKey,
+    },
+    reply: { to: params.recipientAddress, originatingTo: params.senderId },
+    message: {
+      body: buildEnvelope({ channel: 'TrueConf', from: label, body: params.rawBody, timestamp: params.timestamp }),
+      bodyForAgent: params.rawBody,
+      rawBody: params.rawBody,
+      commandBody: params.commandBody ?? params.rawBody,
+    },
+    access: {
+      commands: { authorized: params.commandAuthorized === true },
+      // The inbound gate already dropped group messages that neither mention
+      // nor reply to the bot outside always-respond chats, so every group
+      // turn that gets here is addressed to the bot.
+      mentions: { canDetectMention: true, wasMentioned: true },
+    },
+    extra: params.extraContext,
+  })
+  await dispatchChannelInboundTurn({
+    cfg: params.cfg,
+    channel: 'trueconf',
+    accountId,
+    route: { agentId: route.agentId, sessionKey: route.sessionKey },
+    ctxPayload,
+    record: { onRecordError: params.onRecordError },
+    delivery: {
+      deliver: async (payload) => await params.deliver(normalizeOutboundReplyPayload(payload)),
+      onError: params.onDispatchError,
+    },
+    // An empty object still makes core build the default reply pipeline;
+    // omitting the field skips it.
+    replyPipeline: {},
+  })
 }
 
 export const channelPlugin = {
@@ -843,40 +927,47 @@ export const channelPlugin = {
           }
         }
 
+        const turn = {
+          cfg: store.fullConfig as OpenClawConfig,
+          accountId,
+          senderId: inboundMsg.senderId,
+          // Strip the per-connection /resource suffix: ctx.To and
+          // currentChannelId must be stable across reconnects, and downstream
+          // target resolution operates on bare JIDs.
+          recipientAddress: (wsClient.botUserId ?? '').replace(/\/.*$/, '').trim(),
+          rawBody,
+          messageId: inboundMsg.messageId,
+          timestamp: inboundMsg.timestamp,
+          commandBody: isCommand ? inboundMsg.text : undefined,
+          commandAuthorized: isCommand ? commandAuthorized : undefined,
+          extraContext: widenExtraContext(extraContext),
+          deliver: deliver(inboundMsg),
+          onRecordError: (err: unknown) => {
+            logger.error(`[trueconf] Record error: ${err instanceof Error ? err.message : String(err)}`)
+            void cleanupTemp()
+          },
+          onDispatchError: (err: unknown, info: { kind: string }) => {
+            logger.error(`[trueconf] Dispatch error (${info.kind}): ${err instanceof Error ? err.message : String(err)}`)
+            void cleanupTemp()
+          },
+        }
+
         try {
-          await dispatchInboundDirectDm({
-            cfg: store.fullConfig as Parameters<typeof dispatchInboundDirectDm>[0]['cfg'],
-            channel: 'trueconf',
-            channelLabel: 'TrueConf',
-            accountId,
-            peer: { kind: 'direct' as const, id: inboundMsg.peerId },
-            senderId: inboundMsg.senderId,
-            senderAddress: inboundMsg.senderId,
-            // Strip the per-connection /resource suffix: ctx.To and
-            // currentChannelId must be stable across reconnects, and downstream
-            // target resolution operates on bare JIDs.
-            recipientAddress: (wsClient.botUserId ?? '').replace(/\/.*$/, '').trim(),
-            conversationLabel: inboundMsg.isGroup
-              ? `Group ${inboundMsg.chatId}`
-              : `DM with ${inboundMsg.peerId}`,
-            rawBody,
-            messageId: inboundMsg.messageId,
-            timestamp: inboundMsg.timestamp,
-            commandBody: isCommand ? inboundMsg.text : undefined,
-            commandAuthorized: isCommand ? commandAuthorized : undefined,
-            extraContext: widenExtraContext(extraContext),
-            deliver: deliver(inboundMsg),
-            onRecordError: (err: unknown) => {
-              logger.error(`[trueconf] Record error: ${err instanceof Error ? err.message : String(err)}`)
-              void cleanupTemp()
-            },
-            onDispatchError: (err: unknown, info: { kind: string }) => {
-              logger.error(`[trueconf] Dispatch error (${info.kind}): ${err instanceof Error ? err.message : String(err)}`)
-              void cleanupTemp()
-            },
-          })
+          if (inboundMsg.isGroup) {
+            await dispatchGroupInbound({ ...turn, chatId: inboundMsg.chatId })
+          } else {
+            await dispatchInboundDirectDm({
+              ...turn,
+              channel: 'trueconf',
+              channelLabel: 'TrueConf',
+              peer: { kind: 'direct' as const, id: inboundMsg.peerId },
+              senderAddress: inboundMsg.senderId,
+              conversationLabel: `DM with ${inboundMsg.peerId}`,
+            })
+          }
         } catch (err) {
-          logger.error(`[trueconf] dispatchInboundDirectDm failed: ${err instanceof Error ? err.message : String(err)}`)
+          const fn = inboundMsg.isGroup ? 'dispatchGroupInbound' : 'dispatchInboundDirectDm'
+          logger.error(`[trueconf] ${fn} failed: ${err instanceof Error ? err.message : String(err)}`)
           await cleanupTemp()
         }
       }

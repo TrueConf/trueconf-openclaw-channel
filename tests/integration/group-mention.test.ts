@@ -120,7 +120,7 @@ describe('integration: group chat mention/reply gate', () => {
       conversation: { kind: 'group', id: GROUP_CHAT, label: `Group ${GROUP_CHAT}` },
       reply: { to: 'trueconf:group:group_123', originatingTo: 'trueconf:group:group_123' },
       message: { body: 'Bot what is up', rawBody: 'Bot what is up', commandBody: 'Bot what is up' },
-      access: { commands: { authorized: false }, mentions: { wasMentioned: true } },
+      access: { commands: { authorized: false }, mentions: { wasMentioned: true, requireMention: true } },
     })
   })
 
@@ -182,7 +182,10 @@ describe('integration: group chat mention/reply gate', () => {
       }))
 
       await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
-      expect(groupTurn(0).ctxPayload.message.rawBody).toBe('bot ping')
+      expect(groupTurn(0).ctxPayload).toMatchObject({
+        message: { rawBody: 'bot ping' },
+        access: { mentions: { wasMentioned: true, requireMention: true } },
+      })
       innerHarness.abort()
       await Promise.race([innerHarness.startPromise.catch(() => {}), new Promise((r) => setTimeout(r, 500))])
     } finally {
@@ -253,9 +256,11 @@ describe('integration: group chat mention/reply gate', () => {
     // locally every time. Guarded by it(..., { retry: 3 }) above; the 6s budget
     // is ample on the happy path.
     await waitFor(() => groupDispatch.mock.calls.length >= 1, 6000)
-    const { ctxPayload } = groupTurn(0)
-    expect(ctxPayload.sender.id).toBe(BOB)
-    expect(ctxPayload.message.rawBody).toBe('replying without mention')
+    expect(groupTurn(0).ctxPayload).toMatchObject({
+      sender: { id: BOB },
+      message: { rawBody: 'replying without mention' },
+      access: { mentions: { wasMentioned: true, requireMention: true } },
+    })
   })
 
   it('reply to an unknown messageId → drop', async () => {
@@ -377,7 +382,20 @@ describe('integration: group chat mention/reply gate', () => {
 
     await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
     expect(groupDispatch).toHaveBeenCalledTimes(1)
-    expect(groupTurn(0).ctxPayload.conversation.id).toBe(ALWAYS_CHAT)
+    expect(groupTurn(0).ctxPayload).toMatchObject({
+      conversation: { id: ALWAYS_CHAT },
+      access: { mentions: { wasMentioned: false, requireMention: false } },
+    })
+  })
+
+  it('groups.resolveRequireMention is false for an always-respond chat and true for others', async () => {
+    harness = await bootPlugin(server, { groupAlwaysRespondIn: ['chatId:Chat_Group_ABC'] })
+    const resolve = channelPlugin.groups.resolveRequireMention
+    const cfg = {} as never
+
+    // OpenClaw lowercases the group id it reads from From.
+    expect(resolve({ cfg, groupId: 'chat_group_abc', accountId: 'default' })).toBe(false)
+    expect(resolve({ cfg, groupId: GROUP_CHAT, accountId: 'default' })).toBe(true)
   })
 
   it('keeps existing gate when chatId is absent from groupAlwaysRespondIn', async () => {

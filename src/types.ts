@@ -172,7 +172,7 @@ export type InboundExtraContext =
   | InboundMediaContext
   | (InboundEnvelopeHint & InboundMediaContext)
 
-export interface InboundMessage {
+type InboundMessageFields = {
   channel: string
   accountId: string
   peerId: string
@@ -180,7 +180,6 @@ export interface InboundMessage {
   text: string
   messageId: string
   timestamp: number
-  isGroup: boolean
   senderName: string
   senderId: string
   attachmentContent?: AttachmentContent
@@ -188,6 +187,12 @@ export interface InboundMessage {
   parseMode?: 'text' | 'markdown' | 'html'
   extraContext?: InboundExtraContext
 }
+
+// wasMentioned: the bot was @-mentioned, the message replies to the bot, or
+// it matches a bot nickname. Only groups have this signal.
+export type InboundMessage =
+  | (InboundMessageFields & { isGroup: false })
+  | (InboundMessageFields & { isGroup: true; wasMentioned: boolean })
 
 export type InboundDispatchFn = (msg: InboundMessage) => void | Promise<void>
 

@@ -310,6 +310,65 @@ describe('handleInboundMessage — envelope routing 201/203/204', () => {
   })
 })
 
+describe('handleInboundMessage — group wasMentioned', () => {
+  beforeEach(() => __resetCoalesceBufferForTesting())
+  afterEach(() => __resetCoalesceBufferForTesting())
+
+  const mentionText = (messageId: string, text: string) => makeRequest({
+    type: EnvelopeType.PLAIN_MESSAGE,
+    chatId: GROUP_CHAT,
+    author: { id: ALICE, type: 1 },
+    content: { text, parseMode: 'html' },
+    messageId,
+    timestamp: 1,
+  })
+  const attachment = (messageId: string) => makeRequest({
+    type: EnvelopeType.ATTACHMENT,
+    chatId: GROUP_CHAT,
+    author: { id: ALICE, type: 1 },
+    content: { fileId: 'f-1', name: 'plan.pdf', size: 10, mimeType: 'application/pdf', readyState: 2 },
+    messageId,
+    timestamp: 2,
+  })
+
+  it('an attachment coalesced with a mentioning caption carries wasMentioned true', async () => {
+    const h = makeHarness({ chatType: 'group' })
+
+    await handleInboundMessage(mentionText('m-cap', '<a href="trueconf:bot@srv">Bot</a> see file'), h.ctx)
+    await handleInboundMessage(attachment('m-file'), h.ctx)
+    await flushCoalesce()
+
+    expect(h.dispatch.mock.calls.map((c) => c[0])).toEqual([
+      expect.objectContaining({ messageId: 'm-file', text: 'Bot see file', isGroup: true, wasMentioned: true }),
+    ])
+  })
+
+  it('in an always-respond chat an unaddressed caption and its attachment carry wasMentioned false', async () => {
+    const h = makeHarness({ chatType: 'group' })
+    h.alwaysRespondChats.add(GROUP_CHAT)
+
+    await handleInboundMessage(mentionText('m-cap', 'see file'), h.ctx)
+    await handleInboundMessage(attachment('m-file'), h.ctx)
+    await flushCoalesce()
+
+    expect(h.dispatch.mock.calls.map((c) => c[0])).toEqual([
+      expect.objectContaining({ messageId: 'm-file', text: 'see file', isGroup: true, wasMentioned: false }),
+    ])
+  })
+
+  it('in an always-respond chat an @-mention still reports wasMentioned true', async () => {
+    const h = makeHarness({ chatType: 'group' })
+    h.alwaysRespondChats.add(GROUP_CHAT)
+
+    await handleInboundMessage(mentionText('m-1', '<a href="trueconf:bot@srv">Bot</a> hi'), h.ctx)
+    await flushCoalesce()
+
+    expect(h.dispatch.mock.calls.map((c) => c[0])).toEqual([
+      expect.objectContaining({ messageId: 'm-1', isGroup: true, wasMentioned: true }),
+    ])
+  })
+})
+
 describe('getMaxFileSize — bounds', () => {
   const DEFAULT_50MB = 50 * 1024 * 1024
 

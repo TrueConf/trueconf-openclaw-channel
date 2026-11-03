@@ -7,6 +7,7 @@ import {
 } from "openclaw/plugin-sdk/reply-payload"
 import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound"
 import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/media-runtime"
+import { normalizeAccountId } from "openclaw/plugin-sdk/account-id"
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -85,6 +86,7 @@ export interface AccountEntry {
   limits: FileUploadLimits
   sendQueue: PerChatSendQueue
   outboundQueue: OutboundQueue
+  alwaysRespond: AlwaysRespondResolver
 }
 
 // Tears down a single account entry: stops its lifecycle and closes the
@@ -301,6 +303,16 @@ function redirectSelfSend(
   return route
 }
 
+// Core hands plugin hooks its normalized (lowercased) account id, while
+// store.accounts is keyed by the id as configured.
+function findAccountEntry(accountId: string | null | undefined): AccountEntry | undefined {
+  const wanted = normalizeAccountId(accountId)
+  for (const [id, entry] of store.accounts) {
+    if (normalizeAccountId(id) === wanted) return entry
+  }
+  return undefined
+}
+
 export const channelPlugin = {
   id: "trueconf" as const,
 
@@ -337,6 +349,13 @@ export const channelPlugin = {
         /^group:\S+$/.test(normalized ?? raw) || /^[^@\s/]+@[^@\s/]+$/.test(normalized ?? raw),
       hint: "<user@server> or group:<chatId>",
     },
+  },
+
+  // Drives the group intro in the system prompt: "always-on" activation in
+  // always-respond chats, "trigger-only" elsewhere.
+  groups: {
+    resolveRequireMention: (params: { groupId?: string | null; accountId?: string | null }): boolean =>
+      !(params.groupId && findAccountEntry(params.accountId)?.alwaysRespond.isAlwaysRespondIgnoringCase(params.groupId)),
   },
 
   config: {
@@ -802,8 +821,12 @@ export const channelPlugin = {
           await cleanupTemp()
         }
         if (inboundMsg.isGroup) {
-          await dispatchGroupInbound({ ...turn, chatId: inboundMsg.chatId })
-            .catch(onFailure('dispatchGroupInbound'))
+          await dispatchGroupInbound({
+            ...turn,
+            chatId: inboundMsg.chatId,
+            wasMentioned: inboundMsg.wasMentioned,
+            requireMention: !alwaysRespond.isAlwaysRespond(inboundMsg.chatId),
+          }).catch(onFailure('dispatchGroupInbound'))
         } else {
           await dispatchInboundDirectDm({
             ...turn,
@@ -873,6 +896,7 @@ export const channelPlugin = {
         limits,
         sendQueue,
         outboundQueue,
+        alwaysRespond,
       })
 
       try {

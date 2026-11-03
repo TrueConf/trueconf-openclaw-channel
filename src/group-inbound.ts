@@ -15,7 +15,7 @@ export type InboundTurn = Omit<
   'channel' | 'channelLabel' | 'peer' | 'senderAddress' | 'recipientAddress' | 'conversationLabel' | 'extraContext'
 > & { extraContext?: InboundExtraContext }
 
-export type GroupInboundParams = InboundTurn & { chatId: string }
+export type GroupInboundParams = InboundTurn & { chatId: string; wasMentioned: boolean; requireMention: boolean }
 
 // The SDK's dispatchInboundDirectDm with a group peer. That helper hardcodes
 // conversation kind "direct", so under the default session.dmScope "main"
@@ -55,10 +55,12 @@ export async function dispatchGroupInbound(params: GroupInboundParams): Promise<
     },
     access: {
       commands: { authorized: params.commandAuthorized === true },
-      // The inbound gate already dropped group messages that neither mention
-      // nor reply to the bot outside always-respond chats, so every group
-      // turn that gets here is addressed to the bot.
-      mentions: { canDetectMention: true, wasMentioned: true },
+      mentions: {
+        // Required by the SDK type; the context builder never reads it.
+        canDetectMention: true,
+        wasMentioned: params.wasMentioned,
+        requireMention: params.requireMention,
+      },
     },
     extra: params.extraContext,
   })

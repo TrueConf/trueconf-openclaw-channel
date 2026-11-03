@@ -62,7 +62,7 @@ describe('F1 — global nickname activation in the group gate', () => {
 
     expect(h.dispatch).toHaveBeenCalledTimes(1)
     const arg = h.dispatch.mock.calls[0][0] as InboundMessage
-    expect(arg.text).toBe('Клешня, привет')
+    expect(arg).toMatchObject({ text: 'Клешня, привет', isGroup: true, wasMentioned: true })
   })
 
   it('PLAIN in a group without a nickname → dropped', async () => {

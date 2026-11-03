@@ -46,6 +46,12 @@ export class AlwaysRespondResolver {
     return this.configuredChatIds.has(chatId) || this.titleResolvedChatIds.has(chatId)
   }
 
+  // For ids OpenClaw has lowercased on the way into a session key.
+  isAlwaysRespondIgnoringCase(chatId: string): boolean {
+    const folded = chatId.toLowerCase()
+    return [...this.configuredChatIds, ...this.titleResolvedChatIds].some((id) => id.toLowerCase() === folded)
+  }
+
   enqueueEvent(ev: ResolverEvent): void {
     this.queue.push(ev)
     if (!this.buffering) void this.drainQueue()

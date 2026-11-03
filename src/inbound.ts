@@ -130,13 +130,18 @@ export async function resolveChatType(params: {
   }
 }
 
+// InboundMessage without its body, per variant, so a buffered group text keeps
+// its wasMentioned.
+type WithoutBody<M> = M extends unknown ? Omit<M, 'text' | 'attachmentContent'> : never
+type InboundHeader = WithoutBody<InboundMessage>
+
 // TrueConf delivers text-with-file as two separate envelopes (type 200 then 202)
 // with no correlationId. We buffer a lone text envelope for COALESCE_WINDOW_MS so
 // that a following attachment from the same (account, chat, peer) can be merged
 // into a single dispatch with the real caption preserved. If no attachment
 // arrives within the window, the timer flushes the text alone.
 interface PendingTextInbound {
-  base: Omit<InboundMessage, 'text' | 'attachmentContent'>
+  base: InboundHeader
   baseText: string
   // F2: resolves to the quoted-context prefix (or null). The fetch is started
   // before buffering but awaited only at flush/dispatch, so the gate→buffer
@@ -166,7 +171,7 @@ async function resolvePendingText(pending: PendingTextInbound): Promise<string> 
 // folded in later at flush/dispatch via resolvePendingText.
 function bufferPendingText(
   key: string,
-  base: Omit<InboundMessage, 'text' | 'attachmentContent'>,
+  base: InboundHeader,
   baseText: string,
   replyPrefix: Promise<string | null> | null,
   ctx: InboundContext,
@@ -339,36 +344,29 @@ export async function handleInboundMessage(
     return
   }
 
-  // Group activation gate (skipped when isAlwaysRespond(chatId) is true):
-  // bot must be @-mentioned (html) or the message must reply to a recent bot
-  // message. ATTACHMENT/LOCATION/SURVEY envelopes still pass when a preceding
-  // gated text is waiting in the coalescer (caption + media as one turn).
-  if (kind === 'group' && !ctx.isAlwaysRespond(chatId)) {
-    let activated = false
+  // Group activation: an @-mention (html), a reply to a recent bot message or
+  // a bot nickname. Forwards, attachments, locations and surveys carry no
+  // mention markup, so they take the activation of the text buffered before
+  // them (caption + media as one turn). Always-respond chats skip the gate
+  // but still report whether the bot was addressed.
+  let wasMentioned = false
+  if (kind === 'group') {
+    const replied = isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))
+    let activated: boolean
     if (envelope.type === EnvelopeType.PLAIN_MESSAGE) {
       const content = envelope.content as { text: string; parseMode?: string }
-      const botUserId = ctx.wsClient.botUserId ?? ''
-      const normalizedBot = normalizeForCompare(botUserId)
+      const normalizedBot = normalizeForCompare(ctx.wsClient.botUserId ?? '')
       const mentioned = normalizedBot.length > 0 && extractMentionedUserIds(content.text, content.parseMode).some(
         (id) => normalizeForCompare(id) === normalizedBot,
       )
-      const replied = isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))
-      activated = mentioned || replied || ctx.matchesNickname(plainText ?? content.text)
-    } else if (envelope.type === EnvelopeType.FORWARDED_MESSAGE) {
-      // Forwards don't carry the bot's mention markup, so reply-to-bot is the
-      // only direct activation path. A preceding gated text in the coalescer
-      // also activates (forward as a follow-up to a captioned turn).
-      const replied = isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))
-      activated = replied || pendingTextInbounds.has(key)
-    } else if (
-      envelope.type === EnvelopeType.ATTACHMENT
-      || envelope.type === EnvelopeType.LOCATION
-      || envelope.type === EnvelopeType.SURVEY
-    ) {
-      const replied = isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))
-      activated = replied || pendingTextInbounds.has(key)
+      wasMentioned = mentioned || replied || ctx.matchesNickname(plainText ?? content.text)
+      activated = wasMentioned
+    } else {
+      const pending = pendingTextInbounds.get(key)?.base
+      wasMentioned = replied || (pending?.isGroup === true && pending.wasMentioned)
+      activated = replied || pending !== undefined
     }
-    if (!activated) {
+    if (!activated && !ctx.isAlwaysRespond(chatId)) {
       ctx.logger.info(`[trueconf] group ${chatId}: no mention/reply for type ${envelope.type}, dropping`)
       return
     }
@@ -380,19 +378,15 @@ export async function handleInboundMessage(
     ctx.directChats.set(`${ctx.accountId}\u0000${stableUserId}`, chatId)
   }
 
-  // Group routing: peerId = chatId so the LLM sees one conversation per group
-  // (senderId is preserved on the dispatched message for attribution).
-  const peerId = kind === 'group' ? chatId : stableUserId
-
-  const base: Omit<InboundMessage, 'text' | 'attachmentContent'> = {
+  const base: InboundHeader = {
     channel: 'trueconf',
     accountId: ctx.accountId,
-    peerId,
+    peerId: kind === 'group' ? chatId : stableUserId,
     chatId,
     senderId: stableUserId,
     messageId: envelope.messageId,
     timestamp: envelope.timestamp,
-    isGroup: kind === 'group',
+    ...(kind === 'group' ? { isGroup: true as const, wasMentioned } : { isGroup: false as const }),
     senderName: stableUserId,
     replyMessageId: envelope.replyMessageId,
     ...(plainParseMode ? { parseMode: plainParseMode } : {}),

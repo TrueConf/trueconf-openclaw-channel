@@ -32,7 +32,7 @@ export interface GroupTurn {
     conversation: { kind: string; id: string; label: string }
     reply: { to: string; originatingTo: string }
     message: { body: string; rawBody: string; commandBody: string }
-    access: { commands: { authorized: boolean }; mentions: { wasMentioned: boolean } }
+    access: { commands: { authorized: boolean }; mentions: { wasMentioned: boolean; requireMention: boolean } }
   }
   delivery: { deliver: (payload: { text: string }) => Promise<void> }
 }

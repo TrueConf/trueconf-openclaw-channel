@@ -3,6 +3,7 @@ import { vi } from 'vitest'
 // Factory for vi.mock('openclaw/plugin-sdk/channel-inbound'). Group routing is
 // faked so no session store on disk is touched, and the context builder
 // returns its input, so a test reads exactly what the plugin handed the SDK.
+// Real OpenClaw routing is covered by group-session-routing.test.ts.
 export function channelInboundMock() {
   return {
     dispatchInboundDirectDm: vi.fn().mockResolvedValue({}),

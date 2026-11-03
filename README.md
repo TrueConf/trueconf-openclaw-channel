@@ -191,7 +191,7 @@ Point your assistant at [`llms.txt`](./llms.txt) (a short index) or paste the co
 }
 ```
 
-> **Important:** `dmPolicy`, `allowFrom`, `maxFileSize`, `groupAlwaysRespondIn`, `groupPolicy`, `groupAllowFrom`, `groups` and `historyLimit` live at the `channels.trueconf` level, **not** inside a specific account. If you put them inside `accounts.*`, the channel ignores them and falls back to defaults.
+> **Important:** `dmPolicy`, `allowFrom`, `maxFileSize`, `groupAlwaysRespondIn`, `groupPolicy`, `groupAllowFrom`, `groups` and `historyLimit` live at the `channels.trueconf` level, **not** inside a specific account. OpenClaw's config validation rejects them inside `accounts.*` (`must not have additional properties`).
 
 ### Account field reference
 
@@ -365,7 +365,7 @@ Limits:
 
 A group session takes the TrueConf chat title as its name (`GroupSubject` and the session label). A chat without a title is named `Group <chatId>`. A rename applies from the next message.
 
-The bot looks up each speaker's display name with TrueConf `getUserDisplayName` and keeps it for an hour. The agent sees the speaker as `Name (user@server)`, and the session history records each line with that label. When the lookup fails or takes longer than 3 seconds, the bot shows the speaker's ID. Direct messages are unchanged.
+The bot looks up each speaker's display name with TrueConf `getUserDisplayName` and keeps it for an hour. The agent sees the speaker as `Name (user@server)`, and the session history records each line with that label. When the lookup fails, returns no name or takes longer than 3 seconds, the bot shows the speaker's ID and asks again after five minutes. Direct messages are unchanged.
 
 ### Bot nicknames
 
@@ -473,7 +473,7 @@ How `groups` and `groupPolicy` decide:
 
 If multiple accounts are configured (`accounts.office`, `accounts.support`, ...):
 
-- Each account gets its own WebSocket connection, its own CA trust, its own last DM peer for the self-send redirect, its own display-name cache and its own recent-bot-messages cache.
+- Each account gets its own WebSocket connection, its own CA trust, its own last DM peer for the self-send redirect and its own display-name cache.
 - A single account failing to start doesn't affect the others: the gateway logs `[trueconf] Account <id> startup failed: ...` and continues starting the rest.
 - Outgoing-response routing uses `ctx.accountId`. The LLM must know which account to reply from; this is typically derived from the inbound `accountId`.
 - `dmPolicy`, `allowFrom`, `maxFileSize` and the group keys (`groupPolicy`, `groupAllowFrom`, `groups`, `historyLimit`) are shared across all accounts (at the `trueconf.*` level). Per-account versions are not supported.

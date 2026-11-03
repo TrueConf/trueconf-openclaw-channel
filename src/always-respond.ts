@@ -42,12 +42,9 @@ export class AlwaysRespondResolver {
     this.configuredTitles = parsed.configuredTitles
   }
 
-  isAlwaysRespond = (chatId: string): boolean => {
-    return this.configuredChatIds.has(chatId) || this.titleResolvedChatIds.has(chatId)
-  }
-
-  // For ids OpenClaw has lowercased on the way into a session key.
-  isAlwaysRespondIgnoringCase(chatId: string): boolean {
+  // Ignores case, like groups keys: OpenClaw lowercases the group id it
+  // hands the requireMention adapter.
+  isAlwaysRespond(chatId: string): boolean {
     const folded = chatId.toLowerCase()
     return [...this.configuredChatIds, ...this.titleResolvedChatIds].some((id) => id.toLowerCase() === folded)
   }

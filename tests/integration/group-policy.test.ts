@@ -20,11 +20,13 @@ interface Harness {
   abort: () => void
   startPromise: Promise<void>
   info: ReturnType<typeof vi.fn>
+  // A config reload: the account keeps running, the plugin reads the new config.
+  reconfigure: (trueconf: Record<string, unknown>) => void
 }
 
 async function bootPlugin(server: FakeServer, trueconf: Record<string, unknown> = {}): Promise<Harness> {
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
-  const api = {
+  const apiFor = (extra: Record<string, unknown>) => ({
     logger,
     runtime: {},
     config: {
@@ -35,14 +37,14 @@ async function bootPlugin(server: FakeServer, trueconf: Record<string, unknown> 
           useTls: false,
           username: 'bot@srv',
           password: 'secret',
-          ...trueconf,
+          ...extra,
         },
       },
     },
     on: () => {},
     registerTool: () => {},
-  }
-  registerFull(api as never)
+  })
+  registerFull(apiFor(trueconf) as never)
   const ac = new AbortController()
   const startPromise = (channelPlugin.gateway.startAccount as (ctx: Record<string, unknown>) => Promise<void>)({
     accountId: 'default',
@@ -50,7 +52,12 @@ async function bootPlugin(server: FakeServer, trueconf: Record<string, unknown> 
     abortSignal: ac.signal,
   })
   await waitFor(() => server.authRequests.length >= 1 && server.connections.size > 0)
-  return { abort: () => ac.abort(), startPromise, info: logger.info }
+  return {
+    abort: () => ac.abort(),
+    startPromise,
+    info: logger.info,
+    reconfigure: (next) => registerFull(apiFor(next) as never),
+  }
 }
 
 function groupText(chatId: string, author: string, messageId: string, mention = true) {
@@ -190,6 +197,41 @@ describe('integration: groups and groupPolicy decide which groups this instance 
       resolve({ cfg, groupId: 'mine', accountId: 'default' }),
       resolve({ cfg, groupId: 'foreign', accountId: 'default' }),
     ]).toEqual([false, true])
+  })
+
+  it('matches chatIds in groups and groupAlwaysRespondIn regardless of case, in the gate and the adapter', async () => {
+    const trueconf = { groups: { MINE: {}, Foreign: {} }, groupAlwaysRespondIn: ['chatId:FOREIGN'] }
+    harness = await bootPlugin(server, trueconf)
+
+    server.pushInbound(groupText('mine', ALICE, 'm1'))
+    server.pushInbound(groupText('foreign', ALICE, 'f1', false))
+    await waitFor(() => groupDispatch.mock.calls.length >= 2)
+
+    expect(groupTurns().map((turn) => [turn.ctxPayload.messageId, turn.ctxPayload.access.mentions]).sort()).toEqual([
+      ['f1', { canDetectMention: true, wasMentioned: false, requireMention: false }],
+      ['m1', { canDetectMention: true, wasMentioned: true, requireMention: true }],
+    ])
+    const cfg = { channels: { trueconf } } as never
+    const resolve = channelPlugin.groups.resolveRequireMention
+    expect([
+      resolve({ cfg, groupId: 'foreign', accountId: 'default' }),
+      resolve({ cfg, groupId: 'mine', accountId: 'default' }),
+    ]).toEqual([false, true])
+  })
+
+  it('applies a reloaded dmPolicy to the next DM', async () => {
+    harness = await bootPlugin(server, { dmPolicy: 'open', allowFrom: ['*'] })
+    const dm = (author: string, messageId: string) => groupText(`chat_${author}`, author, messageId, false)
+
+    server.pushInbound(dm(ALICE, 'd-before'))
+    await waitFor(() => dmDispatch.mock.calls.length >= 1)
+    harness.reconfigure({ dmPolicy: 'allowlist', allowFrom: [OWNER] })
+    server.pushInbound(dm(ALICE, 'd-after'))
+    server.pushInbound(dm(OWNER, 'd-owner'))
+    await waitFor(() => dmDispatch.mock.calls.length >= 2)
+    await settle()
+
+    expect(dmDispatch.mock.calls.map((call) => call[0].messageId)).toEqual(['d-before', 'd-owner'])
   })
 
   it('drops a DM from a sender outside allowFrom before any file request, and serves the owner', async () => {

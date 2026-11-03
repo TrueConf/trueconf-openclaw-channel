@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DisplayNames } from '../../src/display-names'
 
 const logger = () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() })
+const timings = { ttlMs: 60_000, retryMs: 300_000, timeoutMs: 3_000 }
 
 describe('DisplayNames', () => {
   afterEach(() => {
@@ -14,7 +15,7 @@ describe('DisplayNames', () => {
     const names = new DisplayNames(async (userId) => {
       asked.push(userId)
       return `Name of ${userId}`
-    }, logger(), 60_000)
+    }, logger(), timings)
 
     const first = await Promise.all([names.resolve('a@srv'), names.resolve('a@srv')])
     const cached = await names.resolve('a@srv')
@@ -29,40 +30,46 @@ describe('DisplayNames', () => {
     })
   })
 
-  it('falls back to the userId on an error or an empty name and asks again next time', async () => {
+  it('answers with the userId after an error or an empty name and asks again only after retryMs', async () => {
+    vi.useFakeTimers()
     const replies: Array<() => Promise<string | null>> = [
       async () => { throw new Error('errorCode 304') },
       async () => null,
       async () => 'Боб',
     ]
     const log = logger()
-    const names = new DisplayNames(() => replies.shift()!(), log)
+    const names = new DisplayNames(() => replies.shift()!(), log, timings)
 
-    const results = [await names.resolve('b@srv'), await names.resolve('b@srv'), await names.resolve('b@srv')]
+    const afterError = await names.resolve('b@srv')
+    const withinRetry = await names.resolve('b@srv')
+    vi.advanceTimersByTime(300_001)
+    const afterEmpty = await names.resolve('b@srv')
+    vi.advanceTimersByTime(300_001)
+    const found = await names.resolve('b@srv')
 
-    expect(results).toEqual(['b@srv', 'b@srv', 'Боб'])
-    expect(log.warn.mock.calls).toEqual([
-      ['[trueconf] getUserDisplayName failed for b@srv: errorCode 304; using the id'],
-    ])
+    expect({ afterError, withinRetry, afterEmpty, found, unasked: replies.length, warnings: log.warn.mock.calls }).toEqual({
+      afterError: 'b@srv',
+      withinRetry: 'b@srv',
+      afterEmpty: 'b@srv',
+      found: 'Боб',
+      unasked: 0,
+      warnings: [['[trueconf] getUserDisplayName failed for b@srv: errorCode 304; using the id']],
+    })
   })
 
-  it('returns the userId after the timeout and keeps a late answer for the next lookup', async () => {
+  it('returns the userId after the timeout, answers at once while the lookup hangs, and keeps a late answer', async () => {
     vi.useFakeTimers()
     let answer!: (name: string) => void
-    const names = new DisplayNames(
-      () => new Promise<string>((resolve) => { answer = resolve }),
-      logger(),
-      60_000,
-      3_000,
-    )
+    const names = new DisplayNames(() => new Promise<string>((resolve) => { answer = resolve }), logger(), timings)
 
     const slow = names.resolve('c@srv')
     await vi.advanceTimersByTimeAsync(3_000)
     const timedOut = await slow
+    const whileHanging = await names.resolve('c@srv')
     answer('Кэрол')
     await vi.advanceTimersByTimeAsync(0)
     const late = await names.resolve('c@srv')
 
-    expect({ timedOut, late }).toEqual({ timedOut: 'c@srv', late: 'Кэрол' })
+    expect({ timedOut, whileHanging, late }).toEqual({ timedOut: 'c@srv', whileHanging: 'c@srv', late: 'Кэрол' })
   })
 })

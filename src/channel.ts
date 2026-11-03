@@ -366,7 +366,7 @@ export const channelPlugin = {
         cfg: params.cfg,
         accountId: params.accountId,
         chatId: params.groupId,
-        alwaysRespond: findAccountEntry(params.accountId)?.alwaysRespond.isAlwaysRespondIgnoringCase(params.groupId) ?? false,
+        alwaysRespond: findAccountEntry(params.accountId)?.alwaysRespond.isAlwaysRespond(params.groupId) ?? false,
       }),
   },
 
@@ -834,15 +834,16 @@ export const channelPlugin = {
             ? NOTHING_RESERVED
             : store.groupHistory.reserve(accountId, inboundMsg.chatId, inboundMsg.timestamp)
           try {
+            // All lookups run at once, so a turn waits at most one name timeout.
+            const [senderName, ...historyNames] = await Promise.all(
+              [inboundMsg.senderId, ...history.entries.map((line) => line.sender)].map((id) => displayNames.resolve(id)),
+            )
             await dispatchGroupInbound({
               ...turn,
               chatId: inboundMsg.chatId,
               title: store.chatsById.get(inboundMsg.chatId)?.title ?? '',
-              senderName: await displayNames.resolve(inboundMsg.senderId),
-              history: await Promise.all(history.entries.map(async (line) => ({
-                ...line,
-                sender: speakerLabel(line.sender, await displayNames.resolve(line.sender)),
-              }))),
+              senderName,
+              history: history.entries.map((line, i) => ({ ...line, sender: speakerLabel(line.sender, historyNames[i]) })),
               wasMentioned: inboundMsg.wasMentioned,
               requireMention: inboundMsg.requireMention,
             })
@@ -884,7 +885,7 @@ export const channelPlugin = {
           chats: store.chatsById,
           inflightChats: store.inflightChatLookups,
           recentBotMsgIds: store.recentBotMsgIdsByChat,
-          allowsDirect: (senderId) => shouldAllowMessage(channelConfig, senderId),
+          allowsDirect: (senderId) => shouldAllowMessage(store.channelConfig ?? channelConfig, senderId),
           groupAccess: (chatId, senderId) => resolveGroupAccess({
             cfg: store.fullConfig as OpenClawConfig,
             accountId,

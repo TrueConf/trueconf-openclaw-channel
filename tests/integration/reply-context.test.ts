@@ -37,7 +37,9 @@ function makeCtx(opts: CtxOpts = {}) {
     chats: new Map(),
     inflightChats: new Map(),
     recentBotMsgIds: opts.recentBotMsgIds ?? new Map<string, Set<string>>(),
-    isAlwaysRespond: () => false,
+    allowsDirect: () => true,
+    groupAccess: () => ({ kind: 'served', requireMention: true }),
+    unservedChatsLogged: new Set(),
     matchesNickname: () => false,
   }
   return { ctx, dispatch, sendRequest, logger }

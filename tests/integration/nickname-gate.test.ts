@@ -25,7 +25,9 @@ function makeCtx(opts: { matchesNickname?: (text: string) => boolean } = {}) {
     chats: new Map(),
     inflightChats: new Map(),
     recentBotMsgIds: new Map<string, Set<string>>(),
-    isAlwaysRespond: () => false,
+    allowsDirect: () => true,
+    groupAccess: () => ({ kind: 'served', requireMention: true }),
+    unservedChatsLogged: new Set(),
     matchesNickname: opts.matchesNickname ?? (() => false),
   }
   return { ctx, dispatch }

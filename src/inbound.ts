@@ -26,6 +26,7 @@ import { fetchQuotedContext } from './reply-context'
 import { sendText, sendTextToChat, isReconnectableSendError } from './outbound'
 import { resolveAccount } from './config'
 import { PerChatSendQueue } from './send-queue'
+import type { GroupAccess } from './group-policy'
 import type { OutboundQueue } from './outbound-queue'
 
 const DEFAULT_MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
@@ -236,7 +237,12 @@ export interface InboundContext {
   chats: Map<string, ChatInfo>
   inflightChats: Map<string, Promise<ChatInfo | null>>
   recentBotMsgIds: Map<string, Set<string>>
-  isAlwaysRespond: (chatId: string) => boolean
+  // dmPolicy / allowFrom for a DM sender.
+  allowsDirect: (senderId: string) => boolean
+  // groups / groupPolicy / groupAllowFrom for a group message.
+  groupAccess: (chatId: string, senderId: string) => GroupAccess
+  // `${accountId}\u0000${chatId}` of groups already logged as not served.
+  unservedChatsLogged: Set<string>
   matchesNickname: (text: string) => boolean
 }
 
@@ -287,6 +293,31 @@ export async function handleInboundMessage(
   if (kind === 'channel') {
     ctx.logger.info(`[trueconf] dropping channel message chatId=${chatId}`)
     return
+  }
+
+  // Every instance on the bot account receives every message. Access policy
+  // runs before any parsing, network call, download or dispatch, and a
+  // rejected message ends here without a reply.
+  if (kind === 'p2p' && !ctx.allowsDirect(stableUserId)) {
+    ctx.logger.info(`[trueconf] DM blocked for ${stableUserId} by policy`)
+    return
+  }
+  let requireMention = true
+  if (kind === 'group') {
+    const access = ctx.groupAccess(chatId, stableUserId)
+    if (access.kind === 'unserved') {
+      const logKey = `${ctx.accountId}\u0000${chatId}`
+      if (!ctx.unservedChatsLogged.has(logKey)) {
+        ctx.unservedChatsLogged.add(logKey)
+        ctx.logger.info(`[trueconf] ignoring group chatId=${chatId} title=${JSON.stringify(chat.title)}: ${access.reason}`)
+      }
+      return
+    }
+    if (access.kind === 'sender-blocked') {
+      ctx.logger.info(`[trueconf] group ${chatId}: ${stableUserId} is not an allowed group sender, ignoring`)
+      return
+    }
+    requireMention = access.requireMention
   }
 
   const key = coalesceKey(ctx.accountId, chatId, stableUserId)
@@ -358,8 +389,8 @@ export async function handleInboundMessage(
   // Group activation: an @-mention (html), a reply to a recent bot message or
   // a bot nickname. Forwards, attachments, locations and surveys carry no
   // mention markup, so they take the activation of the text buffered before
-  // them (caption + media as one turn). Always-respond chats skip the gate
-  // but still report whether the bot was addressed.
+  // them (caption + media as one turn). Always-on groups skip the gate but
+  // still report whether the bot was addressed.
   let wasMentioned = false
   if (kind === 'group') {
     const replied = isReplyToBot(envelope.replyMessageId, ctx.recentBotMsgIds.get(chatId))
@@ -377,7 +408,7 @@ export async function handleInboundMessage(
       wasMentioned = replied || (pending?.isGroup === true && pending.wasMentioned)
       activated = replied || pending !== undefined
     }
-    if (!activated && !ctx.isAlwaysRespond(chatId)) {
+    if (!activated && requireMention) {
       ctx.logger.info(`[trueconf] group ${chatId}: no mention/reply for type ${envelope.type}, dropping`)
       return
     }
@@ -397,7 +428,7 @@ export async function handleInboundMessage(
     senderId: stableUserId,
     messageId: envelope.messageId,
     timestamp: envelope.timestamp,
-    ...(kind === 'group' ? { isGroup: true as const, wasMentioned } : { isGroup: false as const }),
+    ...(kind === 'group' ? { isGroup: true as const, wasMentioned, requireMention } : { isGroup: false as const }),
     senderName: stableUserId,
     replyMessageId: envelope.replyMessageId,
     ...(plainParseMode ? { parseMode: plainParseMode } : {}),

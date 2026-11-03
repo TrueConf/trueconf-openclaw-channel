@@ -43,6 +43,7 @@ import { AlwaysRespondResolver, type WireAdapter, type ResolverEvent } from './a
 import { WsClient, ConnectionLifecycle } from './ws-client'
 import { OutboundQueue } from './outbound-queue'
 import { dispatchGroupInbound, type InboundTurn } from './group-inbound'
+import { groupRequiresMention, resolveGroupAccess } from './group-policy'
 import { DisplayNames } from './display-names'
 import { formatTarget, parseTarget, type TrueConfTarget } from './target'
 import type { Logger, TrueConfChannelConfig, ResolvedAccount, InboundMessage, InboundExtraContext, InboundMediaContext } from './types'
@@ -180,6 +181,9 @@ export function createRuntimeStore() {
     // Recent bot messageIds per chat, used for reply-to-bot detection in
     // groups. FIFO-capped per chat, survives reconnect.
     recentBotMsgIdsByChat: new Map<string, Set<string>>(),
+    // Groups already logged as not served by this instance, so the log line
+    // that names their chatId appears once per process.
+    unservedChatsLogged: new Set<string>(),
     // Global bot-nickname store (disk-backed). Created in registerFull; read by
     // the inbound gate via inboundCtx.matchesNickname.
     nicknameStore: null as NicknameStore | null,
@@ -350,10 +354,15 @@ export const channelPlugin = {
   },
 
   // Drives the group intro in the system prompt: "always-on" activation in
-  // always-respond chats, "trigger-only" elsewhere.
+  // always-on groups, "trigger-only" elsewhere. Same rule as the inbound gate.
   groups: {
-    resolveRequireMention: (params: { groupId?: string | null; accountId?: string | null }): boolean =>
-      !(params.groupId && findAccountEntry(params.accountId)?.alwaysRespond.isAlwaysRespondIgnoringCase(params.groupId)),
+    resolveRequireMention: (params: { cfg: OpenClawConfig; groupId?: string | null; accountId?: string | null }): boolean =>
+      !params.groupId || groupRequiresMention({
+        cfg: params.cfg,
+        accountId: params.accountId,
+        chatId: params.groupId,
+        alwaysRespond: findAccountEntry(params.accountId)?.alwaysRespond.isAlwaysRespondIgnoringCase(params.groupId) ?? false,
+      }),
   },
 
   config: {
@@ -691,14 +700,9 @@ export const channelPlugin = {
         })
       }
 
+      // handleInboundMessage has applied dmPolicy, the group policy and the
+      // mention gate before it calls this.
       const dispatch = async (inboundMsg: InboundMessage) => {
-        // dmPolicy applies only to direct chats. Group chats have their own
-        // activation gate (mention/reply) which has already passed if we got here.
-        if (!inboundMsg.isGroup && !shouldAllowMessage(store.channelConfig!, inboundMsg.peerId)) {
-          logger.info(`[trueconf] DM blocked for ${inboundMsg.peerId} by policy`)
-          return
-        }
-
         if (!inboundMsg.isGroup) store.lastDirectPeerByAccount.set(accountId, inboundMsg.peerId)
 
         let rawBody = inboundMsg.text
@@ -825,7 +829,7 @@ export const channelPlugin = {
             title: store.chatsById.get(inboundMsg.chatId)?.title ?? '',
             senderName: await displayNames.resolve(inboundMsg.senderId),
             wasMentioned: inboundMsg.wasMentioned,
-            requireMention: !alwaysRespond.isAlwaysRespond(inboundMsg.chatId),
+            requireMention: inboundMsg.requireMention,
           }).catch(onFailure('dispatchGroupInbound'))
         } else {
           await dispatchInboundDirectDm({
@@ -859,7 +863,15 @@ export const channelPlugin = {
           chats: store.chatsById,
           inflightChats: store.inflightChatLookups,
           recentBotMsgIds: store.recentBotMsgIdsByChat,
-          isAlwaysRespond: alwaysRespond.isAlwaysRespond,
+          allowsDirect: (senderId) => shouldAllowMessage(channelConfig, senderId),
+          groupAccess: (chatId, senderId) => resolveGroupAccess({
+            cfg: store.fullConfig as OpenClawConfig,
+            accountId,
+            chatId,
+            senderId,
+            alwaysRespond: alwaysRespond.isAlwaysRespond(chatId),
+          }),
+          unservedChatsLogged: store.unservedChatsLogged,
           matchesNickname: (text) => store.nicknameStore?.matches(text) ?? false,
         }
         Promise.resolve(handleInboundMessage(msg, inboundCtx)).catch((err) => {
@@ -1004,6 +1016,7 @@ export function __resetForTesting(): void {
   store.chatsById.clear()
   store.inflightChatLookups.clear()
   store.recentBotMsgIdsByChat.clear()
+  store.unservedChatsLogged.clear()
   store.nicknameStore = null
   __resetCoalesceBufferForTesting()
 }

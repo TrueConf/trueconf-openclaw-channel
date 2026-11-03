@@ -111,7 +111,7 @@ describe('shutdownAccountEntry', () => {
 })
 
 describe('invalidateChatState', () => {
-  it('clears all 5 store maps for the given (accountId, chatId)', async () => {
+  it('clears every chat-keyed store map for the given (accountId, chatId)', async () => {
     const { createRuntimeStore, invalidateChatState } = await import('../../src/channel')
     const store = createRuntimeStore()
 
@@ -120,19 +120,19 @@ describe('invalidateChatState', () => {
 
     store.directChatsByStableUserId.set(`${accountId}\u0000user-A`, chatId)
     store.directChatsByStableUserId.set(`${accountId}\u0000user-B`, chatId)
-    store.lastInboundRouteByAccount.set(accountId, { kind: 'group', chatId })
-    store.chatTypeByChatId.set(chatId, 'group')
-    store.inflightChatTypeLookups.set(chatId, Promise.resolve('group'))
+    store.chatsById.set(chatId, { kind: 'group', title: '' })
+    store.inflightChatLookups.set(chatId, Promise.resolve({ kind: 'group', title: '' }))
     store.recentBotMsgIdsByChat.set(chatId, new Set(['m1', 'm2']))
+    store.groupHistory.record(accountId, chatId, { sender: 'user-A', body: 'pending line', timestamp: 1 }, 50)
 
     invalidateChatState(store, accountId, chatId)
 
     expect(store.directChatsByStableUserId.has(`${accountId}\u0000user-A`)).toBe(false)
     expect(store.directChatsByStableUserId.has(`${accountId}\u0000user-B`)).toBe(false)
-    expect(store.lastInboundRouteByAccount.has(accountId)).toBe(false)
-    expect(store.chatTypeByChatId.has(chatId)).toBe(false)
-    expect(store.inflightChatTypeLookups.has(chatId)).toBe(false)
+    expect(store.chatsById.has(chatId)).toBe(false)
+    expect(store.inflightChatLookups.has(chatId)).toBe(false)
     expect(store.recentBotMsgIdsByChat.has(chatId)).toBe(false)
+    expect(store.groupHistory.reserve(accountId, chatId, Infinity).entries).toEqual([])
   })
 
   it('does not touch other accounts or chats', async () => {
@@ -148,10 +148,8 @@ describe('invalidateChatState', () => {
     store.directChatsByStableUserId.set(`${accountA}\u0000user-1`, chatX)
     store.directChatsByStableUserId.set(`${accountB}\u0000user-1`, chatY)
     // Same userId across accounts — accountA's mapping points at chatX, accountB's at chatY.
-    store.lastInboundRouteByAccount.set(accountA, { kind: 'group', chatId: chatX })
-    store.lastInboundRouteByAccount.set(accountB, { kind: 'direct', userId: 'user-2' })
-    store.chatTypeByChatId.set(chatX, 'group')
-    store.chatTypeByChatId.set(chatY, 'p2p')
+    store.chatsById.set(chatX, { kind: 'group', title: '' })
+    store.chatsById.set(chatY, { kind: 'p2p', title: '' })
     store.recentBotMsgIdsByChat.set(chatX, new Set(['m1']))
     store.recentBotMsgIdsByChat.set(chatY, new Set(['m2']))
 
@@ -159,31 +157,11 @@ describe('invalidateChatState', () => {
 
     // Account A's chatX entries cleared.
     expect(store.directChatsByStableUserId.has(`${accountA}\u0000user-1`)).toBe(false)
-    expect(store.lastInboundRouteByAccount.has(accountA)).toBe(false)
     // Account B intact.
     expect(store.directChatsByStableUserId.get(`${accountB}\u0000user-1`)).toBe(chatY)
-    expect(store.lastInboundRouteByAccount.get(accountB)).toEqual({ kind: 'direct', userId: 'user-2' })
     // chatY-keyed entries intact.
-    expect(store.chatTypeByChatId.get(chatY)).toBe('p2p')
+    expect(store.chatsById.get(chatY)).toEqual({ kind: 'p2p', title: '' })
     expect(store.recentBotMsgIdsByChat.get(chatY)).toBeDefined()
-  })
-
-  it('keeps lastInboundRouteByAccount when route.chatId differs from the invalidated chatId', async () => {
-    const { createRuntimeStore, invalidateChatState } = await import('../../src/channel')
-    const store = createRuntimeStore()
-
-    const accountId = 'acct-1'
-    const chatToInvalidate = 'chat-removed'
-    const chatActive = 'chat-active'
-
-    store.lastInboundRouteByAccount.set(accountId, { kind: 'group', chatId: chatActive })
-    store.chatTypeByChatId.set(chatToInvalidate, 'group')
-
-    invalidateChatState(store, accountId, chatToInvalidate)
-
-    // Route is keyed by accountId but values reference a different chatId — keep it.
-    expect(store.lastInboundRouteByAccount.get(accountId)).toEqual({ kind: 'group', chatId: chatActive })
-    expect(store.chatTypeByChatId.has(chatToInvalidate)).toBe(false)
   })
 })
 
@@ -195,7 +173,7 @@ describe('SDK push handler wire-up', () => {
     const store = createRuntimeStore()
     const accountId = 'acct-1'
     const chatId = 'chat-X'
-    store.chatTypeByChatId.set(chatId, 'group')
+    store.chatsById.set(chatId, { kind: 'group', title: '' })
     store.recentBotMsgIdsByChat.set(chatId, new Set(['m1']))
 
     let captured: ((method: string, payload: Record<string, unknown>) => void) | null = null
@@ -219,7 +197,7 @@ describe('SDK push handler wire-up', () => {
 
     captured!('removeChat', { chatId })
 
-    expect(store.chatTypeByChatId.has(chatId)).toBe(false)
+    expect(store.chatsById.has(chatId)).toBe(false)
     expect(store.recentBotMsgIdsByChat.has(chatId)).toBe(false)
 
     unsubscribe()

@@ -4,15 +4,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
-  dispatchInboundDirectDm: vi.fn().mockResolvedValue({}),
-}))
+vi.mock('openclaw/plugin-sdk/channel-inbound', async () =>
+  (await import('./__helpers__/channel-inbound-mock')).channelInboundMock())
 
-import { dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
+import { dispatchChannelInboundTurn, dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
 import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
 import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
 
-const dispatch = vi.mocked(dispatchInboundDirectDm)
+const dmDispatch = vi.mocked(dispatchInboundDirectDm)
+const groupDispatch = vi.mocked(dispatchChannelInboundTurn)
 
 interface Harness {
   abort: () => void
@@ -75,7 +75,8 @@ describe('integration: group-context outbound (tool path)', () => {
 
   beforeEach(async () => {
     __resetForTesting()
-    dispatch.mockClear()
+    dmDispatch.mockClear()
+    groupDispatch.mockClear()
     server = await startFakeServer()
     server.setChatType(GROUP_CHAT, 2)
     workDir = await mkdtemp(join(tmpdir(), 'tc-grp-out-'))
@@ -91,78 +92,73 @@ describe('integration: group-context outbound (tool path)', () => {
     await rm(workDir, { recursive: true, force: true }).catch(() => {})
   })
 
-  it('sendText with ctx.to=bot after a group mention → routes to group chatId (not P2P DM)', async () => {
+  it.each(['trueconf:group:grp_target', 'group:grp_target'])('sendText to %s posts into that chat without a P2P chat', async (to) => {
     harness = await bootPlugin(server)
-
-    server.pushInbound(groupMention({ author: ALICE, text: 'ping', messageId: 'g1' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1)
 
     const sendText = channelPlugin.outbound.sendText as SendText
-    const result = await sendText({
-      to: 'bot@srv',
-      text: 'reply in the group',
-      accountId: 'default',
-    })
+    const result = await sendText({ to, text: 'to the group', accountId: 'default' })
 
-    expect(result.channel).toBe('trueconf')
     expect(result.messageId).toMatch(/^msg_/)
-
-    await waitFor(() => server.messageRequests.length >= 1)
-    const payload = server.messageRequests[0].payload as {
-      chatId: string
-      content: { text: string }
-    }
-    // Before the fix: this would either fail (skipped) or misroute via
-    // createP2PChat to the bot identity. After the fix: the last inbound
-    // route is the group, so the self-send redirect lands in GROUP_CHAT.
-    expect(payload.chatId).toBe(GROUP_CHAT)
-    expect(payload.content.text).toBe('reply in the group')
-    // No P2P chat should have been created as a side effect.
-    const createP2PIdx = server.messageRequests.findIndex((r) => r.method === 'createP2PChat')
-    expect(createP2PIdx).toBe(-1)
+    expect(server.messageRequests.map((r) => r.payload)).toEqual([
+      expect.objectContaining({ chatId: 'grp_target', content: expect.objectContaining({ text: 'to the group' }) }),
+    ])
+    expect(server.createP2PChatRequests).toEqual([])
   })
 
-  it('sendMedia with ctx.to=bot after a group mention → photo lands in group chatId', async () => {
+  it.each(['trueconf:group:grp_target', 'group:grp_target'])('sendMedia to %s posts the file into that chat without a P2P chat', async (to) => {
     harness = await bootPlugin(server)
-
-    server.pushInbound(groupMention({ author: ALICE, text: 'send the photo', messageId: 'g2' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1)
-
-    const filePath = join(workDir, 'img.bin')
-    await writeFile(filePath, Buffer.from('GROUP-MEDIA-BYTES'))
+    const filePath = join(workDir, 'doc.bin')
+    await writeFile(filePath, Buffer.from('GROUP-TARGET-BYTES'))
 
     const sendMedia = (channelPlugin.outbound as { sendMedia: SendMedia }).sendMedia
     const result = await sendMedia({
-      to: 'bot@srv',
-      text: 'here you go',
+      to,
+      text: 'the file',
       mediaUrl: pathToFileURL(filePath).toString(),
       mediaLocalRoots: [workDir],
       accountId: 'default',
     })
 
     expect(result.messageId).toMatch(/^fmsg_/)
-
-    await waitFor(() => server.sendFileRequests.length >= 1, 5000)
-    const payload = server.sendFileRequests[0].payload as {
-      chatId: string
-      content: { caption?: { text: string } }
-    }
-    // Before the fix: sendMedia called handleOutboundAttachment, which went
-    // through resolveDirectChat (creating/reusing P2P with the bot identity).
-    // After the fix: group-kind last route dispatches via sendFile with
-    // chatId=GROUP_CHAT directly, no createP2PChat invoked for the group.
-    expect(payload.chatId).toBe(GROUP_CHAT)
-    expect(payload.content.caption?.text).toBe('here you go')
+    expect(server.sendFileRequests.map((r) => r.payload)).toEqual([
+      expect.objectContaining({ chatId: 'grp_target', content: expect.objectContaining({ caption: expect.objectContaining({ text: 'the file' }) }) }),
+    ])
+    expect(server.createP2PChatRequests).toEqual([])
   })
 
-  it('after group THEN DM, sendText self-send redirect follows the DM (most-recent wins)', async () => {
+  it('sendText and sendMedia with ctx.to=bot after only a group mention are skipped, not sent to the group', async () => {
     harness = await bootPlugin(server)
 
-    // Group mention — last route = group
-    server.pushInbound(groupMention({ author: ALICE, text: 'hi group', messageId: 'g3' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1)
+    server.pushInbound(groupMention({ author: ALICE, text: 'ping', messageId: 'g1' }))
+    await waitFor(() => groupDispatch.mock.calls.length >= 1)
 
-    // Subsequent DM from Bob — last route flips to direct-with-bob
+    const filePath = join(workDir, 'img.bin')
+    await writeFile(filePath, Buffer.from('GROUP-MEDIA-BYTES'))
+    const sendText = channelPlugin.outbound.sendText as SendText
+    const sendMedia = (channelPlugin.outbound as { sendMedia: SendMedia }).sendMedia
+    const results = [
+      await sendText({ to: 'bot@srv', text: 'not for the group', accountId: 'default' }),
+      await sendMedia({
+        to: 'bot@srv',
+        text: 'not for the group',
+        mediaUrl: pathToFileURL(filePath).toString(),
+        mediaLocalRoots: [workDir],
+        accountId: 'default',
+      }),
+    ]
+
+    expect(results).toEqual([
+      { channel: 'trueconf', messageId: '' },
+      { channel: 'trueconf', messageId: '' },
+    ])
+    expect(server.messageRequests).toEqual([])
+    expect(server.sendFileRequests).toEqual([])
+    expect(server.createP2PChatRequests).toEqual([])
+  })
+
+  it('a DM-run send to the bot JID goes to the last DM peer, also when a group message came after the DM', async () => {
+    harness = await bootPlugin(server)
+
     server.pushInbound({
       type: 200,
       chatId: 'chat_bob@srv',
@@ -171,25 +167,24 @@ describe('integration: group-context outbound (tool path)', () => {
       messageId: 'd1',
       timestamp: Date.now(),
     })
-    await waitFor(() => dispatch.mock.calls.length >= 2)
+    await waitFor(() => dmDispatch.mock.calls.length >= 1)
+    server.pushInbound(groupMention({ author: ALICE, text: 'hi group', messageId: 'g3' }))
+    await waitFor(() => groupDispatch.mock.calls.length >= 1)
 
     const sendText = channelPlugin.outbound.sendText as SendText
     await sendText({ to: 'bot@srv', text: 'reply to bob', accountId: 'default' })
 
     await waitFor(() => server.messageRequests.length >= 1)
-    const payload = server.messageRequests[0].payload as {
-      chatId: string
-      content: { text: string }
-    }
-    expect(payload.chatId).toBe('chat_bob@srv')
-    expect(payload.content.text).toBe('reply to bob')
+    expect(server.messageRequests.map((r) => r.payload)).toEqual([
+      expect.objectContaining({ chatId: 'chat_bob@srv', content: expect.objectContaining({ text: 'reply to bob' }) }),
+    ])
   })
 
   it('after group, explicit ctx.to=<userJid> still routes to that user\'s DM (no group override)', async () => {
     harness = await bootPlugin(server)
 
     server.pushInbound(groupMention({ author: ALICE, text: 'ping', messageId: 'g4' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1)
 
     // Agent explicitly addresses a specific user — must NOT be rewritten to
     // the group even though the last inbound was a group.
@@ -199,23 +194,5 @@ describe('integration: group-context outbound (tool path)', () => {
     await waitFor(() => server.messageRequests.length >= 1)
     const payload = server.messageRequests[0].payload as { chatId: string }
     expect(payload.chatId).toBe('chat_alice@srv')
-  })
-
-  it('sendText with ctx.to=bot and only group history (no DM ever) still routes to the group', async () => {
-    harness = await bootPlugin(server)
-
-    // Only a group message, no DM history at all.
-    server.pushInbound(groupMention({ author: ALICE, text: 'solo group ping', messageId: 'g5' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1)
-
-    const sendText = channelPlugin.outbound.sendText as SendText
-    const result = await sendText({ to: 'bot@srv', text: 'group-only reply', accountId: 'default' })
-
-    // Previously: "no cached inbound peer; skipping" because only DM peers
-    // were tracked. Now: group route is cached too, so we land in the group.
-    expect(result.messageId).toMatch(/^msg_/)
-    await waitFor(() => server.messageRequests.length >= 1)
-    const payload = server.messageRequests[0].payload as { chatId: string }
-    expect(payload.chatId).toBe(GROUP_CHAT)
   })
 })

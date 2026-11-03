@@ -1,15 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TrueConfFlatConfig } from '../../src/types'
 
-vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
-  dispatchInboundDirectDm: vi.fn().mockResolvedValue({}),
-}))
+vi.mock('openclaw/plugin-sdk/channel-inbound', async () =>
+  (await import('./__helpers__/channel-inbound-mock')).channelInboundMock())
 
-import { dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
+import { dispatchChannelInboundTurn, dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
 import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
 import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
+import type { GroupTurn } from './__helpers__/channel-inbound-mock'
 
-const dispatch = vi.mocked(dispatchInboundDirectDm)
+const dmDispatch = vi.mocked(dispatchInboundDirectDm)
+const groupDispatch = vi.mocked(dispatchChannelInboundTurn)
+const groupTurn = (i: number) => groupDispatch.mock.calls[i][0] as unknown as GroupTurn
+const dispatchCount = () => dmDispatch.mock.calls.length + groupDispatch.mock.calls.length
 
 interface Harness {
   abort: () => void
@@ -79,9 +82,10 @@ describe('integration: group chat mention/reply gate', () => {
 
   beforeEach(async () => {
     __resetForTesting()
-    dispatch.mockClear()
+    dmDispatch.mockClear()
+    groupDispatch.mockClear()
     server = await startFakeServer()
-    server.setChatType(GROUP_CHAT, 2)
+    server.chats.add({ chatId: GROUP_CHAT, title: 'Team chat', chatType: 2 })
   })
 
   afterEach(async () => {
@@ -93,7 +97,7 @@ describe('integration: group chat mention/reply gate', () => {
     await server.close()
   })
 
-  it('html message mentioning bot → dispatch with peerId=chatId, senderId=author', async () => {
+  it('html message mentioning bot → group turn for the chat, sender=author', async () => {
     harness = await bootPlugin(server)
 
     server.pushInbound(groupTextEnvelope({
@@ -103,20 +107,26 @@ describe('integration: group chat mention/reply gate', () => {
       messageId: 'g1',
     }))
 
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
     await new Promise((r) => setTimeout(r, 350))
 
-    expect(dispatch.mock.calls).toHaveLength(1)
-    const arg = dispatch.mock.calls[0][0] as {
-      senderId: string
-      rawBody: string
-      peer: { kind: string; id: string }
-      conversationLabel: string
-    }
-    expect(arg.senderId).toBe(ALICE)
-    expect(arg.peer.id).toBe(GROUP_CHAT)
-    expect(arg.conversationLabel).toContain(GROUP_CHAT)
-    expect(arg.rawBody).toBe('Bot what is up')
+    expect(groupDispatch.mock.calls).toHaveLength(1)
+    expect(dmDispatch).not.toHaveBeenCalled()
+    const turn = groupTurn(0)
+    expect(turn.route.sessionKey).toBe(`test:group:${GROUP_CHAT}`)
+    expect(turn.ctxPayload).toMatchObject({
+      from: 'trueconf:group:group_123',
+      sender: { id: ALICE },
+      conversation: { kind: 'group', id: GROUP_CHAT, label: 'Team chat' },
+      reply: { to: 'trueconf:group:group_123', originatingTo: 'trueconf:group:group_123' },
+      message: {
+        body: '[TrueConf Team chat] alice@srv: Bot what is up',
+        bodyForAgent: 'alice@srv: Bot what is up',
+        rawBody: 'Bot what is up',
+        commandBody: 'Bot what is up',
+      },
+      access: { commands: { authorized: false }, mentions: { wasMentioned: true, requireMention: true } },
+    })
   })
 
   it('html mention with real-server query suffix (&do=profile) → dispatch', async () => {
@@ -129,10 +139,10 @@ describe('integration: group chat mention/reply gate', () => {
       messageId: 'g1b',
     }))
 
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    const arg = dispatch.mock.calls[0][0] as { rawBody: string; senderId: string }
-    expect(arg.senderId).toBe(ALICE)
-    expect(arg.rawBody).toBe('bot hey')
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    const { ctxPayload } = groupTurn(0)
+    expect(ctxPayload.sender.id).toBe(ALICE)
+    expect(ctxPayload.message.rawBody).toBe('bot hey')
   })
 
   it('html mention with bot identity carrying an instance suffix (/xyz) → dispatch', async () => {
@@ -176,7 +186,11 @@ describe('integration: group chat mention/reply gate', () => {
         messageId: 'g1c',
       }))
 
-      await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
+      await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+      expect(groupTurn(0).ctxPayload).toMatchObject({
+        message: { rawBody: 'bot ping' },
+        access: { mentions: { wasMentioned: true, requireMention: true } },
+      })
       innerHarness.abort()
       await Promise.race([innerHarness.startPromise.catch(() => {}), new Promise((r) => setTimeout(r, 500))])
     } finally {
@@ -195,7 +209,7 @@ describe('integration: group chat mention/reply gate', () => {
     }))
 
     await new Promise((r) => setTimeout(r, 400))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
   })
 
   it('plain-text message without mention → drop', async () => {
@@ -209,15 +223,15 @@ describe('integration: group chat mention/reply gate', () => {
     }))
 
     await new Promise((r) => setTimeout(r, 400))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
   })
 
   it('reply to a recent bot message → dispatch fires', { retry: 3 }, async () => {
     harness = await bootPlugin(server)
 
     // First: an activating message so the bot replies into the group, recording its messageId
-    dispatch.mockImplementationOnce(async (arg: { deliver?: (payload: { text: string }) => Promise<void> }) => {
-      if (arg.deliver) await arg.deliver({ text: 'first reply' })
+    groupDispatch.mockImplementationOnce(async (plan) => {
+      await (plan as unknown as GroupTurn).delivery.deliver({ text: 'first reply' })
       return {} as never
     })
     server.pushInbound(groupTextEnvelope({
@@ -229,7 +243,7 @@ describe('integration: group chat mention/reply gate', () => {
     await waitFor(() => server.messageRequests.length >= 1, 3000)
     const botMsgId = `msg_${server.messageRequests[0].id}`
 
-    dispatch.mockClear()
+    groupDispatch.mockClear()
 
     // Second: plain text reply targeting the bot's previous messageId
     server.pushInbound(groupTextEnvelope({
@@ -246,10 +260,12 @@ describe('integration: group chat mention/reply gate', () => {
     // the gate misses, the dispatch never fires, and waitFor times out. Passes
     // locally every time. Guarded by it(..., { retry: 3 }) above; the 6s budget
     // is ample on the happy path.
-    await waitFor(() => dispatch.mock.calls.length >= 1, 6000)
-    const arg = dispatch.mock.calls[0][0] as { senderId: string; rawBody: string }
-    expect(arg.senderId).toBe(BOB)
-    expect(arg.rawBody).toBe('replying without mention')
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 6000)
+    expect(groupTurn(0).ctxPayload).toMatchObject({
+      sender: { id: BOB },
+      message: { rawBody: 'replying without mention' },
+      access: { mentions: { wasMentioned: true, requireMention: true } },
+    })
   })
 
   it('reply to an unknown messageId → drop', async () => {
@@ -264,14 +280,14 @@ describe('integration: group chat mention/reply gate', () => {
     }))
 
     await new Promise((r) => setTimeout(r, 400))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
   })
 
   it('deliver in group sends to the group chatId, not to a P2P chat', async () => {
     harness = await bootPlugin(server)
 
-    dispatch.mockImplementationOnce(async (arg: { deliver?: (payload: { text: string }) => Promise<void> }) => {
-      if (arg.deliver) await arg.deliver({ text: 'hello group' })
+    groupDispatch.mockImplementationOnce(async (plan) => {
+      await (plan as unknown as GroupTurn).delivery.deliver({ text: 'hello group' })
       return {} as never
     })
 
@@ -302,7 +318,7 @@ describe('integration: group chat mention/reply gate', () => {
     })
 
     await new Promise((r) => setTimeout(r, 400))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
     // Critical: no error reply, no fallback createP2PChat-then-sendMessage —
     // the message is silently dropped so the next inbound retries the lookup.
     expect(server.messageRequests).toHaveLength(0)
@@ -348,14 +364,12 @@ describe('integration: group chat mention/reply gate', () => {
       timestamp: Date.now(),
     })
 
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    const arg = dispatch.mock.calls[0][0] as {
-      peer: { kind: string; id: string }
-      senderId: string
-    }
+    await waitFor(() => dmDispatch.mock.calls.length >= 1, 3000)
+    const arg = dmDispatch.mock.calls[0][0]
     expect(arg.peer.kind).toBe('direct')
     expect(arg.peer.id).toBe(ALICE)
     expect(arg.senderId).toBe(ALICE)
+    expect(groupDispatch).not.toHaveBeenCalled()
   })
 
   it('bypasses mention gate when chatId is listed in groupAlwaysRespondIn', async () => {
@@ -371,8 +385,22 @@ describe('integration: group chat mention/reply gate', () => {
       chatId: ALWAYS_CHAT,
     }))
 
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
+    expect(groupTurn(0).ctxPayload).toMatchObject({
+      conversation: { id: ALWAYS_CHAT },
+      access: { mentions: { wasMentioned: false, requireMention: false } },
+    })
+  })
+
+  it('groups.resolveRequireMention is false for an always-respond chat and true for others', async () => {
+    harness = await bootPlugin(server, { groupAlwaysRespondIn: ['chatId:Chat_Group_ABC'] })
+    const resolve = channelPlugin.groups.resolveRequireMention
+    const cfg = {} as never
+
+    // OpenClaw lowercases the group id it reads from From.
+    expect(resolve({ cfg, groupId: 'chat_group_abc', accountId: 'default' })).toBe(false)
+    expect(resolve({ cfg, groupId: GROUP_CHAT, accountId: 'default' })).toBe(true)
   })
 
   it('keeps existing gate when chatId is absent from groupAlwaysRespondIn', async () => {
@@ -390,6 +418,6 @@ describe('integration: group chat mention/reply gate', () => {
 
     // Give it time to *not* dispatch
     await new Promise((r) => setTimeout(r, 200))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
   })
 })

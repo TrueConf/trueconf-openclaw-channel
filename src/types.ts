@@ -73,7 +73,12 @@ export const TrueConfChatType = {
 } as const
 export type TrueConfChatType = (typeof TrueConfChatType)[keyof typeof TrueConfChatType]
 
-export type ResolvedChatKind = 'p2p' | 'group' | 'channel' | 'unknown'
+// What getChatByID told us about a chat. The kind never changes; the title
+// is refreshed when the server announces a rename.
+export interface ChatInfo {
+  kind: 'p2p' | 'group' | 'channel'
+  title: string
+}
 
 export const FileReadyState = { NOT_AVAILABLE: 0, UPLOADING: 1, READY: 2 } as const
 export type FileReadyState = (typeof FileReadyState)[keyof typeof FileReadyState]
@@ -155,7 +160,9 @@ export type InboundEnvelopeHint =
 // Media file paths threaded into extraContext when the inbound carried an
 // attachment. The arrays are the bulk-media API form; the singular
 // MediaPath/MediaType are kept for SDK consumers that read one entry.
-export interface InboundMediaContext {
+// A type alias, not an interface: only aliases are assignable to the SDK's
+// Record<string, unknown> extraContext without a cast.
+export type InboundMediaContext = {
   MediaPath: string
   MediaType: string
   MediaPaths: string[]
@@ -170,17 +177,7 @@ export type InboundExtraContext =
   | InboundMediaContext
   | (InboundEnvelopeHint & InboundMediaContext)
 
-// Widens the structured InboundExtraContext to the Record<string, unknown>
-// the SDK dispatcher accepts. The widening is the single seam between the
-// typed inbound layer and the bag-typed dispatch boundary; concentrating it
-// here keeps the unsafe cast grep-able instead of inlined at each call.
-export function widenExtraContext(
-  e: InboundExtraContext | undefined,
-): Record<string, unknown> | undefined {
-  return e as Record<string, unknown> | undefined
-}
-
-export interface InboundMessage {
+type InboundMessageFields = {
   channel: string
   accountId: string
   peerId: string
@@ -188,7 +185,6 @@ export interface InboundMessage {
   text: string
   messageId: string
   timestamp: number
-  isGroup: boolean
   senderName: string
   senderId: string
   attachmentContent?: AttachmentContent
@@ -196,6 +192,13 @@ export interface InboundMessage {
   parseMode?: 'text' | 'markdown' | 'html'
   extraContext?: InboundExtraContext
 }
+
+// wasMentioned: the bot was @-mentioned, the message replies to the bot, or
+// it matches a bot nickname. requireMention: false for an always-on group.
+// Only groups have these signals.
+export type InboundMessage =
+  | (InboundMessageFields & { isGroup: false })
+  | (InboundMessageFields & { isGroup: true; wasMentioned: boolean; requireMention: boolean })
 
 export type InboundDispatchFn = (msg: InboundMessage) => void | Promise<void>
 
@@ -214,20 +217,44 @@ export const DmPolicy = {
 } as const
 export type DmPolicy = (typeof DmPolicy)[keyof typeof DmPolicy]
 
-export interface TrueConfFlatConfig extends TrueConfAccountConfig {
-  enabled?: boolean
-  dmPolicy?: DmPolicy
-  allowFrom?: string[]
-  maxFileSize?: number
-  groupAlwaysRespondIn?: string[]
+export type GroupPolicy = 'open' | 'disabled' | 'allowlist'
+
+// OpenClaw's tool allow/deny shape. Core reads it from groups.<id>.tools.
+export interface ToolPolicy {
+  allow?: string[]
+  alsoAllow?: string[]
+  deny?: string[]
 }
 
-export interface TrueConfMultiAccountConfig {
-  accounts: Record<string, TrueConfAccountConfig & { enabled?: boolean }>
+// One channels.trueconf.groups entry, keyed by chatId or "*". A subset of
+// OpenClaw's group entry shape.
+export interface TrueConfGroupEntry {
+  requireMention?: boolean
+  enabled?: boolean
+  allowFrom?: string[]
+  tools?: ToolPolicy
+  toolsBySender?: Record<string, ToolPolicy>
+}
+
+// Channel-level options; they apply to every account.
+export interface TrueConfChannelOptions {
   dmPolicy?: DmPolicy
   allowFrom?: string[]
   maxFileSize?: number
   groupAlwaysRespondIn?: string[]
+  groupPolicy?: GroupPolicy
+  groupAllowFrom?: string[]
+  groups?: Record<string, TrueConfGroupEntry>
+  // Unaddressed group lines kept per chat for the next addressed turn.
+  historyLimit?: number
+}
+
+export interface TrueConfFlatConfig extends TrueConfAccountConfig, TrueConfChannelOptions {
+  enabled?: boolean
+}
+
+export interface TrueConfMultiAccountConfig extends TrueConfChannelOptions {
+  accounts: Record<string, TrueConfAccountConfig & { enabled?: boolean }>
 }
 
 export type TrueConfChannelConfig = TrueConfFlatConfig | TrueConfMultiAccountConfig

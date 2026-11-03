@@ -1,5 +1,33 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Several OpenClaw instances can share one TrueConf bot account. OpenClaw's standard keys decide which groups an instance serves and who may address it there: `groups` (keyed by chatId or `"*"`, with `requireMention`, `enabled`, `allowFrom`, `tools` and `toolsBySender`), `groupPolicy` (`"open"`, the default, `"disabled"` or `"allowlist"`) and `groupAllowFrom`. Without `groups`, every group is served, as before. A message in a group the instance does not serve gets no reply and is not kept; the first one per chat logs `ignoring group chatId=<id> title="<title>": <reason>`, so the chatId can be copied into `groups`. The README explains the setup and warns that every instance receives every message of the account.
+- Group context. Unaddressed messages in a served group stay in memory and go to the next addressed turn in `BodyForAgent`, under OpenClaw's history markers, so they land in the group session's transcript. `historyLimit`, then `messages.groupChat.historyLimit`, then 50 bounds them per chat; `0` turns this off. Files, forwards, locations and surveys are kept as placeholder text without a download. Lines that arrive while a turn runs wait for the next turn. A restart loses lines no turn has taken.
+- Group sessions take the TrueConf chat title as their name (`GroupSubject`), fall back to `Group <chatId>` and follow renames.
+- Group speakers get their TrueConf display name from `getUserDisplayName`, cached for an hour. A failure, an empty name or a 3 s timeout falls back to the user ID for five minutes.
+
+### Fixed
+- Each group chat gets its own OpenClaw session, `agent:<agentId>:trueconf:group:<chatId>`, with chat type `group`. Before, group messages were dispatched as direct messages, so every group and every DM shared the agent's main session, and `session.groupScope` and group bindings did not apply.
+- Group turns name the group, `trueconf:group:<chatId>`, as `From`, `To` and `OriginatingTo` instead of the sender and the bot. Message-tool sends without a target, queued follow-ups and restart notices now reach the group, and outbound accepts `trueconf:group:<chatId>` and `group:<chatId>` targets.
+- Group turns report whether the bot was addressed (an @-mention, a reply to the bot or a nickname) instead of always claiming a mention. Always-respond chats pass `GroupRequireMention: false`.
+
+### Changed
+- **Behavior change:** a group's history no longer mixes with DMs and other groups. Earlier group turns stay in the main session (`agent:main:main` for the default agent).
+- **Behavior change:** TrueConf groups get OpenClaw's group system prompt, which tells the model to mostly lurk, reply when addressed or useful, and answer `NO_REPLY` to stay silent. In always-respond chats the activation is "always-on", so the model may now stay silent instead of answering every message.
+- With `agents.defaults.sandbox.mode: "non-main"`, TrueConf group sessions are non-main sessions and run in the sandbox.
+- **Behavior change:** a generic run failure in a group ends silently instead of posting "Something went wrong".
+- `messages.groupChat.*` settings apply to TrueConf groups, including `visibleReplies: "message_tool"`.
+- The agent's main session watches TrueConf group sessions after their first human turn.
+- `session.groupScope: "main"` routes all TrueConf groups back into the agent's main session.
+- Two TrueConf accounts in the same group under one agent share that group's session. To separate them, bind each account to its own agent with `bindings` and `match.accountId`.
+- **Behavior change:** only DM turns address the bot's own JID, and the bot-JID self-send redirect goes only to the account's last DM peer. A group message no longer becomes its target; a self-send with no DM peer yet is skipped.
+- **Behavior change:** a group turn's `BodyForAgent` starts with the speaker, `Name (user@server): text`, because OpenClaw stores `BodyForAgent` as the session's user line. `Body` uses OpenClaw's group envelope with the same speaker. Command turns keep a bare body.
+- `groups.<chatId>.requireMention: false` (or `"*"`) makes a group always-on, like `groupAlwaysRespondIn`. The inbound gate and the group system prompt share this rule, and both match chatIds regardless of case, in `groups` and in `groupAlwaysRespondIn`.
+- `dmPolicy` is checked as soon as the chat kind is known, before any quote fetch or file request.
+- DMs still follow `session.dmScope`; `"per-channel-peer"` gives each TrueConf user a separate session.
+
 ## [1.2.16] - 2026-11-02
 
 ### Security

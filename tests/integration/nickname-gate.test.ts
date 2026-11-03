@@ -22,10 +22,13 @@ function makeCtx(opts: { matchesNickname?: (text: string) => boolean } = {}) {
     dispatch,
     logger,
     directChats: new Map(),
-    chatTypes: new Map(),
-    inflightChatTypes: new Map(),
+    chats: new Map(),
+    inflightChats: new Map(),
     recentBotMsgIds: new Map<string, Set<string>>(),
-    isAlwaysRespond: () => false,
+    allowsDirect: () => true,
+    groupAccess: () => ({ kind: 'served', requireMention: true }),
+    unservedChatsLogged: new Set(),
+    recordUnaddressed: () => {},
     matchesNickname: opts.matchesNickname ?? (() => false),
   }
   return { ctx, dispatch }
@@ -62,7 +65,7 @@ describe('F1 — global nickname activation in the group gate', () => {
 
     expect(h.dispatch).toHaveBeenCalledTimes(1)
     const arg = h.dispatch.mock.calls[0][0] as InboundMessage
-    expect(arg.text).toBe('Клешня, привет')
+    expect(arg).toMatchObject({ text: 'Клешня, привет', isGroup: true, wasMentioned: true })
   })
 
   it('PLAIN in a group without a nickname → dropped', async () => {

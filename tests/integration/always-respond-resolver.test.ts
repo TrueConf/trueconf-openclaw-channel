@@ -1,15 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
-  dispatchInboundDirectDm: vi.fn().mockResolvedValue({}),
-}))
+vi.mock('openclaw/plugin-sdk/channel-inbound', async () =>
+  (await import('./__helpers__/channel-inbound-mock')).channelInboundMock())
 
-import { dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
+import { dispatchChannelInboundTurn, dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
 import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
 import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
 import type { TrueConfFlatConfig } from '../../src/types'
 
-const dispatch = vi.mocked(dispatchInboundDirectDm)
+const dmDispatch = vi.mocked(dispatchInboundDirectDm)
+const groupDispatch = vi.mocked(dispatchChannelInboundTurn)
+const dispatchCount = () => dmDispatch.mock.calls.length + groupDispatch.mock.calls.length
 
 interface Harness {
   abort: () => void
@@ -65,7 +66,8 @@ describe('integration: always-respond resolver — startup enumerate', () => {
 
   beforeEach(async () => {
     __resetForTesting()
-    dispatch.mockClear()
+    dmDispatch.mockClear()
+    groupDispatch.mockClear()
     server = await startFakeServer()
   })
 
@@ -85,8 +87,8 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     harness = await bootPlugin(server, { groupAlwaysRespondIn: ['HR'] })
     await waitFor(() => harness!.logger.info.mock.calls.some((c) => String(c[0]).includes('always-respond: ready')))
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_hr_1', messageId: 'b7-1' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
   })
 
   // B.8 — pagination across 2 pages
@@ -101,8 +103,8 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     harness = await bootPlugin(server, { groupAlwaysRespondIn: ['HR'] })
     await waitFor(() => harness!.logger.info.mock.calls.some((c) => String(c[0]).includes('always-respond: ready')))
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_120', messageId: 'b8-1' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
   })
 
   // B.9 — duplicate title matches multiple groups + warn
@@ -118,8 +120,8 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     expect(harness!.logger.warn).toHaveBeenCalledWith(expect.stringContaining('matches 2 chats'))
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_a', messageId: 'b9-1' }))
     server.pushInbound(groupTextEnvelope({ author: 'bob@srv', text: 'no mention', chatId: 'grp_b', messageId: 'b9-2' }))
-    await waitFor(() => dispatch.mock.calls.length >= 2, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(2)
+    await waitFor(() => groupDispatch.mock.calls.length >= 2, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(2)
   })
 
   // B.10 — title not present in registry; info log; no bypass
@@ -131,7 +133,7 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     expect(harness!.logger.info).toHaveBeenCalledWith(expect.stringContaining('"hr" not found now'))
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_other', messageId: 'b10-1' }))
     await new Promise((r) => setTimeout(r, 200))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
   })
 
   // B.11 — channel (chatType=6) with matching title is filtered out at enumerate
@@ -143,7 +145,7 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     expect(harness!.logger.info).toHaveBeenCalledWith(expect.stringContaining('"hr" not found now'))
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'whatever', chatId: 'ch_hr', messageId: 'b11-1' }))
     await new Promise((r) => setTimeout(r, 200))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
   })
 
   // C.12 — first page fails once, retry succeeds
@@ -154,8 +156,8 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     harness = await bootPlugin(server, { groupAlwaysRespondIn: ['HR'] })
     await waitFor(() => harness!.logger.info.mock.calls.some((c) => String(c[0]).includes('always-respond: ready')), 6000)
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_hr_1', messageId: 'c12-1' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
   })
 
   // C.13 — all 3 attempts fail; configuredChatIds still active; titles inactive
@@ -169,13 +171,13 @@ describe('integration: always-respond resolver — startup enumerate', () => {
 
     // configured chatId works
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'hi', chatId: 'grp_direct', messageId: 'c13-1' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
 
     // title-only entry has no resolved chats — push into grp_hr without mention drops
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'hi', chatId: 'grp_hr', messageId: 'c13-2' }))
     await new Promise((r) => setTimeout(r, 200))
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
   })
 
   // C.14 — partial: after all-failed startup, title is not active (full reconnect re-run is Part 4)
@@ -189,7 +191,7 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     // before: title not active — message without mention is dropped
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'hi', chatId: 'grp_hr_1', messageId: 'c14-1' }))
     await new Promise((r) => setTimeout(r, 200))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
 
     // Full reconnect re-run validated in Part 4 (F.23–F.26).
   })
@@ -202,8 +204,8 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     await waitFor(() => harness!.logger.info.mock.calls.some((c) => String(c[0]).includes('always-respond: ready')))
     // Bypass should be active for the resolved title
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_hr_1', messageId: 'g27-1' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
   })
 
   // L1 — ready log records counts
@@ -242,8 +244,8 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     // Allow handleEvent to drain
     await waitFor(() => harness!.logger.info.mock.calls.some((c) => String(c[0]).includes('joined group "hr" — added to always-respond')))
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_new', messageId: 'd15-1' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
   })
 
   // D.16 — bot joins non-matching group → no bypass
@@ -255,7 +257,7 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     await waitFor(() => harness!.logger.info.mock.calls.some((c) => String(c[0]).includes('joined group "nothr"')))
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'hi', chatId: 'grp_new', messageId: 'd16-1' }))
     await new Promise((r) => setTimeout(r, 200))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
   })
 
   // D.17 — other user joins the group → ignored
@@ -270,7 +272,7 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     expect(harness!.logger.info.mock.calls.slice(beforeCalls).some((c) => String(c[0]).includes('joined group'))).toBe(false)
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'hi', chatId: 'grp_x', messageId: 'd17-1' }))
     await new Promise((r) => setTimeout(r, 200))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
   })
 
   // D.18 — rename IN
@@ -282,8 +284,8 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     server.pushEvent('editChatTitle', { chatId: 'grp_1', title: 'NewName' })
     await waitFor(() => harness!.logger.info.mock.calls.some((c) => String(c[0]).includes('renamed "oldname" → "newname", added to always-respond')))
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'hi', chatId: 'grp_1', messageId: 'd18-1' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
   })
 
   // D.19 — rename OUT
@@ -296,7 +298,7 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     await waitFor(() => harness!.logger.info.mock.calls.some((c) => String(c[0]).includes('removed from always-respond')))
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'hi', chatId: 'grp_1', messageId: 'd19-1' }))
     await new Promise((r) => setTimeout(r, 200))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
   })
 
   // D.20 — rename OUT but configuredChatId still active
@@ -308,8 +310,8 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     server.pushEvent('editChatTitle', { chatId: 'grp_1', title: 'Other' })
     await waitFor(() => harness!.logger.info.mock.calls.some((c) => String(c[0]).includes('removed from title-resolved (still active via configured chatId)')))
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'hi', chatId: 'grp_1', messageId: 'd20-1' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
   })
 
   // E.21 — addChatParticipant where getChatByID returns non-group (chatType=1)
@@ -323,7 +325,7 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     // and bypass is not active
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'hi', chatId: 'grp_unknown', messageId: 'e21-1' }))
     await new Promise((r) => setTimeout(r, 200))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
   })
 
   // E.22 — editChatTitle for unknown chatId, getChatByID returns matching group
@@ -334,8 +336,8 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     server.pushEvent('editChatTitle', { chatId: 'grp_late', title: 'HR' })
     await waitFor(() => harness!.logger.info.mock.calls.some((c) => String(c[0]).includes('joined group "hr" — added to always-respond')))
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'hi', chatId: 'grp_late', messageId: 'e22-1' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
   })
 
   // F.23 — reconnect: chat removed from registry → bypass cleared after re-auth
@@ -354,7 +356,7 @@ describe('integration: always-respond resolver — startup enumerate', () => {
 
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'hi', chatId: 'grp_1', messageId: 'f23-1' }))
     await new Promise((r) => setTimeout(r, 200))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
   })
 
   // F.24 — reconnect: registry rename to matching → bypass activates
@@ -365,7 +367,7 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     // No bypass yet
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_1', messageId: 'f24-1' }))
     await new Promise((r) => setTimeout(r, 200))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
 
     server.chats.rename('grp_1', 'NewName')
     const beforeReady = harness!.logger.info.mock.calls.filter((c) => String(c[0]).includes('always-respond: ready')).length
@@ -374,8 +376,8 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     await waitFor(() => harness!.logger.info.mock.calls.filter((c) => String(c[0]).includes('always-respond: ready')).length > beforeReady, 8000)
 
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_1', messageId: 'f24-2' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
   })
 
   // F.25 — reconnect: rename out of matching → bypass deactivates
@@ -392,7 +394,7 @@ describe('integration: always-respond resolver — startup enumerate', () => {
 
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_1', messageId: 'f25-1' }))
     await new Promise((r) => setTimeout(r, 200))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
   })
 
   // F.26 — configuredChatId survives a remove+add pair
@@ -405,8 +407,8 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     server.pushEvent('addChatParticipant', { chatId: 'grp_1', userId: BOT_ID })
     await new Promise((r) => setTimeout(r, 200))
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'hi', chatId: 'grp_1', messageId: 'f26-1' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
   })
 
   // G.28 — re-auth race: removeChatParticipant during reset+enumerate window
@@ -426,7 +428,7 @@ describe('integration: always-respond resolver — startup enumerate', () => {
     await new Promise((r) => setTimeout(r, 200))
     // After enumerate the chat may or may not still be in registry (we kept it in F-runners) — registry still has it
     // BUT then the removeChatParticipant event drained → titleResolvedChatIds.delete(grp_1) → no bypass
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
   })
 
   // Runtime duplicate detection

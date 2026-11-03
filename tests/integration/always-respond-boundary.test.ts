@@ -1,15 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
-  dispatchInboundDirectDm: vi.fn().mockResolvedValue({}),
-}))
+vi.mock('openclaw/plugin-sdk/channel-inbound', async () =>
+  (await import('./__helpers__/channel-inbound-mock')).channelInboundMock())
 
-import { dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
+import { dispatchChannelInboundTurn, dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
 import { __resetForTesting, channelPlugin, registerFull, mapPushToResolverEvent } from '../../src/channel'
 import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
 import type { TrueConfFlatConfig } from '../../src/types'
 
-const dispatch = vi.mocked(dispatchInboundDirectDm)
+const dmDispatch = vi.mocked(dispatchInboundDirectDm)
+const groupDispatch = vi.mocked(dispatchChannelInboundTurn)
+const dispatchCount = () => dmDispatch.mock.calls.length + groupDispatch.mock.calls.length
 const BOT_ID = 'bot@srv'
 
 interface Harness {
@@ -66,7 +67,8 @@ describe('integration: always-respond — getChatByID adapter contract', () => {
 
   beforeEach(async () => {
     __resetForTesting()
-    dispatch.mockClear()
+    dmDispatch.mockClear()
+    groupDispatch.mockClear()
     server = await startFakeServer()
   })
 
@@ -88,8 +90,8 @@ describe('integration: always-respond — getChatByID adapter contract', () => {
 
     await waitFor(() => harness!.logger.info.mock.calls.some((c) => String(c[0]).includes('joined group "hr" — added to always-respond')))
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_late', messageId: 'omit-1' }))
-    await waitFor(() => dispatch.mock.calls.length >= 1, 3000)
-    expect(dispatch).toHaveBeenCalledTimes(1)
+    await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
+    expect(groupDispatch).toHaveBeenCalledTimes(1)
     expect(harness!.logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('getChatByID(grp_late) failed'))
   })
 
@@ -103,7 +105,7 @@ describe('integration: always-respond — getChatByID adapter contract', () => {
     await waitFor(() => harness!.logger.warn.mock.calls.some((c) => String(c[0]).includes('getChatByID(grp_fail) failed for add')))
     server.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_fail', messageId: 'fail-1' }))
     await new Promise((r) => setTimeout(r, 200))
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(dispatchCount()).toBe(0)
   })
 })
 

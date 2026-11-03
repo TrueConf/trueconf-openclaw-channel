@@ -1,15 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TrueConfFlatConfig } from '../../src/types'
 
-vi.mock('openclaw/plugin-sdk/channel-inbound', () => ({
-  dispatchInboundDirectDm: vi.fn().mockResolvedValue({}),
-}))
+vi.mock('openclaw/plugin-sdk/channel-inbound', async () =>
+  (await import('./__helpers__/channel-inbound-mock')).channelInboundMock())
 
-import { dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
+import { dispatchChannelInboundTurn, dispatchInboundDirectDm } from 'openclaw/plugin-sdk/channel-inbound'
 import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
 import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
+import type { GroupTurn } from './__helpers__/channel-inbound-mock'
 
 const dispatch = vi.mocked(dispatchInboundDirectDm)
+const groupDispatch = vi.mocked(dispatchChannelInboundTurn)
 
 interface Harness {
   abort: () => void
@@ -77,6 +78,7 @@ describe('integration: control command authorization', () => {
   beforeEach(async () => {
     __resetForTesting()
     dispatch.mockClear()
+    groupDispatch.mockClear()
     server = await startFakeServer()
     server.setChatType(GROUP_CHAT, 2)
   })
@@ -119,16 +121,27 @@ describe('integration: control command authorization', () => {
     expect(arg.commandAuthorized).toBe(true)
   })
 
-  it('a group member outside allowFrom cannot run commands', async () => {
+  it('in a group, only members listed in allowFrom run commands', async () => {
     harness = await bootPlugin(server, {
       allowFrom: ['bob@srv'],
       groupAlwaysRespondIn: [`chatId:${GROUP_CHAT}`],
     })
 
     server.pushInbound(envelope({ author: 'alice@srv', text: '/reset', messageId: 'g1', chatId: GROUP_CHAT }))
+    server.pushInbound(envelope({ author: 'bob@srv', text: '/reset', messageId: 'g2', chatId: GROUP_CHAT }))
 
-    const [arg] = await dispatchedFor(1)
-    expect(arg).toMatchObject({ senderId: 'alice@srv', commandAuthorized: false })
+    await waitFor(() => groupDispatch.mock.calls.length >= 2, 3000)
+    const ctxs = groupDispatch.mock.calls.map((call) => (call[0] as unknown as GroupTurn).ctxPayload)
+    const bySender = (id: string) => ctxs.find((c) => c.sender.id === id)
+    expect(bySender('alice@srv')).toMatchObject({
+      message: { commandBody: '/reset' },
+      access: { commands: { authorized: false } },
+    })
+    expect(bySender('bob@srv')).toMatchObject({
+      message: { commandBody: '/reset' },
+      access: { commands: { authorized: true } },
+    })
+    expect(dispatch).not.toHaveBeenCalled()
   })
 
   it('plain text carries no command fields', async () => {

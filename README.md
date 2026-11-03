@@ -456,7 +456,7 @@ Example for the owner `alice@trueconf.example.com`, who serves one group:
 [trueconf] ignoring group chatId=a734f1c2e5b94d0f title="Sales team": not listed in channels.trueconf.groups
 ```
 
-Copy the `chatId` value into `groups`. An instance without `groups` serves every group, so set `groups` on every instance that shares the account.
+Copy the `chatId` value into `groups`. An instance without `groups` serves every group, and an empty `groups: {}` counts as none. So set `groups` on every instance that shares the account, and give an instance that serves no group `groupPolicy: "disabled"`.
 
 How `groups` and `groupPolicy` decide:
 

@@ -453,7 +453,7 @@ carol@trueconf.example.com: Бот, запиши
 [trueconf] ignoring group chatId=a734f1c2e5b94d0f title="Отдел продаж": not listed in channels.trueconf.groups
 ```
 
-Скопируйте значение `chatId` в `groups`. Экземпляр без `groups` обслуживает все группы, поэтому задайте `groups` на каждом экземпляре, который делит аккаунт.
+Скопируйте значение `chatId` в `groups`. Экземпляр без `groups` обслуживает все группы, пустой `groups: {}` считается отсутствующим. Поэтому задайте `groups` на каждом экземпляре, который делит аккаунт, а экземпляру, который не обслуживает ни одной группы, задайте `groupPolicy: "disabled"`.
 
 Как решают `groups` и `groupPolicy`:
 

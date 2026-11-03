@@ -85,7 +85,7 @@ describe('integration: group chat mention/reply gate', () => {
     dmDispatch.mockClear()
     groupDispatch.mockClear()
     server = await startFakeServer()
-    server.setChatType(GROUP_CHAT, 2)
+    server.chats.add({ chatId: GROUP_CHAT, title: 'Team chat', chatType: 2 })
   })
 
   afterEach(async () => {
@@ -117,7 +117,7 @@ describe('integration: group chat mention/reply gate', () => {
     expect(turn.ctxPayload).toMatchObject({
       from: 'trueconf:group:group_123',
       sender: { id: ALICE },
-      conversation: { kind: 'group', id: GROUP_CHAT, label: `Group ${GROUP_CHAT}` },
+      conversation: { kind: 'group', id: GROUP_CHAT, label: 'Team chat' },
       reply: { to: 'trueconf:group:group_123', originatingTo: 'trueconf:group:group_123' },
       message: { body: 'Bot what is up', rawBody: 'Bot what is up', commandBody: 'Bot what is up' },
       access: { commands: { authorized: false }, mentions: { wasMentioned: true, requireMention: true } },

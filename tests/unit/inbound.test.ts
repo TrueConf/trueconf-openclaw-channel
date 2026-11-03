@@ -6,7 +6,7 @@ import {
   MAX_FILE_SIZE_HARD_LIMIT_BYTES,
   type InboundContext,
 } from '../../src/inbound'
-import { EnvelopeType, TrueConfChatType, type InboundMessage, type TrueConfRequest } from '../../src/types'
+import { EnvelopeType, TrueConfChatType, type ChatInfo, type InboundMessage, type TrueConfRequest } from '../../src/types'
 
 interface FakeWsClient {
   botUserId: string | null
@@ -19,7 +19,7 @@ interface Harness {
   dispatch: ReturnType<typeof vi.fn>
   logger: { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> }
   wsClient: FakeWsClient
-  chatTypes: Map<string, 'p2p' | 'group' | 'channel' | 'unknown'>
+  chats: Map<string, ChatInfo>
   recentBotMsgIds: Map<string, Set<string>>
   alwaysRespondChats: Set<string>
 }
@@ -45,7 +45,7 @@ function makeHarness(opts?: { chatType?: 'p2p' | 'group'; matchesNickname?: (tex
     }),
     send: vi.fn(),
   }
-  const chatTypes = new Map<string, 'p2p' | 'group' | 'channel' | 'unknown'>()
+  const chats = new Map<string, ChatInfo>()
   const recentBotMsgIds = new Map<string, Set<string>>()
   const alwaysRespondChats = new Set<string>()
 
@@ -56,13 +56,13 @@ function makeHarness(opts?: { chatType?: 'p2p' | 'group'; matchesNickname?: (tex
     dispatch,
     logger,
     directChats: new Map(),
-    chatTypes,
-    inflightChatTypes: new Map(),
+    chats,
+    inflightChats: new Map(),
     recentBotMsgIds,
     isAlwaysRespond: (chatId: string) => alwaysRespondChats.has(chatId),
     matchesNickname: opts?.matchesNickname ?? (() => false),
   }
-  return { ctx, dispatch, logger, wsClient, chatTypes, recentBotMsgIds, alwaysRespondChats }
+  return { ctx, dispatch, logger, wsClient, chats, recentBotMsgIds, alwaysRespondChats }
 }
 
 function makeRequest(payload: Record<string, unknown>): TrueConfRequest {
@@ -86,7 +86,7 @@ describe('handleInboundMessage — envelope routing 201/203/204', () => {
 
   it('FORWARDED (201) → coalescer + extraContext.TrueConfEnvelopeType=forwarded (DM)', async () => {
     const h = makeHarness({ chatType: 'p2p' })
-    h.chatTypes.set(DM_CHAT, 'p2p')
+    h.chats.set(DM_CHAT, { kind: 'p2p', title: '' })
 
     await handleInboundMessage(
       makeRequest({
@@ -110,7 +110,7 @@ describe('handleInboundMessage — envelope routing 201/203/204', () => {
 
   it('LOCATION (203) valid without description → synthetic text [Локация: lat=…, lng=…] + extraContext.location', async () => {
     const h = makeHarness({ chatType: 'p2p' })
-    h.chatTypes.set(DM_CHAT, 'p2p')
+    h.chats.set(DM_CHAT, { kind: 'p2p', title: '' })
 
     await handleInboundMessage(
       makeRequest({
@@ -138,7 +138,7 @@ describe('handleInboundMessage — envelope routing 201/203/204', () => {
 
   it('LOCATION (203) valid with description → synthetic text appends description', async () => {
     const h = makeHarness({ chatType: 'p2p' })
-    h.chatTypes.set(DM_CHAT, 'p2p')
+    h.chats.set(DM_CHAT, { kind: 'p2p', title: '' })
 
     await handleInboundMessage(
       makeRequest({
@@ -162,7 +162,7 @@ describe('handleInboundMessage — envelope routing 201/203/204', () => {
 
   it('LOCATION (203) invalid (missing lat/lng) → dropped with logger.warn, no dispatch', async () => {
     const h = makeHarness({ chatType: 'p2p' })
-    h.chatTypes.set(DM_CHAT, 'p2p')
+    h.chats.set(DM_CHAT, { kind: 'p2p', title: '' })
 
     await handleInboundMessage(
       makeRequest({
@@ -185,7 +185,7 @@ describe('handleInboundMessage — envelope routing 201/203/204', () => {
 
   it('SURVEY (204) valid → synthetic text [Опрос: «title»] + extraContext.survey copy', async () => {
     const h = makeHarness({ chatType: 'p2p' })
-    h.chatTypes.set(DM_CHAT, 'p2p')
+    h.chats.set(DM_CHAT, { kind: 'p2p', title: '' })
 
     const surveyContent = { title: 'Любимый язык?', options: ['ts', 'py'] }
     await handleInboundMessage(
@@ -210,7 +210,7 @@ describe('handleInboundMessage — envelope routing 201/203/204', () => {
 
   it('Group gate for FORWARDED (201): plain forward without mention/reply → dropped', async () => {
     const h = makeHarness({ chatType: 'group' })
-    h.chatTypes.set(GROUP_CHAT, 'group')
+    h.chats.set(GROUP_CHAT, { kind: 'group', title: '' })
 
     await handleInboundMessage(
       makeRequest({
@@ -230,7 +230,7 @@ describe('handleInboundMessage — envelope routing 201/203/204', () => {
 
   it('Group gate for LOCATION (203) and SURVEY (204): only reply-to-bot activates', async () => {
     const h = makeHarness({ chatType: 'group' })
-    h.chatTypes.set(GROUP_CHAT, 'group')
+    h.chats.set(GROUP_CHAT, { kind: 'group', title: '' })
     // bot recently posted msg-bot-1 in this group
     h.recentBotMsgIds.set(GROUP_CHAT, new Set(['msg-bot-1']))
 
@@ -286,7 +286,7 @@ describe('handleInboundMessage — envelope routing 201/203/204', () => {
 
   it('InboundContext no longer exposes sendAck and handleInboundMessage does not invoke any ack helper', async () => {
     const h = makeHarness({ chatType: 'p2p' })
-    h.chatTypes.set(DM_CHAT, 'p2p')
+    h.chats.set(DM_CHAT, { kind: 'p2p', title: '' })
 
     // The InboundContext type does not have a sendAck field — checked via runtime
     // assertion + tsc (the interface declaration drops the property).

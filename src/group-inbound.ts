@@ -15,14 +15,20 @@ export type InboundTurn = Omit<
   'channel' | 'channelLabel' | 'peer' | 'senderAddress' | 'recipientAddress' | 'conversationLabel' | 'extraContext'
 > & { extraContext?: InboundExtraContext }
 
-export type GroupInboundParams = InboundTurn & { chatId: string; wasMentioned: boolean; requireMention: boolean }
+// title: the chat's TrueConf title, or empty when getChatByID did not give one.
+export type GroupInboundParams = InboundTurn & {
+  chatId: string
+  title: string
+  wasMentioned: boolean
+  requireMention: boolean
+}
 
 // The SDK's dispatchInboundDirectDm with a group peer. That helper hardcodes
 // conversation kind "direct", so under the default session.dmScope "main"
 // every group chat would land in the agent's main DM session.
 export async function dispatchGroupInbound(params: GroupInboundParams): Promise<void> {
   const peer = { kind: 'group' as const, id: params.chatId }
-  const label = `Group ${params.chatId}`
+  const label = params.title || `Group ${params.chatId}`
   const address = groupAddress(params.chatId)
   const { route, buildEnvelope } = resolveChannelInboundRouteEnvelope({
     cfg: params.cfg,

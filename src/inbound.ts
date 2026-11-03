@@ -18,7 +18,7 @@ import type {
   InboundMessage,
   InboundEnvelopeHint,
   FileInfo,
-  ResolvedChatKind,
+  ChatInfo,
   AttachmentContent,
 } from './types'
 import { WsClient, hostPort } from './ws-client'
@@ -79,24 +79,30 @@ export function rememberBotMessage(
   }
 }
 
+const CHAT_KINDS: ReadonlyMap<unknown, ChatInfo['kind']> = new Map([
+  [TrueConfChatType.P2P, 'p2p'],
+  [TrueConfChatType.GROUP, 'group'],
+  [TrueConfChatType.CHANNEL, 'channel'],
+])
+
 // On any failure path (errorCode, unrecognized chatType, exception) we return
-// 'unknown' WITHOUT caching, so the next message in this chat retries the
-// lookup. Caller MUST drop unknown — downgrading to 'p2p' would skip the
-// group mention/reply gate during transient failures and cause unsolicited
-// replies in groups/channels.
-export async function resolveChatType(params: {
+// null WITHOUT caching, so the next message in this chat retries the lookup.
+// Caller MUST drop null — downgrading to 'p2p' would skip the group
+// mention/reply gate during transient failures and cause unsolicited replies
+// in groups/channels.
+export async function resolveChat(params: {
   wsClient: WsClient
   chatId: string
-  cache: Map<string, ResolvedChatKind>
-  inflight: Map<string, Promise<ResolvedChatKind>>
+  cache: Map<string, ChatInfo>
+  inflight: Map<string, Promise<ChatInfo | null>>
   logger: Logger
-}): Promise<ResolvedChatKind> {
+}): Promise<ChatInfo | null> {
   const cached = params.cache.get(params.chatId)
   if (cached) return cached
   const existing = params.inflight.get(params.chatId)
   if (existing) return existing
 
-  const lookup = (async (): Promise<ResolvedChatKind> => {
+  const lookup = (async (): Promise<ChatInfo | null> => {
     try {
       const resp = await params.wsClient.sendRequest('getChatByID', { chatId: params.chatId })
       const errorCode = resp.payload?.errorCode
@@ -104,21 +110,25 @@ export async function resolveChatType(params: {
         params.logger.warn(
           `[trueconf] getChatByID errorCode ${errorCode} for chatId=${params.chatId}; treating as unknown (will retry on next message)`,
         )
-        return 'unknown'
+        return null
       }
       const chatType = resp.payload?.chatType
-      if (chatType === TrueConfChatType.GROUP) { params.cache.set(params.chatId, 'group'); return 'group' }
-      if (chatType === TrueConfChatType.CHANNEL) { params.cache.set(params.chatId, 'channel'); return 'channel' }
-      if (chatType === TrueConfChatType.P2P) { params.cache.set(params.chatId, 'p2p'); return 'p2p' }
-      params.logger.warn(
-        `[trueconf] getChatByID returned unrecognized chatType ${JSON.stringify(chatType)} for chatId=${params.chatId}; treating as unknown`,
-      )
-      return 'unknown'
+      const kind = CHAT_KINDS.get(chatType)
+      if (!kind) {
+        params.logger.warn(
+          `[trueconf] getChatByID returned unrecognized chatType ${JSON.stringify(chatType)} for chatId=${params.chatId}; treating as unknown`,
+        )
+        return null
+      }
+      const title = resp.payload?.title
+      const chat: ChatInfo = { kind, title: typeof title === 'string' ? title.trim() : '' }
+      params.cache.set(params.chatId, chat)
+      return chat
     } catch (err) {
       params.logger.warn(
         `[trueconf] getChatByID failed for chatId=${params.chatId}: ${err instanceof Error ? err.message : String(err)}; treating as unknown (will retry on next message)`,
       )
-      return 'unknown'
+      return null
     }
   })()
 
@@ -223,8 +233,8 @@ export interface InboundContext {
   dispatch: InboundDispatchFn
   logger: Logger
   directChats: Map<string, string>
-  chatTypes: Map<string, ResolvedChatKind>
-  inflightChatTypes: Map<string, Promise<ResolvedChatKind>>
+  chats: Map<string, ChatInfo>
+  inflightChats: Map<string, Promise<ChatInfo | null>>
   recentBotMsgIds: Map<string, Set<string>>
   isAlwaysRespond: (chatId: string) => boolean
   matchesNickname: (text: string) => boolean
@@ -259,22 +269,23 @@ export async function handleInboundMessage(
   if (normalizedAuthor && ctx.botIdentityCandidates.some((c) => normalizeForCompare(c) === normalizedAuthor)) return
   if (envelope.type < 200) return
 
-  const kind = await resolveChatType({
+  const chat = await resolveChat({
     wsClient: ctx.wsClient,
     chatId,
-    cache: ctx.chatTypes,
-    inflight: ctx.inflightChatTypes,
+    cache: ctx.chats,
+    inflight: ctx.inflightChats,
     logger: ctx.logger,
   })
 
-  if (kind === 'channel') {
-    ctx.logger.info(`[trueconf] dropping channel message chatId=${chatId}`)
+  // Fail-closed: never downgrade unknown to direct, that path skips the gate.
+  if (!chat) {
+    ctx.logger.warn(`[trueconf] dropping inbound from chatId=${chatId}: chat type unknown`)
     return
   }
+  const kind = chat.kind
 
-  // Fail-closed: never downgrade unknown to direct, that path skips the gate.
-  if (kind === 'unknown') {
-    ctx.logger.warn(`[trueconf] dropping inbound from chatId=${chatId}: chat type unknown`)
+  if (kind === 'channel') {
+    ctx.logger.info(`[trueconf] dropping channel message chatId=${chatId}`)
     return
   }
 

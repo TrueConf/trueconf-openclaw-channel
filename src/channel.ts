@@ -26,7 +26,7 @@ import { BoundedSeen, handleSdkPushEvent } from './push-events'
 import type { InboundContext } from './inbound'
 import { createNicknameStore, type NicknameStore } from './nickname-store'
 import { canEditNicknames, createNicknameTools, NICKNAME_TOOL_NAMES, type NicknameToolContext } from './nickname-tools'
-import type { ResolvedChatKind } from './types'
+import type { ChatInfo } from './types'
 import {
   listAccountIds as listAccountIdsImpl,
   resolveAccount as resolveAccountImpl,
@@ -170,10 +170,11 @@ export function createRuntimeStore() {
     // goes here. Only DM turns put the bot JID in ctxPayload.To; group turns
     // carry the group address, so a group is never a redirect target.
     lastDirectPeerByAccount: new Map<string, string>(),
-    // chatType is immutable for the lifetime of a chat; survives reconnect.
-    chatTypeByChatId: new Map<string, ResolvedChatKind>(),
+    // Kind and title per chat; survives reconnect. The kind never changes,
+    // the title follows editChatTitle pushes.
+    chatsById: new Map<string, ChatInfo>(),
     // Dedups concurrent getChatByID lookups for the same chatId.
-    inflightChatTypeLookups: new Map<string, Promise<ResolvedChatKind>>(),
+    inflightChatLookups: new Map<string, Promise<ChatInfo | null>>(),
     // Recent bot messageIds per chat, used for reply-to-bot detection in
     // groups. FIFO-capped per chat, survives reconnect.
     recentBotMsgIdsByChat: new Map<string, Set<string>>(),
@@ -211,8 +212,8 @@ export function invalidateChatState(
       store.directChatsByStableUserId.delete(key)
     }
   }
-  store.chatTypeByChatId.delete(chatId)
-  store.inflightChatTypeLookups.delete(chatId)
+  store.chatsById.delete(chatId)
+  store.inflightChatLookups.delete(chatId)
   store.recentBotMsgIdsByChat.delete(chatId)
 }
 
@@ -549,7 +550,7 @@ export const channelPlugin = {
         getChatByID: async (chatId) => {
           const resp = await wsClient.sendRequest('getChatByID', { chatId })
           // Some TrueConf servers omit errorCode on success; treat undefined
-          // as success to match resolveChatType (inbound.ts) and avoid
+          // as success to match resolveChat (inbound.ts) and avoid
           // skipping every push lookup against those servers.
           const errorCode = responseErrorCode(resp)
           if (errorCode !== undefined && errorCode !== 0) return null
@@ -811,6 +812,7 @@ export const channelPlugin = {
           await dispatchGroupInbound({
             ...turn,
             chatId: inboundMsg.chatId,
+            title: store.chatsById.get(inboundMsg.chatId)?.title ?? '',
             wasMentioned: inboundMsg.wasMentioned,
             requireMention: !alwaysRespond.isAlwaysRespond(inboundMsg.chatId),
           }).catch(onFailure('dispatchGroupInbound'))
@@ -843,8 +845,8 @@ export const channelPlugin = {
           dispatch,
           logger,
           directChats: store.directChatsByStableUserId,
-          chatTypes: store.chatTypeByChatId,
-          inflightChatTypes: store.inflightChatTypeLookups,
+          chats: store.chatsById,
+          inflightChats: store.inflightChatLookups,
           recentBotMsgIds: store.recentBotMsgIdsByChat,
           isAlwaysRespond: alwaysRespond.isAlwaysRespond,
           matchesNickname: (text) => store.nicknameStore?.matches(text) ?? false,
@@ -856,7 +858,12 @@ export const channelPlugin = {
 
       const unsubscribePush = wsClient.onPush((method, payload) => {
         const ev = mapPushToResolverEvent(method, payload, logger)
-        if (ev) alwaysRespond.enqueueEvent(ev)
+        if (!ev) return
+        if (ev.kind === 'rename') {
+          const chat = store.chatsById.get(ev.chatId)
+          if (chat) store.chatsById.set(ev.chatId, { ...chat, title: ev.title.trim() })
+        }
+        alwaysRespond.enqueueEvent(ev)
       })
       const unsubscribeAuth = wsClient.onAuth(() => {
         void alwaysRespond.rebuildFromWire().catch((err) => {
@@ -944,8 +951,8 @@ export function registerFull(api: OpenClawPluginApi): void {
     for (const [, entry] of store.accounts) shutdownAccountEntry(entry)
     store.accounts.clear()
     store.directChatsByStableUserId.clear()
-    store.chatTypeByChatId.clear()
-    store.inflightChatTypeLookups.clear()
+    store.chatsById.clear()
+    store.inflightChatLookups.clear()
     store.recentBotMsgIdsByChat.clear()
   })
 }
@@ -982,8 +989,8 @@ export function __resetForTesting(): void {
   store.fullConfig = null
   store.directChatsByStableUserId.clear()
   store.lastDirectPeerByAccount.clear()
-  store.chatTypeByChatId.clear()
-  store.inflightChatTypeLookups.clear()
+  store.chatsById.clear()
+  store.inflightChatLookups.clear()
   store.recentBotMsgIdsByChat.clear()
   store.nicknameStore = null
   __resetCoalesceBufferForTesting()

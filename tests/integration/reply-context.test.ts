@@ -34,8 +34,8 @@ function makeCtx(opts: CtxOpts = {}) {
     dispatch,
     logger,
     directChats: new Map(),
-    chatTypes: new Map(),
-    inflightChatTypes: new Map(),
+    chats: new Map(),
+    inflightChats: new Map(),
     recentBotMsgIds: opts.recentBotMsgIds ?? new Map<string, Set<string>>(),
     isAlwaysRespond: () => false,
     matchesNickname: () => false,
@@ -172,7 +172,7 @@ describe('F2 — quoted-message context injection', () => {
       chatType: 'p2p',
       getMessageById: () => new Promise((r) => { releaseQuote = r }),
     })
-    h.ctx.chatTypes.set(DM_CHAT, 'p2p')
+    h.ctx.chats.set(DM_CHAT, { kind: 'p2p', title: '' })
 
     const pCaption = handleInboundMessage(
       makeRequest({

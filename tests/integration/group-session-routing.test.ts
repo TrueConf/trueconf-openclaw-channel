@@ -114,7 +114,7 @@ describe('integration: session routing with real OpenClaw routing', () => {
     dmDispatch.mockClear()
     groupDispatch.mockClear()
     server = await startFakeServer()
-    server.setChatType(GROUP_CHAT, 2)
+    server.chats.add({ chatId: GROUP_CHAT, title: 'Team chat', chatType: 2 })
   })
 
   afterEach(async () => {
@@ -145,7 +145,7 @@ describe('integration: session routing with real OpenClaw routing', () => {
       SessionKey: 'agent:main:trueconf:group:e28a99f1c0d34b7a',
       ChatType: 'group',
       ChatId: GROUP_CHAT,
-      ConversationLabel: 'Group e28a99f1c0d34b7a',
+      ConversationLabel: 'Team chat',
       SenderId: ALICE,
       RawBody: 'Bot status?',
       WasMentioned: true,
@@ -214,11 +214,11 @@ describe('integration: session routing with real OpenClaw routing', () => {
       // The envelope timestamp is rendered in the machine's time zone.
       Body: [
         expect.stringMatching(/^\[TrueConf DM with alice@srv .+\] hello$/),
-        expect.stringMatching(/^\[TrueConf Group e28a99f1c0d34b7a .+\] hello$/),
+        expect.stringMatching(/^\[TrueConf Team chat .+\] hello$/),
       ],
       ChatId: ['alice@srv', 'e28a99f1c0d34b7a'],
       ChatType: ['direct', 'group'],
-      ConversationLabel: ['DM with alice@srv', 'Group e28a99f1c0d34b7a'],
+      ConversationLabel: ['DM with alice@srv', 'Team chat'],
       ConversationRoutePeerId: ['alice@srv', 'e28a99f1c0d34b7a'],
       From: ['alice@srv', 'trueconf:group:e28a99f1c0d34b7a'],
       OriginatingTo: ['alice@srv', 'trueconf:group:e28a99f1c0d34b7a'],
@@ -228,7 +228,7 @@ describe('integration: session routing with real OpenClaw routing', () => {
     })
     expect({ dm: dm.NativeDirectUserId, group: [group.GroupSubject, group.WasMentioned, group.GroupRequireMention] }).toEqual({
       dm: 'alice@srv',
-      group: ['Group e28a99f1c0d34b7a', false, false],
+      group: ['Team chat', false, false],
     })
   })
 })

@@ -27,6 +27,7 @@ export function channelInboundMock() {
 export interface GroupTurn {
   route: { sessionKey: string }
   ctxPayload: {
+    messageId: string
     from: string
     sender: { id: string }
     conversation: { kind: string; id: string; label: string }

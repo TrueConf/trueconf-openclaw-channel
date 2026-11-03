@@ -120,16 +120,16 @@ describe('invalidateChatState', () => {
 
     store.directChatsByStableUserId.set(`${accountId}\u0000user-A`, chatId)
     store.directChatsByStableUserId.set(`${accountId}\u0000user-B`, chatId)
-    store.chatTypeByChatId.set(chatId, 'group')
-    store.inflightChatTypeLookups.set(chatId, Promise.resolve('group'))
+    store.chatsById.set(chatId, { kind: 'group', title: '' })
+    store.inflightChatLookups.set(chatId, Promise.resolve({ kind: 'group', title: '' }))
     store.recentBotMsgIdsByChat.set(chatId, new Set(['m1', 'm2']))
 
     invalidateChatState(store, accountId, chatId)
 
     expect(store.directChatsByStableUserId.has(`${accountId}\u0000user-A`)).toBe(false)
     expect(store.directChatsByStableUserId.has(`${accountId}\u0000user-B`)).toBe(false)
-    expect(store.chatTypeByChatId.has(chatId)).toBe(false)
-    expect(store.inflightChatTypeLookups.has(chatId)).toBe(false)
+    expect(store.chatsById.has(chatId)).toBe(false)
+    expect(store.inflightChatLookups.has(chatId)).toBe(false)
     expect(store.recentBotMsgIdsByChat.has(chatId)).toBe(false)
   })
 
@@ -146,8 +146,8 @@ describe('invalidateChatState', () => {
     store.directChatsByStableUserId.set(`${accountA}\u0000user-1`, chatX)
     store.directChatsByStableUserId.set(`${accountB}\u0000user-1`, chatY)
     // Same userId across accounts — accountA's mapping points at chatX, accountB's at chatY.
-    store.chatTypeByChatId.set(chatX, 'group')
-    store.chatTypeByChatId.set(chatY, 'p2p')
+    store.chatsById.set(chatX, { kind: 'group', title: '' })
+    store.chatsById.set(chatY, { kind: 'p2p', title: '' })
     store.recentBotMsgIdsByChat.set(chatX, new Set(['m1']))
     store.recentBotMsgIdsByChat.set(chatY, new Set(['m2']))
 
@@ -158,7 +158,7 @@ describe('invalidateChatState', () => {
     // Account B intact.
     expect(store.directChatsByStableUserId.get(`${accountB}\u0000user-1`)).toBe(chatY)
     // chatY-keyed entries intact.
-    expect(store.chatTypeByChatId.get(chatY)).toBe('p2p')
+    expect(store.chatsById.get(chatY)).toEqual({ kind: 'p2p', title: '' })
     expect(store.recentBotMsgIdsByChat.get(chatY)).toBeDefined()
   })
 })
@@ -171,7 +171,7 @@ describe('SDK push handler wire-up', () => {
     const store = createRuntimeStore()
     const accountId = 'acct-1'
     const chatId = 'chat-X'
-    store.chatTypeByChatId.set(chatId, 'group')
+    store.chatsById.set(chatId, { kind: 'group', title: '' })
     store.recentBotMsgIdsByChat.set(chatId, new Set(['m1']))
 
     let captured: ((method: string, payload: Record<string, unknown>) => void) | null = null
@@ -195,7 +195,7 @@ describe('SDK push handler wire-up', () => {
 
     captured!('removeChat', { chatId })
 
-    expect(store.chatTypeByChatId.has(chatId)).toBe(false)
+    expect(store.chatsById.has(chatId)).toBe(false)
     expect(store.recentBotMsgIdsByChat.has(chatId)).toBe(false)
 
     unsubscribe()

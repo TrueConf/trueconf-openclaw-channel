@@ -73,7 +73,12 @@ export const TrueConfChatType = {
 } as const
 export type TrueConfChatType = (typeof TrueConfChatType)[keyof typeof TrueConfChatType]
 
-export type ResolvedChatKind = 'p2p' | 'group' | 'channel' | 'unknown'
+// What getChatByID told us about a chat. The kind never changes; the title
+// is refreshed when the server announces a rename.
+export interface ChatInfo {
+  kind: 'p2p' | 'group' | 'channel'
+  title: string
+}
 
 export const FileReadyState = { NOT_AVAILABLE: 0, UPLOADING: 1, READY: 2 } as const
 export type FileReadyState = (typeof FileReadyState)[keyof typeof FileReadyState]

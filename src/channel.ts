@@ -166,10 +166,10 @@ export function createRuntimeStore() {
     // Registry key: `${accountId}\u0000${stableUserId}`. Updated inline by
     // inbound (on observation) and outbound (on createP2PChat / 304).
     directChatsByStableUserId: new Map<string, string>(),
-    // Most recent inbound conversation per account, DM peer or group chat.
-    // A send addressed to the bot's own JID is redirected here. Only DM turns
-    // put the bot JID in ctxPayload.To; group turns carry the group address.
-    lastInboundRouteByAccount: new Map<string, TrueConfTarget>(),
+    // Most recent DM peer per account. A send addressed to the bot's own JID
+    // goes here. Only DM turns put the bot JID in ctxPayload.To; group turns
+    // carry the group address, so a group is never a redirect target.
+    lastDirectPeerByAccount: new Map<string, string>(),
     // chatType is immutable for the lifetime of a chat; survives reconnect.
     chatTypeByChatId: new Map<string, ResolvedChatKind>(),
     // Dedups concurrent getChatByID lookups for the same chatId.
@@ -199,7 +199,7 @@ function defaultMediaLocalRoots(): readonly string[] {
 // `handleSdkPushEvent('removeChat', ...)`: once the server announces the chat
 // is gone, every registry that keys off chatId would otherwise leak entries
 // indefinitely (next message in a re-created chat with the same id would
-// reuse stale chatType / lastInboundRoute / direct-chat mapping).
+// reuse stale chatType / direct-chat mapping).
 export function invalidateChatState(
   store: RuntimeStore,
   accountId: string,
@@ -210,10 +210,6 @@ export function invalidateChatState(
     if (value === chatId && key.startsWith(accountPrefix)) {
       store.directChatsByStableUserId.delete(key)
     }
-  }
-  const lastRoute = store.lastInboundRouteByAccount.get(accountId)
-  if (lastRoute && lastRoute.kind === 'group' && lastRoute.chatId === chatId) {
-    store.lastInboundRouteByAccount.delete(accountId)
   }
   store.chatTypeByChatId.delete(chatId)
   store.inflightChatTypeLookups.delete(chatId)
@@ -272,16 +268,16 @@ function clearAccountChats(accountId: string): void {
   for (const key of Array.from(store.directChatsByStableUserId.keys())) {
     if (key.startsWith(prefix)) store.directChatsByStableUserId.delete(key)
   }
-  // NOTE: lastInboundRouteByAccount is intentionally NOT cleared here.
-  // clearAccountChats runs on WS reconnect; peer identity and group chatIds
-  // both survive a reconnect, so keeping the cache lets redirects keep
-  // working until a genuine shutdown. Process-level reset happens via
-  // __resetForTesting or module reload.
+  // NOTE: lastDirectPeerByAccount is intentionally NOT cleared here.
+  // clearAccountChats runs on WS reconnect; peer identity survives a
+  // reconnect, so keeping the cache lets redirects keep working until a
+  // genuine shutdown. Process-level reset happens via __resetForTesting or
+  // module reload.
 }
 
 // An agent tool call can target the bot's own JID. createP2PChat on self would
-// hang for 30s, so such a send goes to the account's most recent inbound
-// conversation instead, or is skipped when there is none.
+// hang for 30s, so such a send goes to the account's most recent DM peer
+// instead, or is skipped when there is none.
 function redirectSelfSend(
   op: 'sendText' | 'sendMedia',
   target: TrueConfTarget,
@@ -293,14 +289,13 @@ function redirectSelfSend(
   if (target.kind !== 'direct' || !botUserId || normalizeForCompare(botUserId) !== normalizeForCompare(target.userId)) {
     return target
   }
-  const route = store.lastInboundRouteByAccount.get(accountId)
-  if (!route) {
-    logger.info(`[trueconf] ${op}: target=${target.userId} is bot identity and no cached inbound route; skipping`)
+  const peer = store.lastDirectPeerByAccount.get(accountId)
+  if (!peer) {
+    logger.info(`[trueconf] ${op}: target=${target.userId} is bot identity and no cached DM peer; skipping`)
     return null
   }
-  const where = route.kind === 'group' ? `group ${route.chatId}` : `peer ${route.userId}`
-  logger.info(`[trueconf] ${op}: target=${target.userId} is bot identity; redirecting to last inbound ${where}`)
-  return route
+  logger.info(`[trueconf] ${op}: target=${target.userId} is bot identity; redirecting to last DM peer ${peer}`)
+  return { kind: 'direct', userId: peer }
 }
 
 // Core hands plugin hooks its normalized (lowercased) account id, while
@@ -693,15 +688,7 @@ export const channelPlugin = {
           return
         }
 
-        // Remember the last inbound conversation for the self-send redirect.
-        // Groups track chatId (dispatched via sendTextToChat, no P2P lookup);
-        // DMs track peerId (the user JID, used by sendText + resolveDirectChat).
-        store.lastInboundRouteByAccount.set(
-          accountId,
-          inboundMsg.isGroup
-            ? { kind: 'group', chatId: inboundMsg.chatId }
-            : { kind: 'direct', userId: inboundMsg.peerId },
-        )
+        if (!inboundMsg.isGroup) store.lastDirectPeerByAccount.set(accountId, inboundMsg.peerId)
 
         let rawBody = inboundMsg.text
         // Inbound's per-envelope hints (TrueConfEnvelopeType for FORWARDED /
@@ -994,7 +981,7 @@ export function __resetForTesting(): void {
   store.runtime = null
   store.fullConfig = null
   store.directChatsByStableUserId.clear()
-  store.lastInboundRouteByAccount.clear()
+  store.lastDirectPeerByAccount.clear()
   store.chatTypeByChatId.clear()
   store.inflightChatTypeLookups.clear()
   store.recentBotMsgIdsByChat.clear()

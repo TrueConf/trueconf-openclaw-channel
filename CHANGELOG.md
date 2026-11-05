@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Group turns no longer call SDK functions that OpenClaw retires on 2026-12-31 (`resolveChannelInboundRouteEnvelope`, `resolveInboundSessionEnvelopeContext`). The route comes from `resolveAgentRoute` and the envelope from `formatInboundEnvelope`, both in OpenClaw 2026.8.1 and current releases. ClawHub's validator flagged the old call when 1.3.0 was published. A group message's `Body` envelope no longer carries the "+elapsed since the previous message" suffix; the agent reads `BodyForAgent`, which is unchanged.
+
 ## [1.3.0] - 2026-11-03
 
 ### Added

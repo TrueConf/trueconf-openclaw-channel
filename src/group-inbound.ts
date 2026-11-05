@@ -2,12 +2,12 @@ import {
   buildChannelInboundEventContext,
   dispatchChannelInboundTurn,
   formatInboundEnvelope,
-  resolveChannelInboundRouteEnvelope,
-  resolveInboundSessionEnvelopeContext,
+  resolveEnvelopeFormatOptions,
   type dispatchInboundDirectDm,
 } from 'openclaw/plugin-sdk/channel-inbound'
 import { normalizeOutboundReplyPayload } from 'openclaw/plugin-sdk/reply-payload'
 import { buildHistoryContextFromEntries, type HistoryEntry } from 'openclaw/plugin-sdk/reply-history'
+import { resolveAgentRoute } from 'openclaw/plugin-sdk/routing'
 import { groupAddress } from './target'
 import type { InboundExtraContext } from './types'
 
@@ -43,7 +43,7 @@ export async function dispatchGroupInbound(params: GroupInboundParams): Promise<
   const peer = { kind: 'group' as const, id: params.chatId }
   const label = params.title || `Group ${params.chatId}`
   const address = groupAddress(params.chatId)
-  const { route } = resolveChannelInboundRouteEnvelope({
+  const route = resolveAgentRoute({
     cfg: params.cfg,
     channel: 'trueconf',
     accountId: params.accountId,
@@ -51,11 +51,6 @@ export async function dispatchGroupInbound(params: GroupInboundParams): Promise<
   })
   const accountId = route.accountId ?? params.accountId
   const sender = { id: params.senderId, name: params.senderName }
-  const { envelopeOptions, previousTimestamp } = resolveInboundSessionEnvelopeContext({
-    cfg: params.cfg,
-    agentId: route.agentId,
-    sessionKey: route.sessionKey,
-  })
   const ctxPayload = await buildChannelInboundEventContext({
     channel: 'trueconf',
     accountId,
@@ -73,6 +68,9 @@ export async function dispatchGroupInbound(params: GroupInboundParams): Promise<
     },
     reply: { to: address, originatingTo: address },
     message: {
+      // No "+elapsed" suffix: it needs the session's last update time, and
+      // every SDK reader of it is deprecated or missing in OpenClaw 2026.8.1.
+      // The agent reads BodyForAgent, not Body.
       body: formatInboundEnvelope({
         channel: 'TrueConf',
         from: label,
@@ -80,8 +78,7 @@ export async function dispatchGroupInbound(params: GroupInboundParams): Promise<
         timestamp: params.timestamp,
         chatType: 'group',
         sender,
-        previousTimestamp,
-        envelope: envelopeOptions,
+        envelope: resolveEnvelopeFormatOptions(params.cfg),
       }),
       // OpenClaw stores BodyForAgent as the session's user line, so the
       // pending group lines and the speaker names land in the transcript.

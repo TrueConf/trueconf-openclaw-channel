@@ -858,6 +858,10 @@ export const channelPlugin = {
               history: history.entries.map((line, i) => ({ ...line, sender: speakerLabel(line.sender, historyNames[i]) })),
               wasMentioned: inboundMsg.wasMentioned,
               requireMention: inboundMsg.requireMention,
+              // Once the turn is in the session its BodyForAgent may be in the
+              // transcript, so a failure after this must not hand the lines
+              // back for a second turn. A failure before it still does.
+              onRecorded: history.commit,
             })
             history.commit()
           } catch (err) {

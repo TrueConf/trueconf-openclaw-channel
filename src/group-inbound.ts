@@ -22,6 +22,8 @@ export type InboundTurn = Omit<
 // senderName: the sender's display name, or the sender id when unknown.
 // history: unaddressed lines since the bot last answered here, oldest first,
 // each sender already a speaker label.
+// onRecorded: OpenClaw has recorded the turn in the group session and is about
+// to run the agent, so the history is taken even if the run then fails.
 export type GroupInboundParams = InboundTurn & {
   chatId: string
   title: string
@@ -29,6 +31,7 @@ export type GroupInboundParams = InboundTurn & {
   history: readonly HistoryEntry[]
   wasMentioned: boolean
   requireMention: boolean
+  onRecorded?: () => void
 }
 
 // "Name (id)", or the id alone when the name is unknown.
@@ -112,6 +115,7 @@ export async function dispatchGroupInbound(params: GroupInboundParams): Promise<
     route: { agentId: route.agentId, sessionKey: route.sessionKey },
     ctxPayload,
     record: { onRecordError: params.onRecordError },
+    afterRecord: params.onRecorded,
     delivery: {
       deliver: async (payload) => await params.deliver(normalizeOutboundReplyPayload(payload)),
       onError: params.onDispatchError,

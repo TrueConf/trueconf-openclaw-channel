@@ -174,8 +174,25 @@ describe('integration: unaddressed group lines become context for the next addre
     ])
   })
 
-  it('hands the lines back when the dispatch fails', async () => {
-    groupDispatch.mockRejectedValueOnce(new Error('model down'))
+  it('does not repeat the lines when the turn fails after OpenClaw recorded it', async () => {
+    groupDispatch.mockImplementationOnce(async (params) => {
+      await (params as { afterRecord?: () => Promise<void> | void }).afterRecord?.()
+      throw new Error('model down')
+    })
+    harness = await bootPlugin(server)
+
+    server.pushInbound(say(ALICE, 'context line'))
+    server.pushInbound(ask(BOB, 'first'))
+    await waitFor(() => turnCount() >= 1)
+    await settle(50)
+    server.pushInbound(ask(BOB, 'retry'))
+    await waitFor(() => turnCount() >= 2)
+
+    expect(agentBodies()[1]).toBe('Bob Stone (bob@srv): Bot retry')
+  })
+
+  it('hands the lines back when the turn fails before OpenClaw records it', async () => {
+    groupDispatch.mockRejectedValueOnce(new Error('session store unavailable'))
     harness = await bootPlugin(server)
 
     server.pushInbound(say(ALICE, 'context line'))

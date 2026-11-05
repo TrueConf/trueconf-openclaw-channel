@@ -310,14 +310,26 @@ function redirectSelfSend(
   return { kind: 'direct', userId: peer }
 }
 
-// Core hands plugin hooks its normalized (lowercased) account id, while
-// store.accounts is keyed by the id as configured.
-function findAccountEntry(accountId: string | null | undefined): AccountEntry | undefined {
+// Core hands plugin hooks and outbound sends its normalized (lowercased)
+// account id, while store.accounts and the per-account caches are keyed by
+// the id as configured.
+function configuredAccountId(accountId: string | null | undefined): string | undefined {
   const wanted = normalizeAccountId(accountId)
-  for (const [id, entry] of store.accounts) {
-    if (normalizeAccountId(id) === wanted) return entry
+  for (const id of store.accounts.keys()) {
+    if (normalizeAccountId(id) === wanted) return id
   }
   return undefined
+}
+
+function findAccountEntry(accountId: string | null | undefined): AccountEntry | undefined {
+  const id = configuredAccountId(accountId)
+  return id === undefined ? undefined : store.accounts.get(id)
+}
+
+// The account an outbound send goes through: the one core names, else the
+// first started one.
+function outboundAccountId(accountId: string | undefined): string | undefined {
+  return accountId === undefined ? store.accounts.keys().next().value : configuredAccountId(accountId)
 }
 
 export const channelPlugin = {
@@ -394,11 +406,11 @@ export const channelPlugin = {
   outbound: {
     deliveryMode: "direct" as const,
     sendText: async (ctx: { accountId?: string; to: string; text: string }) => {
-      const accountId = ctx.accountId ?? store.accounts.keys().next().value
+      const accountId = outboundAccountId(ctx.accountId)
       const entry = accountId ? store.accounts.get(accountId) : undefined
       const logger = store.logger
       if (!entry || !logger) {
-        logger?.error(`[trueconf] sendText: no connection for account ${accountId}`)
+        logger?.error(`[trueconf] sendText: no connection for account ${ctx.accountId ?? accountId}`)
         return { channel: 'trueconf', messageId: '' }
       }
 
@@ -434,12 +446,12 @@ export const channelPlugin = {
       mediaUrl?: string
       mediaLocalRoots?: readonly string[]
     }) => {
-      const accountId = ctx.accountId ?? store.accounts.keys().next().value
+      const accountId = outboundAccountId(ctx.accountId)
       const entry = accountId ? store.accounts.get(accountId) : undefined
       const logger = store.logger
 
       if (!entry || !logger || !store.channelConfig) {
-        logger?.error(`[trueconf] sendMedia: no connection for account ${accountId}`)
+        logger?.error(`[trueconf] sendMedia: no connection for account ${ctx.accountId ?? accountId}`)
         return { channel: 'trueconf', messageId: '' }
       }
 

@@ -353,7 +353,7 @@ Bob Stone (bob@trueconf.example.com): me
 carol@trueconf.example.com: Bot, write that down
 ```
 
-The lines are part of the message the agent gets, so they stay in the group session's history. A turn takes only the lines sent before its own message. Lines that arrive while the agent works wait for the next turn. A turn that fails before OpenClaw records it in the session leaves its lines for the next turn; once it is recorded, the lines are taken even if the agent run fails, so they never appear twice.
+The lines are part of the message the agent gets, so they stay in the group session's history. A turn takes only the lines sent before its own message. Lines that arrive while the agent works wait for the next turn. A turn takes its lines when OpenClaw starts the agent run, so a failed run never repeats them in a later turn; a turn that fails or is dropped before the run leaves them for the next one.
 
 Limits:
 
@@ -648,8 +648,8 @@ MIT
 
 ### Fixed
 - Group turns no longer call SDK functions that OpenClaw retires on 2026-12-31 (`resolveChannelInboundRouteEnvelope`, `resolveInboundSessionEnvelopeContext`). The route comes from `resolveAgentRoute` and the envelope from `formatInboundEnvelope`, both in OpenClaw 2026.8.1 and current releases. ClawHub's validator flagged the old call when 1.3.0 was published. A group message's `Body` envelope no longer carries the "+elapsed since the previous message" suffix; the agent reads `BodyForAgent`, which is unchanged.
-- Outbound sends work for accounts whose id has uppercase letters, such as `accounts.Main`. OpenClaw passes the lowercased id (`main`) to `sendText` and `sendMedia`, which looked it up exactly and logged `no connection for account main`, so message-tool sends, queued follow-ups and restart notices through such an account were dropped.
-- Group context lines no longer repeat after a failed turn. A turn now takes its lines once OpenClaw records it in the group session (`afterRecord`), where its `BodyForAgent` may already be in the transcript; before, a failure after that point handed the lines back and the next turn carried them a second time. A turn that fails before it is recorded still leaves its lines for the next one.
+- Outbound sends work for accounts whose id has uppercase letters, such as `accounts.Main`. OpenClaw passes the lowercased id (`main`) to `sendText` and `sendMedia`, which looked it up exactly and logged `no connection for account main`, so message-tool sends, queued follow-ups and restart notices through such an account were dropped. Configured ids that are one id for OpenClaw (`Main` and `main`, `my.bot` and `my-bot`) are logged as an error at startup; sends for them go through the first one.
+- Group context lines no longer repeat after a failed agent run. A turn now takes its lines when OpenClaw starts the run (`afterRecord`, after its session bookkeeping); before, a run that failed after writing `BodyForAgent` to the transcript handed the lines back and the next turn carried them a second time. A run that fails before the transcript has the line now loses them instead. A turn that fails or is dropped before the run still leaves its lines for the next one.
 
 ## [1.3.0] - 2026-11-03
 

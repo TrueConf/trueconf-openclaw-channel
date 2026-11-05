@@ -22,8 +22,8 @@ export type InboundTurn = Omit<
 // senderName: the sender's display name, or the sender id when unknown.
 // history: unaddressed lines since the bot last answered here, oldest first,
 // each sender already a speaker label.
-// onRecorded: OpenClaw has recorded the turn in the group session and is about
-// to run the agent, so the history is taken even if the run then fails.
+// onRecorded: OpenClaw's afterRecord. Core has done its session bookkeeping
+// and is about to run the agent; the transcript does not have the turn yet.
 export type GroupInboundParams = InboundTurn & {
   chatId: string
   title: string
@@ -71,9 +71,9 @@ export async function dispatchGroupInbound(params: GroupInboundParams): Promise<
     },
     reply: { to: address, originatingTo: address },
     message: {
-      // No "+elapsed" suffix: it needs the session's last update time, and
-      // every SDK reader of it is deprecated or missing in OpenClaw 2026.8.1.
-      // The agent reads BodyForAgent, not Body.
+      // No "+elapsed" suffix: it needs a session read per group message, and
+      // OpenClaw is retiring the synchronous readers while 2026.8.1 has no
+      // async ones. The agent reads BodyForAgent, not Body.
       body: formatInboundEnvelope({
         channel: 'TrueConf',
         from: label,

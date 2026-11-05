@@ -119,4 +119,20 @@ describe('integration: multi-account isolation', () => {
     expect(serverB.messageRequests.map((r) => (r.payload as { content: { text: string } }).content.text))
       .toEqual(['text via b', 'Не удалось найти файл для отправки.'])
   })
+
+  it('reports configured account ids that are one id for OpenClaw', () => {
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+    const account = { serverUrl: 'srv', username: 'bot@srv', password: 'secret' }
+    registerFull({
+      logger,
+      runtime: {},
+      config: { channels: { trueconf: { accounts: { Main: account, main: account, Other: account } } } },
+      on: () => {},
+      registerTool: () => {},
+    } as never)
+
+    expect(logger.error.mock.calls.map((call) => call[0])).toEqual([
+      '[trueconf] Account ids "Main", "main" are the same account id for OpenClaw; outbound sends for all of them go through "Main". Rename them apart.',
+    ])
+  })
 })

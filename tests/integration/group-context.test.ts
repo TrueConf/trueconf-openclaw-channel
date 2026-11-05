@@ -6,7 +6,7 @@ vi.mock('openclaw/plugin-sdk/channel-inbound', async () =>
 import { dispatchChannelInboundTurn } from 'openclaw/plugin-sdk/channel-inbound'
 import { __resetForTesting, channelPlugin, registerFull } from '../../src/channel'
 import { startFakeServer, waitFor, type FakeServer } from '../smoke/fake-server'
-import type { GroupTurn } from './__helpers__/channel-inbound-mock'
+import { recordedTurn, type GroupTurn } from './__helpers__/channel-inbound-mock'
 
 const groupDispatch = vi.mocked(dispatchChannelInboundTurn)
 const turnCount = () => groupDispatch.mock.calls.length
@@ -89,7 +89,7 @@ describe('integration: unaddressed group lines become context for the next addre
   beforeEach(async () => {
     __resetForTesting()
     groupDispatch.mockReset()
-    groupDispatch.mockResolvedValue({} as never)
+    groupDispatch.mockImplementation(recordedTurn as never)
     server = await startFakeServer()
     server.chats.set([
       { chatId: 'team', title: 'Team', chatType: 2 },
@@ -134,7 +134,11 @@ describe('integration: unaddressed group lines become context for the next addre
 
   it('keeps a line that arrives while a turn runs for the next turn, and a running turn keeps its own lines', async () => {
     let finishFirst!: () => void
-    groupDispatch.mockImplementationOnce(() => new Promise((resolve) => { finishFirst = () => resolve({} as never) }))
+    groupDispatch.mockImplementationOnce(async (params) => {
+      await (params as unknown as GroupTurn).afterRecord?.()
+      await new Promise<void>((resolve) => { finishFirst = resolve })
+      return {} as never
+    })
     harness = await bootPlugin(server)
 
     server.pushInbound(say(ALICE, 'before the first question'))
@@ -174,9 +178,9 @@ describe('integration: unaddressed group lines become context for the next addre
     ])
   })
 
-  it('does not repeat the lines when the turn fails after OpenClaw recorded it', async () => {
+  it('does not repeat the lines when the agent run fails', async () => {
     groupDispatch.mockImplementationOnce(async (params) => {
-      await (params as { afterRecord?: () => Promise<void> | void }).afterRecord?.()
+      await (params as unknown as GroupTurn).afterRecord?.()
       throw new Error('model down')
     })
     harness = await bootPlugin(server)
@@ -188,10 +192,13 @@ describe('integration: unaddressed group lines become context for the next addre
     server.pushInbound(ask(BOB, 'retry'))
     await waitFor(() => turnCount() >= 2)
 
-    expect(agentBodies()[1]).toBe('Bob Stone (bob@srv): Bot retry')
+    expect(agentBodies()).toEqual([
+      [CONTEXT, 'Alice Liddell (alice@srv): context line', '', CURRENT, 'Bob Stone (bob@srv): Bot first'].join('\n'),
+      'Bob Stone (bob@srv): Bot retry',
+    ])
   })
 
-  it('hands the lines back when the turn fails before OpenClaw records it', async () => {
+  it('hands the lines back when the turn fails before the agent run starts', async () => {
     groupDispatch.mockRejectedValueOnce(new Error('session store unavailable'))
     harness = await bootPlugin(server)
 

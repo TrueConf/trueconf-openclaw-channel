@@ -310,26 +310,29 @@ function redirectSelfSend(
   return { kind: 'direct', userId: peer }
 }
 
+interface StartedAccount {
+  // The id as configured; store.accounts and the per-account caches use it.
+  id: string
+  entry: AccountEntry
+}
+
 // Core hands plugin hooks and outbound sends its normalized (lowercased)
-// account id, while store.accounts and the per-account caches are keyed by
-// the id as configured.
-function configuredAccountId(accountId: string | null | undefined): string | undefined {
+// account id. validateStartupConfig reports configured ids that normalize
+// alike; the first started one wins here.
+function findAccount(accountId: string | null | undefined): StartedAccount | undefined {
   const wanted = normalizeAccountId(accountId)
-  for (const id of store.accounts.keys()) {
-    if (normalizeAccountId(id) === wanted) return id
+  for (const [id, entry] of store.accounts) {
+    if (normalizeAccountId(id) === wanted) return { id, entry }
   }
   return undefined
 }
 
-function findAccountEntry(accountId: string | null | undefined): AccountEntry | undefined {
-  const id = configuredAccountId(accountId)
-  return id === undefined ? undefined : store.accounts.get(id)
-}
-
 // The account an outbound send goes through: the one core names, else the
 // first started one.
-function outboundAccountId(accountId: string | undefined): string | undefined {
-  return accountId === undefined ? store.accounts.keys().next().value : configuredAccountId(accountId)
+function resolveOutboundAccount(accountId: string | undefined): StartedAccount | undefined {
+  if (accountId !== undefined) return findAccount(accountId)
+  const first = store.accounts.entries().next().value
+  return first && { id: first[0], entry: first[1] }
 }
 
 export const channelPlugin = {
@@ -378,7 +381,7 @@ export const channelPlugin = {
         cfg: params.cfg,
         accountId: params.accountId,
         chatId: params.groupId,
-        alwaysRespond: findAccountEntry(params.accountId)?.alwaysRespond.isAlwaysRespond(params.groupId) ?? false,
+        alwaysRespond: findAccount(params.accountId)?.entry.alwaysRespond.isAlwaysRespond(params.groupId) ?? false,
       }),
   },
 
@@ -406,13 +409,13 @@ export const channelPlugin = {
   outbound: {
     deliveryMode: "direct" as const,
     sendText: async (ctx: { accountId?: string; to: string; text: string }) => {
-      const accountId = outboundAccountId(ctx.accountId)
-      const entry = accountId ? store.accounts.get(accountId) : undefined
+      const account = resolveOutboundAccount(ctx.accountId)
       const logger = store.logger
-      if (!entry || !logger) {
-        logger?.error(`[trueconf] sendText: no connection for account ${ctx.accountId ?? accountId}`)
+      if (!account || !logger) {
+        logger?.error(`[trueconf] sendText: no connection for account ${ctx.accountId}`)
         return { channel: 'trueconf', messageId: '' }
       }
+      const { id: accountId, entry } = account
 
       // Core hands over stored targets as they are, e.g. a group turn's
       // OriginatingTo `trueconf:group:<chatId>` for a queued follow-up.
@@ -421,7 +424,7 @@ export const channelPlugin = {
         logger.error(`[trueconf] sendText: invalid ctx.to ${JSON.stringify(ctx.to)}`)
         return { channel: 'trueconf', messageId: '' }
       }
-      const destination = redirectSelfSend('sendText', target, entry, accountId ?? '', logger)
+      const destination = redirectSelfSend('sendText', target, entry, accountId, logger)
       if (!destination) return { channel: 'trueconf', messageId: '' }
 
       const result = destination.kind === 'group'
@@ -446,14 +449,14 @@ export const channelPlugin = {
       mediaUrl?: string
       mediaLocalRoots?: readonly string[]
     }) => {
-      const accountId = outboundAccountId(ctx.accountId)
-      const entry = accountId ? store.accounts.get(accountId) : undefined
+      const account = resolveOutboundAccount(ctx.accountId)
       const logger = store.logger
 
-      if (!entry || !logger || !store.channelConfig) {
-        logger?.error(`[trueconf] sendMedia: no connection for account ${ctx.accountId ?? accountId}`)
+      if (!account || !logger || !store.channelConfig) {
+        logger?.error(`[trueconf] sendMedia: no connection for account ${ctx.accountId}`)
         return { channel: 'trueconf', messageId: '' }
       }
+      const { id: accountId, entry } = account
 
       const resolved = resolveAccountImpl(store.channelConfig, accountId)
       if (!resolved.serverUrl) {
@@ -466,7 +469,7 @@ export const channelPlugin = {
         logger.error(`[trueconf] sendMedia: invalid ctx.to ${JSON.stringify(ctx.to)}`)
         return { channel: 'trueconf', messageId: '' }
       }
-      const destination = redirectSelfSend('sendMedia', target, entry, accountId ?? '', logger)
+      const destination = redirectSelfSend('sendMedia', target, entry, accountId, logger)
       if (!destination) return { channel: 'trueconf', messageId: '' }
 
       const deps = {
@@ -858,12 +861,12 @@ export const channelPlugin = {
               history: history.entries.map((line, i) => ({ ...line, sender: speakerLabel(line.sender, historyNames[i]) })),
               wasMentioned: inboundMsg.wasMentioned,
               requireMention: inboundMsg.requireMention,
-              // Once the turn is in the session its BodyForAgent may be in the
-              // transcript, so a failure after this must not hand the lines
-              // back for a second turn. A failure before it still does.
+              // The lines are taken when OpenClaw starts the agent run, so a
+              // failure inside the run never repeats them in a later turn,
+              // even if it fails before the transcript has the line. A turn
+              // core drops or that fails before the run leaves them.
               onRecorded: history.commit,
             })
-            history.commit()
           } catch (err) {
             await onFailure('dispatchGroupInbound')(err)
           } finally {
@@ -1033,6 +1036,21 @@ function validateStartupConfig(channelConfig: TrueConfChannelConfig, logger: Log
     const valid =
       typeof max === 'number' && Number.isFinite(max) && max > 0 && max <= MAX_FILE_SIZE_HARD_LIMIT_BYTES
     if (!valid) logger.warn(`[trueconf] Invalid maxFileSize: ${JSON.stringify(max)}. Using fallback 50 MB.`)
+  }
+
+  // Core addresses outbound sends by the normalized id, so accounts whose ids
+  // normalize alike ("Main" and "main") all send through the first one.
+  const byNormalizedId = new Map<string, string[]>()
+  for (const accountId of listAccountIdsImpl(channelConfig)) {
+    const key = normalizeAccountId(accountId)
+    byNormalizedId.set(key, [...(byNormalizedId.get(key) ?? []), accountId])
+  }
+  for (const ids of byNormalizedId.values()) {
+    if (ids.length > 1) {
+      logger.error(
+        `[trueconf] Account ids ${ids.map((id) => JSON.stringify(id)).join(', ')} are the same account id for OpenClaw; outbound sends for all of them go through ${JSON.stringify(ids[0])}. Rename them apart.`,
+      )
+    }
   }
 
   const rawCfg = channelConfig as { accounts?: Record<string, { port?: unknown }>; port?: unknown }

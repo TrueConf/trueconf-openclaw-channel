@@ -14,14 +14,22 @@ export async function channelInboundMock() {
     resolveEnvelopeFormatOptions: vi.fn(() => ({ includeTimestamp: false })),
     formatInboundEnvelope: actual.formatInboundEnvelope,
     buildChannelInboundEventContext: vi.fn(async (params: unknown) => params),
-    dispatchChannelInboundTurn: vi.fn().mockResolvedValue({}),
+    dispatchChannelInboundTurn: vi.fn(recordedTurn),
   }
+}
+
+// A dispatchChannelInboundTurn that, like OpenClaw's, calls afterRecord before
+// the agent would run.
+export async function recordedTurn(params: { afterRecord?: () => void | Promise<void> }) {
+  await params.afterRecord?.()
+  return {}
 }
 
 // One dispatchChannelInboundTurn call as the group path builds it, with
 // ctxPayload being the buildChannelInboundEventContext input.
 export interface GroupTurn {
   route: { sessionKey: string }
+  afterRecord?: () => void | Promise<void>
   ctxPayload: {
     messageId: string
     from: string

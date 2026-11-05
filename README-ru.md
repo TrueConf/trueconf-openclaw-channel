@@ -73,8 +73,8 @@
 ### Из npm (рекомендуется)
 
 ```bash
-openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.0
-npx -y -p @trueconf-community/trueconf-openclaw-channel@1.3.0 trueconf-setup
+openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.1
+npx -y -p @trueconf-community/trueconf-openclaw-channel@1.3.1 trueconf-setup
 openclaw gateway
 ```
 
@@ -104,8 +104,8 @@ export TRUECONF_USE_TLS=true                   # опционально; по у
 export TRUECONF_PORT=443                       # опционально; любой порт 1-65535
 export TRUECONF_CA_PATH=/etc/trueconf/ca.pem   # если cert самоподписанный: CA от админа сервера
 
-openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.0
-npx -y -p @trueconf-community/trueconf-openclaw-channel@1.3.0 trueconf-setup
+openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.1
+npx -y -p @trueconf-community/trueconf-openclaw-channel@1.3.1 trueconf-setup
 openclaw gateway
 ```
 
@@ -533,11 +533,11 @@ Callback `setChatMutationHandler` (события edit / remove / clearHistory) 
 
 ### `openclaw plugins install` блокируется сканером безопасности
 
-- **Симптом:** `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.0` падает с critical-находкой сканера про `Environment variable access combined with network send` в `bin/trueconf-setup.mjs`, `src/channel-setup.ts` или `src/ws-client.ts`.
+- **Симптом:** `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.1` падает с critical-находкой сканера про `Environment variable access combined with network send` в `bin/trueconf-setup.mjs`, `src/channel-setup.ts` или `src/ws-client.ts`.
 - **Причина:** Сканер плагинов openclaw использует per-file regex, который ловит любой исходный файл, содержащий и `process.env`, и одно из `fetch` / `post` / `http.request`. Версии плагина до scanner-friendly рефакторинга держали env-чтения inline в этих файлах; в текущем релизе они вынесены в `src/env-config.ts`, поэтому regex сканера больше не срабатывает.
 - **Решение:** Обновитесь до последней опубликованной версии `@trueconf-community/trueconf-openclaw-channel` — scanner-friendly рефакторинг уже в релизе. Если вы запинены на старой версии (или ваша сборка openclaw использует кастомный набор правил сканера, который всё равно flags текущий релиз), fallback — install с dangerous-flag override:
   ```bash
-  openclaw plugins install --accept-capabilities --dangerously-force-unsafe-install @trueconf-community/trueconf-openclaw-channel@1.3.0
+  openclaw plugins install --accept-capabilities --dangerously-force-unsafe-install @trueconf-community/trueconf-openclaw-channel@1.3.1
   ```
 - **Чего не стоит делать:** Не используйте `--dangerously-force-unsafe-install` как install-команду по умолчанию. Флаг отключает ВСЕ проверки безопасности плагинов, не только правило env-harvesting, и для ВСЕХ плагинов, которые этим флагом ставятся. Сначала пробуйте обновлённый плагин; флаг — только как last-resort совместимость со старыми версиями.
 
@@ -547,8 +547,8 @@ Callback `setChatMutationHandler` (события edit / remove / clearHistory) 
 - **Причина:** `trueconf-setup` запускали через `npx -p ... trueconf-setup` **без** предварительного `openclaw plugins install`. Мастер записал временную npx-папку (`~/.npm/_npx/<hash>/...`) как путь загрузки плагина; после очистки кэша канал перестаёт находиться.
 - **Решение:** удалите устаревшую запись `~/.npm/_npx/...` из `plugins.load.paths` в `~/.openclaw/openclaw.json` (или выполните `openclaw doctor --fix`, если ваша сборка openclaw это поддерживает), затем переустановите и запустите настройку заново:
   ```bash
-  openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.0
-  npx -y -p @trueconf-community/trueconf-openclaw-channel@1.3.0 trueconf-setup
+  openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.1
+  npx -y -p @trueconf-community/trueconf-openclaw-channel@1.3.1 trueconf-setup
   openclaw gateway
   ```
   (Либо выполните `openclaw onboard` и выберите TrueConf вместо шага `npx ... trueconf-setup`.) Всегда запускайте `openclaw plugins install` **до** `trueconf-setup`. Свежие версии падают сразу с этой подсказкой, не записывая плохой путь.
@@ -557,7 +557,7 @@ Callback `setChatMutationHandler` (события edit / remove / clearHistory) 
 
 - **Симптом:** плагин был установлен и загружался, но после успешного прогона `trueconf-setup` gateway молча его пропускает — в логе нет строк `[trueconf]`, канала нет в `openclaw channels status`.
 - **Причина:** версии плагина до 1.2.9 удаляли `plugins.entries.trueconf` из `openclaw.json` как «устаревшую» запись (1.2.8 починил это для установки из tarball, но не для установки с registry — та живёт в `~/.openclaw/npm/projects/`). На openclaw 2026.6.x эта запись — живой признак включения установленного плагина, и её удаление отключало плагин.
-- **Решение:** обновите плагин до >= 1.2.9 (теперь очистка срабатывает только при отсутствии следов установки), затем восстановите запись — повторно выполните `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.0` или верните её вручную в `~/.openclaw/openclaw.json`:
+- **Решение:** обновите плагин до >= 1.2.9 (теперь очистка срабатывает только при отсутствии следов установки), затем восстановите запись — повторно выполните `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.1` или верните её вручную в `~/.openclaw/openclaw.json`:
   ```json
   { "plugins": { "entries": { "trueconf": { "enabled": true } } } }
   ```

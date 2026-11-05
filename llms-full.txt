@@ -79,8 +79,8 @@ Prerequisites: `npm`, `openclaw` >= 2026.8.1 (`npm install -g openclaw@latest`),
 ### From npm (recommended)
 
 ```bash
-openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.0
-npx -y -p @trueconf-community/trueconf-openclaw-channel@1.3.0 trueconf-setup
+openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.1
+npx -y -p @trueconf-community/trueconf-openclaw-channel@1.3.1 trueconf-setup
 openclaw gateway
 ```
 
@@ -110,8 +110,8 @@ export TRUECONF_USE_TLS=true                   # optional; default — auto-dete
 export TRUECONF_PORT=443                       # optional; any port 1-65535
 export TRUECONF_CA_PATH=/etc/trueconf/ca.pem   # if the cert is self-signed: the CA from the server admin
 
-openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.0
-npx -y -p @trueconf-community/trueconf-openclaw-channel@1.3.0 trueconf-setup
+openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.1
+npx -y -p @trueconf-community/trueconf-openclaw-channel@1.3.1 trueconf-setup
 openclaw gateway
 ```
 
@@ -539,11 +539,11 @@ Six tunables expose the network-resilience knobs that ship with sensible default
 
 ### `openclaw plugins install` blocked by security scanner
 
-- **Symptom:** `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.0` aborts with a critical scanner finding citing `Environment variable access combined with network send` in `bin/trueconf-setup.mjs`, `src/channel-setup.ts`, or `src/ws-client.ts`.
+- **Symptom:** `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.1` aborts with a critical scanner finding citing `Environment variable access combined with network send` in `bin/trueconf-setup.mjs`, `src/channel-setup.ts`, or `src/ws-client.ts`.
 - **Cause:** The openclaw plugin scanner uses a per-file regex that flags any source file containing both `process.env` and one of `fetch` / `post` / `http.request`. Versions of this plugin earlier than the scanner-friendly refactor inlined the env reads in those files; the current release moved them to `src/env-config.ts` so the scanner regex no longer matches.
 - **Solution:** Upgrade to the latest published `@trueconf-community/trueconf-openclaw-channel` — the scanner-friendly refactor is shipped. If you are pinned to an older version (or your openclaw build uses a customized scanner ruleset that still flags the current release), the fallback is to install with the dangerous-flag override:
   ```bash
-  openclaw plugins install --accept-capabilities --dangerously-force-unsafe-install @trueconf-community/trueconf-openclaw-channel@1.3.0
+  openclaw plugins install --accept-capabilities --dangerously-force-unsafe-install @trueconf-community/trueconf-openclaw-channel@1.3.1
   ```
 - **What not to do:** Do not adopt `--dangerously-force-unsafe-install` as a default install command. The flag bypasses ALL plugin-security checks, not just the env-harvesting rule, for ALL plugins it installs. Use the upgraded plugin first; reach for the flag only as a last-resort compatibility shim.
 
@@ -553,8 +553,8 @@ Six tunables expose the network-resilience knobs that ship with sensible default
 - **Cause:** `trueconf-setup` was run via `npx -p ... trueconf-setup` **without** a prior `openclaw plugins install`. The wizard then recorded the disposable npx cache dir (`~/.npm/_npx/<hash>/...`) as the plugin load path; once npm evicts that cache, the channel can no longer be found.
 - **Solution:** remove the stale `~/.npm/_npx/...` entry from `plugins.load.paths` in `~/.openclaw/openclaw.json` (or run `openclaw doctor --fix` if your openclaw build supports it), then reinstall and re-run setup:
   ```bash
-  openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.0
-  npx -y -p @trueconf-community/trueconf-openclaw-channel@1.3.0 trueconf-setup
+  openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.1
+  npx -y -p @trueconf-community/trueconf-openclaw-channel@1.3.1 trueconf-setup
   openclaw gateway
   ```
   (Or run `openclaw onboard` and pick TrueConf instead of the `npx ... trueconf-setup` step.) Always run `openclaw plugins install` **before** `trueconf-setup`. Recent versions fail fast with this guidance instead of writing the bad path.
@@ -563,7 +563,7 @@ Six tunables expose the network-resilience knobs that ship with sensible default
 
 - **Symptom:** the plugin was installed and loading fine, but after a successful `trueconf-setup` run the gateway silently skips it — no `[trueconf]` lines in the log, the channel is missing from `openclaw channels status`.
 - **Cause:** plugin versions before 1.2.9 removed `plugins.entries.trueconf` from `openclaw.json` as a "stale" entry (1.2.8 fixed this for tarball installs but missed registry installs, which live under `~/.openclaw/npm/projects/`). On openclaw 2026.6.x that entry is the live enable record for an installed plugin, so deleting it disabled the plugin.
-- **Solution:** upgrade the plugin to >= 1.2.9 (the cleanup now only runs when no install evidence exists), then restore the entry — either re-run `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.0`, or add it back manually in `~/.openclaw/openclaw.json`:
+- **Solution:** upgrade the plugin to >= 1.2.9 (the cleanup now only runs when no install evidence exists), then restore the entry — either re-run `openclaw plugins install --accept-capabilities @trueconf-community/trueconf-openclaw-channel@1.3.1`, or add it back manually in `~/.openclaw/openclaw.json`:
   ```json
   { "plugins": { "entries": { "trueconf": { "enabled": true } } } }
   ```
@@ -644,7 +644,7 @@ MIT
 
 # Changelog
 
-## [Unreleased]
+## [1.3.1] - 2026-11-05
 
 ### Fixed
 - Group turns no longer call SDK functions that OpenClaw retires on 2026-12-31 (`resolveChannelInboundRouteEnvelope`, `resolveInboundSessionEnvelopeContext`). The route comes from `resolveAgentRoute` and the envelope from `formatInboundEnvelope`, both in OpenClaw 2026.8.1 and current releases. ClawHub's validator flagged the old call when 1.3.0 was published. A group message's `Body` envelope no longer carries the "+elapsed since the previous message" suffix; the agent reads `BodyForAgent`, which is unchanged.

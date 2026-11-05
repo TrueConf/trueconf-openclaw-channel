@@ -113,7 +113,7 @@ describe('integration: group chat mention/reply gate', () => {
     expect(groupDispatch.mock.calls).toHaveLength(1)
     expect(dmDispatch).not.toHaveBeenCalled()
     const turn = groupTurn(0)
-    expect(turn.route.sessionKey).toBe(`test:group:${GROUP_CHAT}`)
+    expect(turn.route.sessionKey).toBe(`agent:main:trueconf:group:${GROUP_CHAT}`)
     expect(turn.ctxPayload).toMatchObject({
       from: 'trueconf:group:group_123',
       sender: { id: ALICE },

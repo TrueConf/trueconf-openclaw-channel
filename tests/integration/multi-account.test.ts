@@ -98,4 +98,41 @@ describe('integration: multi-account isolation', () => {
     const payload = serverB.messageRequests[0].payload as { content: { text: string } }
     expect(payload.content.text).toBe('outbound via B')
   })
+
+  // Core lowercases account ids before it calls outbound; the accounts here
+  // are configured as "A" and "B".
+  it('outbound with the lowercased account id core passes reaches that account', async () => {
+    harness = await bootMultiAccount(serverA, serverB)
+    const sendText = channelPlugin.outbound.sendText as (
+      ctx: { to: string; text: string; accountId: string },
+    ) => Promise<{ channel: string; messageId: string }>
+    const sendMedia = channelPlugin.outbound.sendMedia as (
+      ctx: { to: string; text: string; accountId: string },
+    ) => Promise<{ channel: string; messageId: string }>
+
+    await sendText({ to: 'carol@srv', text: 'text via b', accountId: 'b' })
+    // No mediaUrl, so carol gets the missing-file notice, sent through B.
+    await sendMedia({ to: 'carol@srv', text: 'media caption via b', accountId: 'b' })
+
+    await waitFor(() => serverB.messageRequests.length >= 2, 3000)
+    expect(serverA.messageRequests).toHaveLength(0)
+    expect(serverB.messageRequests.map((r) => (r.payload as { content: { text: string } }).content.text))
+      .toEqual(['text via b', 'Не удалось найти файл для отправки.'])
+  })
+
+  it('reports configured account ids that are one id for OpenClaw', () => {
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+    const account = { serverUrl: 'srv', username: 'bot@srv', password: 'secret' }
+    registerFull({
+      logger,
+      runtime: {},
+      config: { channels: { trueconf: { accounts: { Main: account, main: account, Other: account } } } },
+      on: () => {},
+      registerTool: () => {},
+    } as never)
+
+    expect(logger.error.mock.calls.map((call) => call[0])).toEqual([
+      '[trueconf] Account ids "Main", "main" are the same account id for OpenClaw; outbound sends for all of them go through "Main". Rename them apart.',
+    ])
+  })
 })

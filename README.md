@@ -350,7 +350,7 @@ Bob Stone (bob@trueconf.example.com): me
 carol@trueconf.example.com: Bot, write that down
 ```
 
-The lines are part of the message the agent gets, so they stay in the group session's history. A turn takes only the lines sent before its own message. Lines that arrive while the agent works wait for the next turn.
+The lines are part of the message the agent gets, so they stay in the group session's history. A turn takes only the lines sent before its own message. Lines that arrive while the agent works wait for the next turn. A turn takes its lines when OpenClaw starts the agent run, so a failed run never repeats them in a later turn; a turn that fails or is dropped before the run leaves them for the next one.
 
 Limits:
 

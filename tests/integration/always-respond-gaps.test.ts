@@ -199,9 +199,10 @@ describe('integration: always-respond — multi-account isolation', () => {
       serverA.pushInbound(groupTextEnvelope({ author: 'alice@srv', text: 'no mention', chatId: 'grp_hr_A', messageId: 'mA-1' }))
       await waitFor(() => groupDispatch.mock.calls.length >= 1, 3000)
       expect(groupDispatch).toHaveBeenCalledTimes(1)
+      // OpenClaw's routing lowercases the account and group ids.
       expect(groupDispatch.mock.calls[0][0]).toMatchObject({
-        accountId: 'A',
-        route: { sessionKey: 'test:group:grp_hr_A' },
+        accountId: 'a',
+        route: { sessionKey: 'agent:main:trueconf:group:grp_hr_a' },
       })
 
       // B does NOT bypass (no matching title on B's chats)
